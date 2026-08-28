@@ -450,7 +450,7 @@ fn backoff(attempt: u32) -> Duration {
 const UA_SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const UA_CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
-fn ttf_urls(slug: &str, weight: u16, italic: bool, bust: u128) -> Vec<String> {
+fn ttf_urls(slug: &str, weight: u16, italic: bool, subset: &str, bust: u128) -> Vec<String> {
     let q = if bust == 0 {
         String::new()
     } else {
@@ -458,9 +458,9 @@ fn ttf_urls(slug: &str, weight: u16, italic: bool, bust: u128) -> Vec<String> {
     };
     let style = if italic { "italic" } else { "normal" };
     let mut urls = vec![
-        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/latin-{weight}-{style}.ttf{q}"),
-        format!("https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-latin-{weight}-{style}.ttf{q}"),
-        format!("https://unpkg.com/@fontsource/{slug}/files/{slug}-latin-{weight}-{style}.ttf{q}"),
+        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/{subset}-{weight}-{style}.ttf{q}"),
+        format!("https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
+        format!("https://unpkg.com/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
     ];
     if slug == "noto-color-emoji" {
         return vec![
@@ -474,7 +474,7 @@ fn ttf_urls(slug: &str, weight: u16, italic: bool, bust: u128) -> Vec<String> {
     urls
 }
 
-fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic: bool) -> Result<Vec<u8>, String> {
+fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic: bool, subset: &str) -> Result<Vec<u8>, String> {
     let bust = if bulk().bust.load(Ordering::SeqCst) {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -483,7 +483,7 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic
     } else {
         0
     };
-    let urls = ttf_urls(slug, weight, italic, bust);
+    let urls = ttf_urls(slug, weight, italic, subset, bust);
     let mut last = String::from("all CDNs failed");
     let mut skipped_open = 0usize;
     for url in urls.iter() {
@@ -539,6 +539,93 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic
         last = "all CDNs paused (circuit open)".into();
     }
     Err(last)
+}
+
+fn fontsource_meta(
+    client: &reqwest::blocking::Client,
+    slug: &str,
+) -> Option<(Vec<String>, Vec<u16>, bool)> {
+    let url = format!("https://api.fontsource.org/v1/fonts/{slug}");
+    let text = client.get(&url).send().ok()?.text().ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let subsets: Vec<String> = v
+        .get("subsets")?
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+        .collect();
+    if subsets.is_empty() {
+        return None;
+    }
+    let weights: Vec<u16> = v
+        .get("weights")
+        .and_then(|w| w.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_u64().map(|n| n as u16))
+                .collect::<Vec<_>>()
+        })
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| vec![400]);
+    let italic = v
+        .get("styles")
+        .and_then(|s| s.as_array())
+        .map(|arr| arr.iter().any(|x| x.as_str() == Some("italic")))
+        .unwrap_or(false);
+    Some((subsets, weights, italic))
+}
+
+fn pick_subsets(all: &[String]) -> Vec<String> {
+    if all.iter().any(|s| s == "latin") {
+        vec!["latin".into()]
+    } else {
+        all.iter().take(4).cloned().collect()
+    }
+}
+
+fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec<(String, Vec<u8>)> {
+    let (all_subsets, weights, has_italic) = fontsource_meta(client, slug)
+        .unwrap_or((vec!["latin".into()], vec![400, 700], true));
+    let mut subsets = pick_subsets(&all_subsets);
+    if subsets.is_empty() {
+        subsets.push("latin".into());
+    }
+    let styles: &[bool] = if slug.contains("emoji") {
+        &[false]
+    } else if has_italic {
+        &[false, true]
+    } else {
+        &[false]
+    };
+    let mut out = Vec::new();
+    let mut pull = |subs: &[String]| {
+        for subset in subs {
+            for weight in &weights {
+                if bulk().cancel.load(Ordering::SeqCst) {
+                    return;
+                }
+                for italic in styles {
+                    let style = if *italic { "italic" } else { "normal" };
+                    if let Ok(bytes) = fetch_ttf(client, slug, *weight, *italic, subset) {
+                        out.push((format!("{slug}-{subset}-{weight}-{style}.ttf"), bytes));
+                    }
+                }
+            }
+        }
+    };
+    pull(&subsets);
+    if out.is_empty() {
+        let rest: Vec<String> = all_subsets
+            .iter()
+            .filter(|s| *s != "latin")
+            .take(4)
+            .cloned()
+            .collect();
+        if !rest.is_empty() {
+            pull(&rest);
+        }
+    }
+    out
 }
 
 fn fetch_google_css_text(client: &reqwest::blocking::Client, family: &str, ua: &str, axis: &str) -> Option<String> {
@@ -708,7 +795,7 @@ fn install_compat_pack(client: &reqwest::blocking::Client, root: &Path, family: 
         return;
     }
     let outline_slug = if slug.contains("emoji") { "noto-emoji" } else { slug };
-    if let Ok(bytes) = fetch_ttf(client, outline_slug, 400, false) {
+    if let Ok(bytes) = fetch_ttf(client, outline_slug, 400, false, "latin") {
         let patched = crate::namepatch::patch_family_name(&bytes, family).unwrap_or(bytes);
         let _ = write_font_file(&dest, &patched);
     }
@@ -978,29 +1065,18 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
         }
     }
     if wrote == 0 {
-        let weights: &[u16] = if slug.contains("emoji") {
-            &[400]
-        } else {
-            &[400, 700, 300, 500, 600, 800, 900, 200, 100]
-        };
-        for weight in weights {
+        for (name, bytes) in fetch_fontsource_faces(client, &slug) {
             if bulk().cancel.load(Ordering::SeqCst) {
                 break;
             }
-            let styles: &[bool] = if slug.contains("emoji") { &[false] } else { &[false, true] };
-            for italic in styles {
-                let style = if *italic { "italic" } else { "normal" };
-                let path = root.join(format!("{slug}-{weight}-{style}.ttf"));
-                if ttf_intact(&path) {
-                    register_path(&path);
-                    wrote += 1;
-                    continue;
-                }
-                if let Ok(bytes) = fetch_ttf(client, &slug, *weight, *italic) {
-                    if write_font_file(&path, &bytes).is_ok() {
-                        wrote += 1;
-                    }
-                }
+            let path = root.join(sanitize(&name));
+            if ttf_intact(&path) {
+                register_path(&path);
+                wrote += 1;
+                continue;
+            }
+            if write_font_file(&path, &bytes).is_ok() {
+                wrote += 1;
             }
         }
     }
@@ -1009,7 +1085,7 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     }
     let total = register_intact_family(app, family);
     if total == 0 {
-        return Err("no Windows-installable TTF/OTF (WOFF2 skipped)".into());
+        return Err("no installable TTF/OTF (Google CSS is WOFF2-only; Fontsource had no TTF)".into());
     }
     mark_family_complete(&root);
     notify_fonts_changed();

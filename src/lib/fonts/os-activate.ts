@@ -306,6 +306,19 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   }
 }
 
+async function fontsourceSubsets(slug: string): Promise<string[]> {
+  try {
+    const res = await fetch(`https://api.fontsource.org/v1/fonts/${slug}`);
+    if (!res.ok) return ["latin"];
+    const data = (await res.json()) as { subsets?: string[] };
+    const subsets = Array.isArray(data.subsets) ? data.subsets.filter((s) => typeof s === "string") : [];
+    if (subsets.includes("latin")) return ["latin"];
+    return subsets.slice(0, 4);
+  } catch {
+    return ["latin"];
+  }
+}
+
 async function googleTtfFiles(font: FontRecord, _lean: boolean) {
   const slug = slugFamily(font.family);
   const emoji = /emoji/i.test(font.family);
@@ -313,26 +326,29 @@ async function googleTtfFiles(font: FontRecord, _lean: boolean) {
     ? [400]
     : Array.from(new Set(font.weights.length ? font.weights : [400])).sort((a, b) => a - b);
   const styles: Array<"normal" | "italic"> = emoji ? ["normal"] : font.italic ? ["normal", "italic"] : ["normal"];
+  const subsets = emoji ? ["latin"] : await fontsourceSubsets(slug);
   const files: { fileName: string; data: Uint8Array }[] = [];
-  for (const weight of weights) {
-    for (const style of styles) {
-      const urls: string[] = [
-        `https://cdn.jsdelivr.net/fontsource/fonts/${slug}@latest/latin-${weight}-${style}.ttf`,
-        `https://cdn.jsdelivr.net/npm/@fontsource/${slug}/files/${slug}-latin-${weight}-${style}.ttf`,
-        `https://unpkg.com/@fontsource/${slug}/files/${slug}-latin-${weight}-${style}.ttf`,
-      ];
-      if (slug === "noto-color-emoji" && weight === 400 && style === "normal") {
-        urls.unshift(
-          "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf",
-          "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoColorEmoji.ttf",
-        );
+  for (const subset of subsets) {
+    for (const weight of weights) {
+      for (const style of styles) {
+        const urls = [
+          "https://cdn.jsdelivr.net/fontsource/fonts/" + slug + "@latest/" + subset + "-" + weight + "-" + style + ".ttf",
+          "https://cdn.jsdelivr.net/npm/@fontsource/" + slug + "/files/" + slug + "-" + subset + "-" + weight + "-" + style + ".ttf",
+          "https://unpkg.com/@fontsource/" + slug + "/files/" + slug + "-" + subset + "-" + weight + "-" + style + ".ttf",
+        ];
+        if (slug === "noto-color-emoji" && weight === 400 && style === "normal") {
+          urls.unshift(
+            "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf",
+            "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoColorEmoji.ttf",
+          );
+        }
+        let data: Uint8Array | null = null;
+        for (const url of urls) {
+          data = await fetchBytes(url);
+          if (data) break;
+        }
+        if (data) files.push({ fileName: slug + "-" + subset + "-" + weight + "-" + style + ".ttf", data });
       }
-      let data: Uint8Array | null = null;
-      for (const url of urls) {
-        data = await fetchBytes(url);
-        if (data) break;
-      }
-      if (data) files.push({ fileName: `${slug}-${weight}-${style}.ttf`, data });
     }
   }
   return files;
