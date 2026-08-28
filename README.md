@@ -1,10 +1,12 @@
-# Font Manager **1.0.84**
+# Font Manager **1.0.85**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse ~1,968 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.84** sits next to the logo, not in the window title.
+Version **1.0.85** sits next to the logo, not in the window title.
 
-**1.0.84** — Activate installs **every Windows-installable style** (weights + italic). WOFF2 is skipped. Three workers; families with two+ intact files are not fetched again. Compile warning in `activate.rs` is gone.
+**1.0.85** — Deactivate keeps files. Activate again only registers them. Download runs only when the family is missing or the files are broken (WOFF2/truncated).
+
+**1.0.84** — Activate installs every Windows-installable style (weights + italic). WOFF2 is skipped. Three workers.
 
 **1.0.83** — Playground themed scrollbar. **1.0.82** — Library CSS preview matches desktop. **1.0.81** — launch does not download. **X closes the app**; on-disk activations come back next launch.
 
@@ -19,7 +21,7 @@ Version **1.0.84** sits next to the logo, not in the window title.
 | --- | --- |
 | Library | Search, sort, grid/list, search chips. Cards virtual-scroll (~280px columns). No “Show more” button. |
 | Activate | Session fonts via `AddFontResourceW`. Other apps see them until you Deactivate. Close quits. Next launch re-registers **files already in Documents** — it does not download. |
-| Google Fonts | Catalog is metadata only. Activate: scan Documents, skip intact TTF/OTF/TTC, drop WOFF2, then fetch **every weight and italic** Google lists as TTF (Safari CSS). Three workers. |
+| Google Fonts | Catalog is metadata only. Activate scans Documents first: intact TTF/OTF/TTC are registered, **not fetched**. Download only if missing or broken (WOFF2/truncated). First fetch writes every listed weight + italic. Three workers. |
 | Uploads | Drop files or a folder (TTF, OTF, WOFF, WOFF2, TTC). Parsed on a worker so the grid stays live. Stay in Documents. Deactivate unloads; Delete removes files. |
 
 | Inspector | In-flow right column (not a dimmed overlay). Weight, italic, variable axes, OpenType toggles, license. |
@@ -124,26 +126,19 @@ Next launch:
 
 1. One walk of Documents. Intact last-session files are registered so Word/Adobe see them again.
 2. The UI marks those families Activate. Missing names are **not** queued.
-3. Nothing is downloaded until you click Activate. Then: skip complete families, fill missing weights/italic, skip WOFF2 (three workers).
+3. Nothing is downloaded until you click Activate. If the family is already in Documents and intact, it is only registered.
 
-Deactivate still unloads and keeps files. Delete removes the folder.
+Deactivate unloads and **keeps files**. Activate again does **not** download. Delete removes the folder.
 
 ---
 
 ## Google download
 
-**Shipped (stability + speed, full styles):**
+1. Scan Documents. Intact TTF/OTF/TTC → register, skip fetch.
+2. Missing or broken (empty, truncated, WOFF2) → download every listed weight and italic as TTF (Safari CSS, then Fontsource).
+3. Three workers. Retry replaces files. Pause / Stop still work.
 
-1. One disk walk. Intact TTF/OTF/TTC stay. WOFF/WOFF2 is not Windows-installable — those files are dropped.
-2. **Every listed weight and italic.** One Google CSS2 request (Safari UA so the files are TTF, not WOFF2). Variable families usually land as roman + italic VF (all weights in two files). Static families land one TTF per style.
-3. Duplicate unicode-range subsets are not written (same weight twice would stall Activate-all).
-4. **Three workers.** Families with two or more intact files are skipped. A lone Regular from 1.0.83 is filled in.
-5. Fontsource 400–900 + italic is the fallback if CSS returns nothing.
-6. CDN cache on the first try. Retry cache-busts and replaces files.
-
-Preview stays CSS in this window. Word/Adobe use the files in Documents.
-
-Pause / Resume / Stop / Retry still work. Activate-all does not freeze the grid.
+Deactivate → Activate is register-only. Preview stays CSS in this window.
 
 ---
 
@@ -216,11 +211,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.84",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.85",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.84** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.85** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 

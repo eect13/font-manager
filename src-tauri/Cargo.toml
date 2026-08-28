@@ -1,6 +1,6 @@
 [package]
 name = "font-manager"
-version = "1.0.84"
+version = "1.0.85"
 description = "Font Manager — browse Google Fonts, activate typefaces for other apps, and inspect glyphs"
 edition = "2021"
 rust-version = "1.77"

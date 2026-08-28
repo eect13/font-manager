@@ -651,6 +651,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
   if (ready.length) {
     installedCache.add(font.family.toLowerCase());
     await markPreviewLive([font.id]);
+    return true;
   }
   if (font.source === "google") {
     await tauriInvoke<number>("start_google_downloads", {
@@ -659,7 +660,6 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     startGooglePoll();
     return true;
   }
-  if (ready.length) return true;
   job = {
     running: true,
     paused: false,
@@ -754,19 +754,27 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     toast.message("Scanning Documents first", {
       description: `${names.length.toLocaleString()} families. Intact files are registered, not re-downloaded.`,
     });
-    const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
-    startGooglePoll();
-    if (!added) {
-      const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
-        () => [] as string[],
+    const plan = await tauriInvoke<{ ready: string[]; missing: string[] }>("plan_google_activation", {
+      families: names,
+    }).catch(() => null);
+    const onDisk = plan?.ready ?? [];
+    const missing = plan?.missing ?? names;
+    if (onDisk.length) {
+      const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: onDisk }).catch(
+        () => onDisk,
       );
       if (ready.length) {
         for (const name of ready) installedCache.add(name.toLowerCase());
         applyReadyFamilies(ready);
-        toast.message("Already on disk", {
-          description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
-        });
       }
+    }
+    if (missing.length) {
+      const added = await tauriInvoke<number>("start_google_downloads", { families: missing }).catch(() => 0);
+      if (added) startGooglePoll();
+    } else {
+      toast.message("Already on disk", {
+        description: `${onDisk.length.toLocaleString()} intact ${onDisk.length === 1 ? "family" : "families"} — registered, not fetched again.`,
+      });
     }
   }
   if (local.length) {

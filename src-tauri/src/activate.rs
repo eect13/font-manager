@@ -834,15 +834,6 @@ fn family_complete_marker(dir: &Path) -> PathBuf {
     dir.join(".complete")
 }
 
-fn family_is_complete(app: &AppHandle, family: &str) -> bool {
-    for dir in family_locations(app, family) {
-        if family_complete_marker(&dir).is_file() && dir_has_intact(&dir) {
-            return true;
-        }
-    }
-    false
-}
-
 fn mark_family_complete(root: &Path) {
     let _ = fs::write(family_complete_marker(root), b"1");
 }
@@ -965,13 +956,10 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
         return Err("empty family name".into());
     }
     let existing = register_intact_family(app, family);
-    let root = family_dir(app, family)?;
-    if existing > 0
-        && family_is_complete(app, family)
-        && !bulk().bust.load(Ordering::SeqCst)
-    {
+    if existing > 0 && !bulk().bust.load(Ordering::SeqCst) {
         return Ok(existing);
     }
+    let root = family_dir(app, family)?;
     fs::create_dir_all(&root).map_err(|e| format!("could not create folder: {e}"))?;
     let mut wrote = 0usize;
     let faces = fetch_google_family_faces(client, family, &slug);
@@ -1051,7 +1039,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     let mut ready = Vec::new();
     let mut missing = Vec::new();
     for family in families {
-        if family_is_complete(&app, &family) {
+        if index_has(&index, &family) {
             ready.push(family);
         } else {
             missing.push(family);
@@ -1147,8 +1135,13 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
                         p.running = true;
                     }
                     emit_progress(&app);
-                    let skip = family_is_complete(&app, &family) && !bulk().bust.load(Ordering::SeqCst);
-                    let result = download_family(&app, &client, &family);
+                    let already = register_intact_family(&app, &family) > 0
+                        && !bulk().bust.load(Ordering::SeqCst);
+                    let result = if already {
+                        Ok(1usize)
+                    } else {
+                        download_family(&app, &client, &family)
+                    };
                     match &result {
                         Err(reason) => {
                             forget_queued(&family);
@@ -1160,7 +1153,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
                                 if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                                     p.ready_names.push(family.clone());
                                 }
-                                if skip {
+                                if already {
                                     p.skipped += 1;
                                 }
                             }
