@@ -240,19 +240,6 @@ function slugFamily(family: string) {
     .replace(/^-|-$/g, "");
 }
 
-function pickWeights(weights: number[], lean: boolean) {
-  const uniq = Array.from(new Set(weights.length ? weights : [400])).sort((a, b) => a - b);
-  const prefer = lean ? [400, 700] : [400, 700, 300, 600, 500, 900];
-  const cap = lean ? 2 : 4;
-  const chosen: number[] = [];
-  for (const w of prefer) {
-    if (uniq.includes(w) && !chosen.includes(w)) chosen.push(w);
-    if (chosen.length >= cap) break;
-  }
-  if (!chosen.length) chosen.push(uniq[0] ?? 400);
-  return chosen;
-}
-
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
@@ -310,7 +297,7 @@ async function writeAndRegister(
 
 async function fetchBytes(url: string): Promise<Uint8Array | null> {
   try {
-    const res = await fetch(url, { cache: "reload", headers: { "cache-control": "no-cache" } });
+    const res = await fetch(url);
     if (!res.ok) return null;
     const buf = new Uint8Array(await res.arrayBuffer());
     return buf.byteLength > 1000 ? buf : null;
@@ -319,42 +306,29 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   }
 }
 
-async function googleTtfFiles(font: FontRecord, lean: boolean) {
+async function googleTtfFiles(font: FontRecord, _lean: boolean) {
   const slug = slugFamily(font.family);
   const emoji = /emoji/i.test(font.family);
-  const weights = emoji ? [400] : pickWeights(font.weights, lean);
   const files: { fileName: string; data: Uint8Array }[] = [];
-  const subsets = emoji ? ["emoji", "unicode", "full", "latin"] : ["latin"];
-  for (const weight of weights) {
-    const urls: string[] = [];
-    for (const sub of subsets) {
-      urls.push(`https://cdn.jsdelivr.net/fontsource/fonts/${slug}@latest/${sub}-${weight}-normal.ttf`);
-      urls.push(`https://cdn.jsdelivr.net/npm/@fontsource/${slug}/files/${slug}-${sub}-${weight}-normal.ttf`);
-      urls.push(`https://unpkg.com/@fontsource/${slug}/files/${slug}-${sub}-${weight}-normal.ttf`);
-    }
-    if (slug === "noto-color-emoji") {
-      urls.unshift(
-        "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf",
-        "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoColorEmoji.ttf",
-      );
-      urls.push("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/Noto-COLRv1.ttf");
-    }
-    if (slug === "noto-emoji") {
-      urls.push(`https://cdn.jsdelivr.net/fontsource/fonts/noto-emoji@latest/emoji-${weight}-normal.ttf`);
-    }
-    let data: Uint8Array | null = null;
-    for (const url of urls) {
-      data = await fetchBytes(url);
-      if (data) break;
-    }
-    if (data) files.push({ fileName: `${slug}-${weight}-normal.ttf`, data });
+  const urls: string[] = [];
+  const subsets = emoji ? ["emoji", "latin"] : ["latin"];
+  for (const sub of subsets) {
+    urls.push(`https://cdn.jsdelivr.net/fontsource/fonts/${slug}@latest/${sub}-400-normal.ttf`);
+    urls.push(`https://cdn.jsdelivr.net/npm/@fontsource/${slug}/files/${slug}-${sub}-400-normal.ttf`);
+    urls.push(`https://unpkg.com/@fontsource/${slug}/files/${slug}-${sub}-400-normal.ttf`);
   }
-  if (slug === "noto-color-emoji" && files.length) {
-    const compat =
-      (await fetchBytes("https://cdn.jsdelivr.net/fontsource/fonts/noto-emoji@latest/emoji-400-normal.ttf")) ||
-      (await fetchBytes("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoEmoji-Regular.ttf"));
-    if (compat) files.push({ fileName: "NotoEmoji-Regular.ttf", data: compat });
+  if (slug === "noto-color-emoji") {
+    urls.unshift(
+      "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf",
+      "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoColorEmoji.ttf",
+    );
   }
+  let data: Uint8Array | null = null;
+  for (const url of urls) {
+    data = await fetchBytes(url);
+    if (data) break;
+  }
+  if (data) files.push({ fileName: `${slug}-400-normal.ttf`, data });
   return files;
 }
 
@@ -368,7 +342,7 @@ async function localFiles(font: FontRecord) {
 
 let batchId = 0;
 let workers = 0;
-const MAX_WORKERS = 1;
+const MAX_WORKERS = 2;
 const installQueue: { font: FontRecord; lean: boolean }[] = [];
 const removeQueue: FontRecord[] = [];
 let lastPaint = 0;

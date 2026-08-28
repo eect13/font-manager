@@ -26,7 +26,7 @@ export function ScrollArea({
         orientation="vertical"
         className="absolute right-1 top-1 bottom-1 z-10 flex w-2 touch-none select-none p-px data-[state=hidden]:pointer-events-none data-[state=hidden]:opacity-0"
       >
-        <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-foreground/25 hover:bg-foreground/40" />
+        <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-foreground/18 hover:bg-foreground/36" />
       </ScrollAreaPrimitive.Scrollbar>
     </ScrollAreaPrimitive.Root>
   );

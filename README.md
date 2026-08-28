@@ -1,14 +1,14 @@
-# Font Manager **1.0.82**
+# Font Manager **1.0.83**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse ~1,968 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.82** sits next to the logo, not in the window title.
+Version **1.0.83** sits next to the logo, not in the window title.
 
-**1.0.82** — Library preview is the same CSS/FontFace path on this website and in the desktop WebView. Documents TTFs stay for Activate (other apps), not a second preview. Disk files are only used if the network preview fails (offline).
+**1.0.83** — Google Activate downloads **one Regular TTF** per family (Google CSS → Fontsource 400), three workers, no cache-bust on the first try. WOFF2 leftovers are treated as corrupt and replaced. Playground specimen panes keep a theme-tinted scrollbar; the pairing bar stays put.
 
-**1.0.81** — launch no longer downloads Google Fonts. One fast disk scan registers intact files from the last session; missing or corrupt families wait until you click Activate. Compile log no longer prints `INEFFECTIVE_DYNAMIC_IMPORT` / `PLUGIN_TIMINGS` / `tauri-index` chatter. Library cards share one footer height; variable sliders pop on hover and follow the paper/ink theme.
+**1.0.82** — Library preview is the same CSS/FontFace path on this website and in the desktop WebView. Documents TTFs stay for Activate (other apps), not a second preview.
 
-**1.0.80** — uniform cards, hover weight slider, vertically centered specimens. **1.0.79** — slider overlay instead of a static strip. **1.0.78** — scan Documents first, two download workers, virtual scroll, search chips. **X closes the app**; activated families that are already on disk come back on the next launch.
+**1.0.81** — launch no longer downloads Google Fonts. **1.0.80** — uniform cards, hover weight slider. **1.0.78** — scan Documents first, virtual scroll, search chips. **X closes the app**; activated families that are already on disk come back on the next launch.
 
 ![Library](screenshots/app-builder-preview.png)
 
@@ -21,7 +21,7 @@ Version **1.0.82** sits next to the logo, not in the window title.
 | --- | --- |
 | Library | Search, sort, grid/list, search chips. Cards virtual-scroll (~280px columns). No “Show more” button. |
 | Activate | Session fonts via `AddFontResourceW`. Other apps see them until you Deactivate. Close quits. Next launch re-registers **files already in Documents** — it does not download. |
-| Google Fonts | Catalog is metadata only. Nothing fetches a TTF until you click Activate. Then: one folder scan, skip intact, replace corrupt, download the rest (two workers). |
+| Google Fonts | Catalog is metadata only. Nothing fetches a TTF until you click Activate. Then: one folder scan, skip intact SFNT, replace WOFF2/corrupt, download **one Regular TTF** (Google CSS Safari, then Fontsource 400). Three workers. |
 | Uploads | Drop files or a folder (TTF, OTF, WOFF, WOFF2, TTC). Parsed on a worker so the grid stays live. Stay in Documents. Deactivate unloads; Delete removes files. |
 
 | Inspector | In-flow right column (not a dimmed overlay). Weight, italic, variable axes, OpenType toggles, license. |
@@ -126,9 +126,25 @@ Next launch:
 
 1. One walk of Documents. Intact last-session files are registered so Word/Adobe see them again.
 2. The UI marks those families Activate. Missing names are **not** queued.
-3. Nothing is downloaded until you click Activate. Then: skip intact, replace corrupt, fetch the rest (two workers).
+3. Nothing is downloaded until you click Activate. Then: skip intact SFNT, replace WOFF2/corrupt, fetch **one Regular TTF** (three workers).
 
 Deactivate still unloads and keeps files. Delete removes the folder.
+
+---
+
+## Google download (what we picked)
+
+Tried: many weights, Chrome-UA WOFF2, cache-bust every URL, 2 workers, 6 workers. Those were either slow, not installable on Windows, or they hung the PC.
+
+**Shipped:**
+
+1. One disk walk. Intact TTF/OTF/TTC stay. WOFF/WOFF2 and truncated files are dropped as corrupt.
+2. **One Regular file per family.** Google CSS2 with a Safari UA (TTF), then Fontsource `latin-400-normal.ttf`, then unpkg. Stop at the first installable SFNT.
+3. **Three workers.** Two was slow; six saturates a home connection.
+4. CDN cache on the first try. Retry is the only cache-bust.
+5. Preview stays CSS. Extra weights and italic are not downloaded — Word synthesizes italic if needed.
+
+Pause / Resume / Stop / Retry still work. Activate-all never freezes the grid.
 
 ---
 
@@ -201,11 +217,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.82",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.83",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.82** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.83** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 

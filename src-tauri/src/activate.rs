@@ -88,9 +88,10 @@ fn ttf_magic(bytes: &[u8]) -> bool {
     if bytes.len() < 4 {
         return false;
     }
+    // SFNT only. WOFF/WOFF2 is preview — AddFontResourceW will not install it.
     matches!(
         &bytes[0..4],
-        b"\x00\x01\x00\x00" | b"OTTO" | b"true" | b"typ1" | b"ttcf" | b"wOFF" | b"wOF2"
+        b"\x00\x01\x00\x00" | b"OTTO" | b"true" | b"typ1" | b"ttcf"
     )
 }
 
@@ -450,17 +451,20 @@ const UA_SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWe
 const UA_CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 fn ttf_urls(slug: &str, weight: u16, bust: u128) -> Vec<String> {
+    let q = if bust == 0 {
+        String::new()
+    } else {
+        format!("?v={bust}")
+    };
     let mut urls = vec![
-        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/latin-{weight}-normal.ttf?v={bust}"),
-        format!("https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-latin-{weight}-normal.ttf"),
-        format!("https://unpkg.com/@fontsource/{slug}/files/{slug}-latin-{weight}-normal.ttf"),
-        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/latin-{weight}-italic.ttf"),
+        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/latin-{weight}-normal.ttf{q}"),
+        format!("https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-latin-{weight}-normal.ttf{q}"),
+        format!("https://unpkg.com/@fontsource/{slug}/files/{slug}-latin-{weight}-normal.ttf{q}"),
     ];
     if slug == "noto-color-emoji" {
         return vec![
-            format!("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf?v={bust}"),
+            format!("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf{q}"),
             "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoColorEmoji.ttf".into(),
-            format!("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/Noto-COLRv1.ttf?v={bust}"),
         ];
     }
     if slug == "noto-emoji" {
@@ -470,10 +474,14 @@ fn ttf_urls(slug: &str, weight: u16, bust: u128) -> Vec<String> {
 }
 
 fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16) -> Result<Vec<u8>, String> {
-    let bust = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(1);
+    let bust = if bulk().bust.load(Ordering::SeqCst) {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(1)
+    } else {
+        0
+    };
     let urls = ttf_urls(slug, weight, bust);
     let mut last = String::from("all CDNs failed");
     let mut skipped_open = 0usize;
@@ -484,25 +492,22 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16) -> Res
             skipped_open += 1;
             continue;
         }
-        for attempt in 0u32..3 {
+        for attempt in 0u32..2 {
             if bulk().cancel.load(Ordering::SeqCst) {
                 return Err("cancelled".into());
             }
-            let req = client
-                .get(url)
-                .header("cache-control", "no-cache")
-                .header("pragma", "no-cache");
+            let req = client.get(url);
             match req.send() {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
                         match resp.bytes() {
-                            Ok(bytes) if ttf_magic(&bytes) => {
+                            Ok(bytes) if ttf_magic(&bytes) && bytes.len() >= 256 => {
                                 circuit_success(host);
                                 return Ok(bytes.to_vec());
                             }
                             Ok(bytes) => {
-                                last = format!("cached/empty file from {host} ({} bytes)", bytes.len());
+                                last = format!("not a TTF/OTF from {host} ({} bytes)", bytes.len());
                                 circuit_failure(host);
                             }
                             Err(err) => {
@@ -552,7 +557,7 @@ fn fetch_google_css_font(client: &reqwest::blocking::Client, family: &str, ua: &
     for token in css.split("url(").skip(1) {
         let end = token.find(')')?;
         let url = token[..end].trim().trim_matches('\'').trim_matches('"');
-        if !(url.starts_with("http") && (url.contains(".ttf") || url.contains(".otf") || url.contains(".woff"))) {
+        if !(url.starts_with("http") && (url.contains(".ttf") || url.contains(".otf")) && !url.contains(".woff")) {
             continue;
         }
         if let Ok(resp) = client.get(url).send() {
@@ -567,11 +572,10 @@ fn fetch_google_css_font(client: &reqwest::blocking::Client, family: &str, ua: &
 }
 
 fn fetch_google_family_ttf(client: &reqwest::blocking::Client, family: &str) -> Option<Vec<u8>> {
-    for axis in ["wght@100..900", ""] {
+    // Safari UA asks Google for TTF. Chrome UA returns WOFF2 (preview-only).
+    // Regular 400 first — Word/GDI. Variable range is a larger second try.
+    for axis in ["", "wght@400", "wght@100..900"] {
         if let Some(bytes) = fetch_google_css_font(client, family, UA_SAFARI, axis) {
-            return Some(bytes);
-        }
-        if let Some(bytes) = fetch_google_css_font(client, family, UA_CHROME, axis) {
             return Some(bytes);
         }
     }
@@ -771,6 +775,7 @@ struct Bulk {
     cancel: AtomicBool,
     pause: AtomicBool,
     running: AtomicBool,
+    bust: AtomicBool,
     progress: Mutex<GoogleDlProgress>,
     pending: Mutex<VecDeque<String>>,
     queued: Mutex<HashSet<String>>,
@@ -784,6 +789,7 @@ fn bulk() -> &'static Bulk {
         cancel: AtomicBool::new(false),
         pause: AtomicBool::new(false),
         running: AtomicBool::new(false),
+        bust: AtomicBool::new(false),
         progress: Mutex::new(GoogleDlProgress {
             running: false,
             done: 0,
@@ -847,67 +853,34 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     }
     let root = family_dir(app, family)?;
     fs::create_dir_all(&root).map_err(|e| format!("could not create folder: {e}"))?;
-    let mut wrote = 0usize;
-    let mut last_err = String::from("no files");
+    // One installable Regular (or VF) TTF. Extra weights/italics are preview-only.
     if let Some(bytes) = fetch_google_family_ttf(client, family) {
         let path = root.join(format!("{slug}.ttf"));
-        if write_font_file(&path, &bytes).is_ok() {
-            wrote += 1;
-        } else {
-            last_err = "Google CSS returned a file Windows cannot install".into();
+        write_font_file(&path, &bytes)?;
+        if needs_compat_pack(&slug) {
+            install_compat_pack(client, &root, family, &slug);
         }
-    }
-    if wrote > 0 {
-        let italic_path = root.join(format!("{slug}-400-italic.ttf"));
-        if ttf_intact(&italic_path) {
-            register_path(&italic_path);
-        } else if let Some(bytes) = fetch_google_css_font(client, family, UA_SAFARI, "ital,wght@1,400") {
-            let _ = write_font_file(&italic_path, &bytes);
-        }
-    }
-    let weights: &[u16] = if slug.contains("emoji") {
-        &[400]
-    } else {
-        &[400, 800, 300, 700]
-    };
-    for weight in weights {
-        if wrote > 0 {
-            break;
-        }
-        let file = format!("{slug}-{weight}-normal.ttf");
-        let path = root.join(&file);
-        if ttf_intact(&path) {
-            register_path(&path);
-            wrote += 1;
-            continue;
-        }
-        match fetch_ttf(client, &slug, *weight) {
-            Ok(bytes) => {
-                if path.exists() && !ttf_intact(&path) {
-                    unregister_path(&path);
-                    let _ = fs::remove_file(&path);
-                }
-                write_font_file(&path, &bytes)?;
-                wrote += 1;
-            }
-            Err(err) => last_err = err,
-        }
-    }
-    if needs_compat_pack(&slug) && wrote > 0 {
-        install_compat_pack(client, &root, family, &slug);
         notify_fonts_changed();
+        return Ok(1);
     }
-    if wrote == 0 {
-        Err(last_err)
-    } else {
-        Ok(wrote)
+    match fetch_ttf(client, &slug, 400) {
+        Ok(bytes) => {
+            let path = root.join(format!("{slug}-400-normal.ttf"));
+            write_font_file(&path, &bytes)?;
+            if needs_compat_pack(&slug) {
+                install_compat_pack(client, &root, family, &slug);
+            }
+            notify_fonts_changed();
+            Ok(1)
+        }
+        Err(err) => Err(err),
     }
 }
 
 fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     let state = bulk();
     let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(15))
         .user_agent("FontManager/1.0")
         .build()
     {
@@ -917,6 +890,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
                 p.running = false;
             }
             state.running.store(false, Ordering::SeqCst);
+            state.bust.store(false, Ordering::SeqCst);
             emit_progress(&app);
             return;
         }
@@ -964,12 +938,13 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
             p.current.clear();
         }
         state.running.store(false, Ordering::SeqCst);
+        state.bust.store(false, Ordering::SeqCst);
         emit_progress(&app);
         return;
     }
 
     let queue = Arc::new(Mutex::new(VecDeque::from(missing)));
-    let workers = 2usize;
+    let workers = 3usize;
     thread::scope(|scope| {
         for _ in 0..workers {
             let app = app.clone();
@@ -1062,6 +1037,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         p.current.clear();
     }
     state.running.store(false, Ordering::SeqCst);
+    state.bust.store(false, Ordering::SeqCst);
     emit_progress(&app);
 }
 
@@ -1304,6 +1280,7 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
         forget_queued(family);
         purge_family_files(&app, family);
     }
+    bulk().bust.store(true, Ordering::SeqCst);
     if !bulk().running.load(Ordering::SeqCst) {
         reset_circuits();
     }

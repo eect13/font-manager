@@ -88,8 +88,8 @@ export function Playground() {
   const surface = invert ? "bg-ink text-paper" : "bg-paper text-ink";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <div className="grid gap-4 border-b border-border p-4 md:grid-cols-[1fr_auto_1fr] md:p-6">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="grid shrink-0 gap-4 border-b border-border p-4 md:grid-cols-[1fr_auto_1fr] md:p-6">
         <PaneControls
           label="Heading"
           fontId={leftId}
@@ -139,12 +139,12 @@ export function Playground() {
         />
       </div>
 
-      <div className="grid flex-1 gap-px bg-border lg:grid-cols-2">
-        <article className={cn("min-h-80 p-6 md:p-10", surface)}>
+      <div className="fm-scroll grid min-h-0 flex-1 gap-px overflow-auto bg-border lg:grid-cols-2">
+        <article className={cn("fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 md:p-10", surface)}>
           <textarea
             value={heading}
             onChange={(e) => setHeading(e.target.value)}
-            className="w-full resize-none bg-transparent outline-none"
+            className="fm-scroll w-full resize-none bg-transparent outline-none"
             rows={3}
             style={{
               fontFamily: left ? cssFamilyStack(left) : undefined,
@@ -160,7 +160,7 @@ export function Playground() {
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            className="mt-4 w-full resize-none bg-transparent outline-none"
+            className="fm-scroll mt-4 w-full resize-none bg-transparent outline-none"
             rows={8}
             style={{
               fontFamily: right ? cssFamilyStack(right) : undefined,
@@ -174,7 +174,7 @@ export function Playground() {
             }}
           />
         </article>
-        <article className={cn("min-h-80 p-6 md:p-10", invert ? "bg-paper text-ink" : "bg-ink text-paper")}>
+        <article className={cn("fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 md:p-10", invert ? "bg-paper text-ink" : "bg-ink text-paper")}>
           <p
             className="leading-tight"
             style={{
@@ -207,7 +207,7 @@ export function Playground() {
         </article>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 border-t border-border px-4 py-3 md:px-6">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-border px-4 py-3 md:px-6">
         <Button
           size="sm"
           variant="secondary"
