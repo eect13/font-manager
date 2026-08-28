@@ -3,31 +3,56 @@ import { RotateCcw, Trash2 } from "lucide-react";
 import { FontCard } from "./font-card";
 import { UploadsResetDialog } from "./uploads-reset-dialog";
 import { Button } from "@/components/ui/button";
-import { loadFont } from "@/lib/fonts/loader";
+import { primeGooglePreview } from "@/lib/fonts/loader";
 import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
 import type { Collection } from "@/lib/fonts/types";
 
 const EMPTY_IDS: string[] = [];
 const EMPTY_COLS: Collection[] = [];
 
+const COL_MIN = 280;
+const GAP = 8;
+const GRID_H = 232;
+const LIST_H = 152;
+
 function scopeNeedsActivated(scope: string) {
-  return (
-    scope === "activated" ||
-    scope.startsWith("license:") ||
-    scope.startsWith("category:") ||
-    scope.startsWith("tag:")
-  );
+  return scope === "activated";
 }
 
-/** One viewport: auto-fill ~17.5rem cards. Rows 3–6 from height (ultrawide + 1440p get more). */
-function pageForBox(width: number, height: number, list: boolean) {
-  if (list) {
-    return Math.max(8, Math.min(20, Math.floor(Math.max(height, 280) / 136)));
-  }
-  const cols = Math.max(1, Math.floor(Math.max(width, 280) / 280));
-  const rows = Math.max(3, Math.min(6, Math.floor(Math.max(height, 360) / 196)));
-  const auto = Math.min(160, cols * rows);
-  return auto;
+function useScroller() {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ width: 960, height: 640, scrollTop: 0 });
+
+  useEffect(() => {
+    const boxEl = boxRef.current;
+    if (!boxEl) return;
+    const scroller = (boxEl.closest("[data-library-scroll]") as HTMLElement | null) ?? boxEl;
+    let raf = 0;
+    const measure = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setBox({
+          width: scroller.clientWidth || window.innerWidth,
+          height: scroller.clientHeight || Math.max(320, window.innerHeight - 220),
+          scrollTop: scroller.scrollTop,
+        });
+      });
+    };
+    measure();
+    const onScroll = () => measure();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(scroller);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      scroller.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  return { boxRef, box };
 }
 
 export function LibraryGrid() {
@@ -42,10 +67,9 @@ export function LibraryGrid() {
   const collections = useFontStore((s) =>
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
   );
-  const boxRef = useRef<HTMLDivElement>(null);
-  const [page, setPage] = useState(24);
-  const [chunks, setChunks] = useState(1);
+  const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
+  const list = preview.view === "list";
 
   const fonts = useMemo(
     () =>
@@ -64,52 +88,28 @@ export function LibraryGrid() {
     [localFonts, googleFonts, scope, query, favorites, activated, collections, customTags, preview.sort],
   );
 
-  const filterKey = `${scope}|${query}|${preview.sort}|${googleFonts.length}|${localFonts.length}|${
-    scopeNeedsActivated(scope)
-      ? activated.length
-      : scope === "favorites"
-        ? favorites.length
-        : collections.length
-  }`;
+  const inner = Math.max(280, box.width - 24);
+  const cols = list ? 1 : Math.max(1, Math.floor((inner + GAP) / (COL_MIN + GAP)));
+  const rowH = list ? LIST_H : GRID_H;
+  const stride = rowH + GAP;
+  const rows = Math.max(1, Math.ceil(fonts.length / cols));
+  const totalH = fonts.length ? rows * rowH + Math.max(0, rows - 1) * GAP + 24 : 0;
+  const overscan = 2;
+  const startRow = Math.max(0, Math.floor(box.scrollTop / stride) - overscan);
+  const endRow = Math.min(rows, Math.ceil((box.scrollTop + box.height) / stride) + overscan);
+  const start = startRow * cols;
+  const end = Math.min(fonts.length, endRow * cols);
+  const shown = fonts.slice(start, end);
+  const offsetY = startRow * stride;
+  const prefetchEnd = Math.min(fonts.length, end + cols * 3);
+  const primeIds = fonts
+    .slice(start, prefetchEnd)
+    .map((font) => font.id)
+    .join("|");
 
   useEffect(() => {
-    setChunks(1);
-  }, [filterKey]);
-
-  useEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    const scroller = box.closest("[data-library-scroll]") as HTMLElement | null;
-    let raf = 0;
-    const measure = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        const w = (scroller ?? box).clientWidth || window.innerWidth;
-        const h = scroller?.clientHeight || Math.max(320, window.innerHeight - 220);
-        setPage(pageForBox(w, h, preview.view === "list"));
-      });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(scroller ?? box);
-    window.addEventListener("resize", measure);
-    return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [preview.view]);
-
-  const visible = Math.min(fonts.length, page * chunks);
-  const shown = fonts.slice(0, visible);
-  const shownIds = shown.map((font) => font.id).join("|");
-  const remaining = Math.max(0, fonts.length - shown.length);
-
-  useEffect(() => {
-    shown.slice(0, 6).forEach((font) => {
-      void loadFont(font);
-    });
-  }, [shownIds]);
+    void primeGooglePreview(fonts.slice(start, prefetchEnd));
+  }, [primeIds]);
 
   const uploadedBar =
     scope === "uploaded" ? (
@@ -167,32 +167,27 @@ export function LibraryGrid() {
   return (
     <div ref={boxRef} className="flex flex-col">
       {uploadedBar}
-      <div
-        className={
-          preview.view === "list"
-            ? "flex flex-col gap-1.5 p-2.5 md:p-3"
-            : "grid grid-cols-[repeat(auto-fill,minmax(17.5rem,1fr))] gap-2 p-2.5 md:p-3"
-        }
-      >
-        {shown.map((font) => (
-          <FontCard key={font.id} font={font} preview={preview} layout={preview.view} />
-        ))}
+      <div className="relative w-full" style={{ height: totalH }}>
+        <div
+          className={list ? "flex flex-col gap-2 p-2.5 md:p-3" : "grid gap-2 p-2.5 md:p-3"}
+          style={
+            list
+              ? { transform: `translateY(${offsetY}px)` }
+              : {
+                  transform: `translateY(${offsetY}px)`,
+                  gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                }
+          }
+        >
+          {shown.map((font) => (
+            <FontCard key={font.id} font={font} preview={preview} layout={preview.view} />
+          ))}
+        </div>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2 px-4 pb-8 pt-1 text-xs text-muted-foreground">
         <span>
-          Showing {shown.length.toLocaleString()} of {fonts.length.toLocaleString()}
+          {fonts.length.toLocaleString()} typeface{fonts.length === 1 ? "" : "s"} · scroll to browse
         </span>
-        {remaining > 0 ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            className="h-7 px-2.5"
-            onClick={() => setChunks((n) => n + 1)}
-          >
-            Show {Math.min(page, remaining).toLocaleString()} more
-          </Button>
-        ) : null}
       </div>
       <UploadsResetDialog open={uploadsOpen} onOpenChange={setUploadsOpen} />
     </div>

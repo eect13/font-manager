@@ -11,6 +11,6 @@ export function isEmojiFont(font: Pick<FontRecord, "family" | "tags">) {
   return isEmojiFamily(font.family) || (font.tags ?? []).includes("emoji");
 }
 
-export function previewSample(font: Pick<FontRecord, "family" | "tags">, sample: string) {
+export function previewSample(font: Pick<FontRecord, "family" | "tags" | "colorKind">, sample: string) {
   return previewFallbackSample(font, sample);
 }

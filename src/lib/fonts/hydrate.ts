@@ -4,7 +4,7 @@ import { refreshGoogleCatalog } from "./google-api";
 import { idbGet, persistStorageOnGesture, requestPersistentStorage } from "./idb";
 import { refineLicense } from "./license";
 import { findFont, useFontStore } from "./store";
-import { loadFont } from "./loader";
+import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { registerExistingOnDisk, listDiskFamilies, resumeGoogleFamilies, rememberSessionFamilies } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
@@ -117,6 +117,7 @@ export function useHydrateFonts() {
       persistStorageOnGesture();
 
       const google = googleFonts.length ? googleFonts : GOOGLE_FONTS;
+      void primeGooglePreview(google.slice(0, 24));
       const wantIds = Array.from(
         new Set([...useFontStore.getState().activated, ...useFontStore.getState().pendingActivate]),
       );
@@ -128,6 +129,7 @@ export function useHydrateFonts() {
         await registerExistingOnDisk(wantNames);
         const disk = cancelled ? [] : await listDiskFamilies();
         if (cancelled) return;
+        noteDiskFamilies(disk);
         if (disk.length) {
           const allow = new Set(disk.map((n) => n.trim().toLowerCase()));
           const live: string[] = [];

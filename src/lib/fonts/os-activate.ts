@@ -10,6 +10,7 @@ export type DownloadJobState = {
   done: number;
   total: number;
   failed: number;
+  skipped: number;
   current: string;
   failedNames: string[];
   failedDetails: string[];
@@ -22,6 +23,7 @@ const EMPTY: DownloadJobState = {
   done: 0,
   total: 0,
   failed: 0,
+  skipped: 0,
   current: "",
   failedNames: [],
   failedDetails: [],
@@ -49,9 +51,16 @@ function notifyDownloadResult(done: number, failed: number, names: string[], det
     return;
   }
   if (done > 0) {
-    toast.success(`Background download finished — ${done} font${done === 1 ? "" : "s"}`, {
-      description: "Files: Documents → Font Manager → FamilyName.",
-    });
+    const skipped = job.skipped;
+    const downloaded = Math.max(0, done - skipped - failed);
+    toast.success(
+      skipped && !downloaded
+        ? `Already on disk — ${skipped.toLocaleString()} typeface${skipped === 1 ? "" : "s"} registered`
+        : `Background job finished — ${downloaded.toLocaleString()} downloaded, ${skipped.toLocaleString()} skipped`,
+      {
+        description: "Files: Documents → Font Manager → FamilyName. Intact files were not fetched again.",
+      },
+    );
   }
 }
 
@@ -139,7 +148,18 @@ export async function registerExistingOnDisk(families: string[]): Promise<void> 
 export async function resumeGoogleFamilies(families: string[]): Promise<void> {
   if (!families.length) return;
   if (!(await inDesktopShell())) return;
-  const added = await tauriInvoke<number>("start_google_downloads", { families }).catch(() => 0);
+  const plan = await tauriInvoke<{ ready: string[]; missing: string[] }>("plan_google_activation", {
+    families,
+  }).catch(() => null);
+  const missing = plan?.missing ?? families;
+  if (plan?.ready.length) {
+    const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: plan.ready }).catch(
+      () => plan.ready,
+    );
+    if (ready?.length) applyReadyFamilies(ready);
+  }
+  if (!missing.length) return;
+  const added = await tauriInvoke<number>("start_google_downloads", { families: missing }).catch(() => 0);
   if (added) startGooglePoll();
 }
 
@@ -360,6 +380,7 @@ function applyPayload(p: {
     done: p.done,
     total: p.total,
     failed: p.failed,
+    skipped: p.skipped ?? 0,
     current: p.current,
     failedNames: p.failed_names ?? [],
     failedDetails: p.failed_details ?? [],
@@ -652,6 +673,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     done: job.mode === "download" ? job.done : 0,
     total: (job.mode === "download" ? job.total : 0) + 1,
     failed: job.mode === "download" ? job.failed : 0,
+    skipped: job.mode === "download" ? job.skipped : 0,
     current: font.family,
     failedNames: job.mode === "download" ? job.failedNames : [],
     failedDetails: job.mode === "download" ? job.failedDetails : [],
@@ -706,6 +728,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
       done: 0,
       total: names.length,
       failed: 0,
+      skipped: 0,
       current: names[0] ?? "",
       failedNames: [],
       failedDetails: [],
@@ -734,37 +757,20 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   const local = fonts.filter((font) => font.source === "local");
   if (google.length) {
     const names = google.map((font) => font.family);
-    // Walking thousands of folders on the UI thread freezes the window.
-    // The download worker already skips intact files.
-    if (google.length > 12) {
-      const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
-      toast.message("Activating in the background", {
-        description: `${names.length.toLocaleString()} families. Files already in Documents are skipped — the window stays usable.`,
-      });
-      if (added) startGooglePoll();
-    } else {
+    toast.message("Scanning Documents first", {
+      description: `${names.length.toLocaleString()} families. Intact files are registered, not re-downloaded.`,
+    });
+    const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
+    startGooglePoll();
+    if (!added) {
       const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
         () => [] as string[],
       );
       if (ready.length) {
         for (const name of ready) installedCache.add(name.toLowerCase());
         applyReadyFamilies(ready);
-      }
-      const have = new Set(ready.map((n) => n.toLowerCase()));
-      const missing = google.filter((font) => !have.has(font.family.toLowerCase()));
-      if (missing.length) {
-        const added = await tauriInvoke<number>("start_google_downloads", {
-          families: missing.map((font) => font.family),
-        }).catch(() => 0);
-        if (added) {
-          toast.message("Downloading in the background", {
-            description: `${added.toLocaleString()} new families. Matching files already in Documents are skipped.`,
-          });
-        }
-        startGooglePoll();
-      } else {
         toast.message("Already on disk", {
-          description: "Those families have intact files — registered, not re-downloaded.",
+          description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
         });
       }
     }

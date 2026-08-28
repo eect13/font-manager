@@ -96,8 +96,14 @@ export async function refreshWatchedFolders(): Promise<void> {
 export function startWatchPolling() {
   if (pollTimer || typeof window === "undefined") return;
   void refreshWatchedFolders();
-  pollTimer = window.setInterval(() => void refreshWatchedFolders(), 12_000);
+  const tick = () => {
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    window.clearInterval(pollTimer);
+    pollTimer = window.setInterval(() => void refreshWatchedFolders(), hidden ? 20_000 : 4_000);
+  };
+  tick();
   document.addEventListener("visibilitychange", () => {
+    tick();
     if (document.visibilityState === "visible") void refreshWatchedFolders();
   });
 }

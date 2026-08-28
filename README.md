@@ -1,12 +1,15 @@
-# Font Manager **1.0.73**
+# Font Manager **1.0.78**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse ~1,942 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.73** sits next to the logo, not in the window title.
+Version **1.0.78** sits next to the logo, not in the window title.
 
-**1.0.73** is the same app as **1.0.72** with a quiet, three-phase desktop build (UI pack → Rust compile → MSI/NSIS). The yellow Vite notes in 1.0.72 were not failures.
+**1.0.78** — scan Documents first, then download only missing or corrupt Google files (two workers, no re-fetch of intact families). Variable sliders live in a quiet footer row and no longer overlay the pangram. Cards are taller; only the grip handle is draggable. The library virtual-scrolls all ~1,968 families. Display faces shrink-to-fit. License / style / tags work without Activate. Search chips replace typing `license:personal`.
 
-**1.0.72** keeps activations after Quit, Activate-all no longer freezes the window, library weight sliders actually change the specimen, and uploads parse TTF/OTF/WOFF/TTC without waiting on glyph outlines.
+**1.0.77** batched Google CSS for visible cards. **1.0.76** made library weight sliders drag without moving the card. **X closes the app**; activated families come back on the next launch. Tray is only while the window is open.
+
+**1.0.75** installs over an older copy. Setup no longer runs the previous `uninstall.exe`. **1.0.74** started the repair path. **1.0.73** quieted the desktop build log. **1.0.72** keeps activations after Quit.
+
 
 ![Library](screenshots/app-builder-preview.png)
 
@@ -17,10 +20,10 @@ Version **1.0.73** sits next to the logo, not in the window title.
 
 | Area | What it does |
 | --- | --- |
-| Library | Search, sort, grid/list. Cards `auto-fill` ~17.5rem (ultrawide gets more columns). First paint is **3–6 rows** from window height, then **Show N more**. Tabs stay mounted like a browser. |
-| Activate | Session fonts via `AddFontResourceW`. Other apps see them until you Deactivate or Quit from the tray. |
-| Google Fonts | Download on first Activate. Intact files on disk are registered, not re-downloaded. |
-| Uploads | Drop files or a folder (TTF, OTF, WOFF, WOFF2, TTC). Stay in Documents. Deactivate unloads; Delete removes files. |
+| Library | Search, sort, grid/list, search chips. Cards virtual-scroll (~280px columns). No “Show more” button. |
+| Activate | Session fonts via `AddFontResourceW`. Other apps see them until you Deactivate. Close quits; next launch restores the session. |
+| Google Fonts | Scan the Documents folder first. Intact files are registered, not re-downloaded. Only missing or corrupt families fetch, two at a time. |
+| Uploads | Drop files or a folder (TTF, OTF, WOFF, WOFF2, TTC). Parsed on a worker so the grid stays live. Stay in Documents. Deactivate unloads; Delete removes files. |
 
 | Inspector | In-flow right column (not a dimmed overlay). Weight, italic, variable axes, OpenType toggles, license. |
 | OpenType | GSUB/GPOS tags from the TTF. Toggles drive `font-variant-*` + `font-feature-settings`. Demo line: `Office fi fl 1/2 0123`. |
@@ -28,7 +31,7 @@ Version **1.0.73** sits next to the logo, not in the window title.
 | Duplicates | Same size → binary diff. Different names + sizes stay separate. |
 | Glyphs | Character map. Search as you type. Tofu stays (hover **?**). Atlas is cached — first open of a face is the slow parse; switching tabs does not reload. |
 | Collections / Folders | Virtual groups vs watched folders on disk. |
-| License / Style / Tags | Google uses official class. Uploads use filename first; junk PANOSE from free-font sites is ignored (`?` tooltips). |
+| License / Style / Tags | Catalog metadata — no Activate required. Google uses official class. Uploads use filename first; junk PANOSE from free-font sites is ignored (`?` tooltips). |
 
 ---
 
@@ -52,7 +55,7 @@ Version **1.0.73** sits next to the logo, not in the window title.
 | **Deactivate** | File stays | Unload |
 | **Delete** | Remove the family folder | Unload |
 
-**X** hides to tray (fonts stay on). Tray **Quit (unload fonts)** exits.
+**X** closes the app. Activated families are restored the next time you open it.
 
 ---
 
@@ -64,13 +67,14 @@ Version **1.0.73** sits next to the logo, not in the window title.
    1. **Pack the UI** — Vite writes `desktop-….js`. A banner says **Phase 1 done**. That is **not** the installer.
    2. **Compile Rust** — cargo `--release` with LTO (first time 5–15 minutes). Looks like a new process; do not close the window.
    3. **Write installers** — MSI (if WiX v3 is installed) and NSIS setup. Explorer opens `src-tauri\target\release\bundle\`.
-4. Install from `bundle\msi\` or `bundle\nsis\`. Other PCs do not need Node or Rust.
+4. Install from `bundle\nsis\` (or `bundle\msi\` if WiX built one). Other PCs do not need Node or Rust.
+5. If an older setup is still on the PC: double-click **`fix-install.bat`** (clears leftover AppData + registry, then launches the new setup). Fonts in `Documents / Font Manager` stay.
 
 **`desktop-setup.bat`** only **runs** the app (dev window). It does **not** make installers.
 
 NSIS always builds. MSI needs [WiX Toolset v3](https://wixtoolset.org); without it you still get the NSIS setup. If WiX is installed but not on PATH, setup now adds its `bin` folder automatically. No Visual Studio IDE. WebView2 is embedded if missing.
 
-**X** hides to tray. Reopen from the tray icon.
+**X** closes the app. Activations come back on the next launch.
 
 ### What the 1.0.72 yellow log meant
 
@@ -115,13 +119,13 @@ Not wired in on purpose: **skrifa**, **DirectWrite in the WebView**, auto-update
 
 ---
 
-## Activation after Quit
+## Activation after close
 
-Activate is a **session** register (`AddFontResourceW`). Files stay in `Documents / Font Manager`. **1.0.72** also writes `.session-active.json` in that folder and remembers the same list in the library store.
+Activate is a **session** register (`AddFontResourceW`). Files stay in `Documents / Font Manager`. Closing the window **quits** the app (fonts unload with the process). The last Activate list is saved.
 
 Next launch:
 
-1. The process re-registers last session’s families so Word/Adobe see them immediately.
+1. The process re-registers last session’s families so Word/Adobe see them again.
 2. The UI restores Activate / Queued from storage.
 3. Missing Google families download in the background (intact files are skipped).
 
@@ -185,12 +189,12 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | Download. Next toggle uses the file on disk. |
-| `tauri.conf.json` parse error | Version must be `"1.0.73",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.78",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
-| Display face clipped | Inspector is a column; alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t delete Documents / Font Manager | Quit from the tray so fonts unload. |
+| Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.78** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 
-**1.0.73 — ready for personal desktop use.** License / style / tags stay inferred. Not legal advice.
+**1.0.78 — ready for personal desktop use.** License / style / tags stay inferred. Not legal advice.

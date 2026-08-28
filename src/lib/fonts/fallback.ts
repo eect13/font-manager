@@ -18,8 +18,13 @@ export function scriptSample(font: Pick<FontRecord, "family" | "tags">): string 
   return scriptSampleText(font.family);
 }
 
-export function previewFallbackSample(font: Pick<FontRecord, "family" | "tags">, sample: string) {
-  if (isEmoji(font)) return scriptSampleText(font.family) ?? "😀 🥰 🎉";
+export function previewFallbackSample(
+  font: Pick<FontRecord, "family" | "tags" | "colorKind">,
+  sample: string,
+) {
+  if (isEmoji(font) || font.colorKind === "colrv1" || font.colorKind === "cbdt") {
+    return scriptSampleText(font.family) ?? "😀 🥰 🎉";
+  }
   return scriptSample(font) ?? sample;
 }
 

@@ -30,7 +30,7 @@ fn main() {
 
             let show = MenuItem::with_id(app, "show", "Show Font Manager", true, None::<&str>)?;
             let folder = MenuItem::with_id(app, "folder", "Open Documents folder", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit (unload fonts)", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &folder, &quit])?;
 
             let icon = app
@@ -40,7 +40,7 @@ fn main() {
 
             TrayIconBuilder::new()
                 .icon(icon)
-                .tooltip("Font Manager — fonts stay active until Quit")
+                .tooltip("Font Manager")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -87,12 +87,14 @@ fn main() {
             activate::google_download_progress,
             activate::register_existing_on_disk,
             activate::activate_families_on_disk,
+            activate::plan_google_activation,
             activate::set_session_families,
             activate::read_family_font,
             activate::scan_disk_families,
             parse::parse_family_cmap,
             parse::parse_family_layout,
             parse::parse_font_layout,
+            parse::parse_font_layouts,
             parse::parse_font_cmap,
             parse::hash_bytes,
             parse::hash_font_path,
@@ -101,16 +103,13 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building Font Manager")
         .run(|app, event| match event {
-            // X hides to tray. Fonts stay registered until tray Quit.
+            // X closes the app. Activations restore on the next launch.
             tauri::RunEvent::WindowEvent {
                 label,
-                event: tauri::WindowEvent::CloseRequested { api, .. },
+                event: tauri::WindowEvent::CloseRequested { .. },
                 ..
             } if label == "main" => {
-                api.prevent_close();
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.hide();
-                }
+                app.exit(0);
             }
             tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. } => {
                 activate::session_end();

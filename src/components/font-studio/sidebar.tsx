@@ -104,8 +104,7 @@ export function Sidebar({
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
   const counts = useMemo(() => {
-    const on = new Set(activated);
-    const list = allFonts(localFonts, googleFonts).filter((font) => on.has(font.id));
+    const list = allFonts(localFonts, googleFonts);
     const license = { free: 0, freeware: 0, personal: 0, commercial: 0, unknown: 0 };
     const category = { sans: 0, serif: 0, display: 0, handwriting: 0, mono: 0 };
     const tags = new Map<string, number>();
@@ -118,7 +117,8 @@ export function Sidebar({
         }
       }
     }
-    return { license, category, tags, activated: list.length };
+    const on = new Set(activated);
+    return { license, category, tags, activated: list.filter((font) => on.has(font.id)).length };
   }, [localFonts, googleFonts, activated, customTags]);
 
   function go(next: LibraryScope) {
@@ -186,8 +186,6 @@ export function Sidebar({
 
           <LibraryGroups onNewCollection={onNewCollection} />
 
-          {counts.activated > 0 ? (
-            <>
           <section>
             <p className="mb-0.5 flex items-center gap-1 px-2.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               License
@@ -250,12 +248,6 @@ export function Sidebar({
             </div>
           </section>
           ) : null}
-            </>
-          ) : (
-            <p className="px-2.5 pb-8 text-xs text-muted-foreground">
-              Activate a typeface to see License, Style, and Tags.
-            </p>
-          )}
         </div>
       </div>
     </aside>

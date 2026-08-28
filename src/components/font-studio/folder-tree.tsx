@@ -186,11 +186,15 @@ function GroupTree({
         </HelpTip>
       </div>
       {rows.length === 0 && (
-        <p className="px-2.5 pb-1 text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={onNew}
+          className="mx-2.5 mb-1 w-[calc(100%-1.25rem)] rounded-md border border-dashed border-border px-2 py-2 text-left text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+        >
           {isFolder
-            ? "No watched folders. Files stay on disk."
-            : "No collections. Virtual groups only."}
-        </p>
+            ? "Watch a disk folder — files stay put, new fonts appear here."
+            : "New collection — virtual group. Drag the grip on a card into it."}
+        </button>
       )}
       {visible.map(({ folder, depth }) => {
         const stat = stats.get(folder.id);

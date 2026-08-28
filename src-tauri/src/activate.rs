@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use serde::Serialize;
@@ -45,7 +45,17 @@ fn family_locations(app: &AppHandle, family: &str) -> Vec<PathBuf> {
         return Vec::new();
     };
     let key = sanitize(family);
-    let mut dirs = vec![root.join(&key), root.join("Activated").join(&key), root.join("Library").join(&key)];
+    let slug = slug_family(family);
+    let mut dirs = vec![
+        root.join(&key),
+        root.join(&slug),
+        root.join("Activated").join(&key),
+        root.join("Activated").join(&slug),
+        root.join("Library").join(&key),
+        root.join("Library").join(&slug),
+    ];
+    dirs.sort();
+    dirs.dedup();
     dirs.retain(|p| p.is_dir());
     if dirs.is_empty() {
         dirs.push(root.join(key));
@@ -608,6 +618,107 @@ fn register_intact_family(app: &AppHandle, family: &str) -> usize {
     n
 }
 
+fn alias_keys(name: &str) -> Vec<String> {
+    let raw = name.trim();
+    let mut keys = vec![
+        raw.to_lowercase(),
+        slug_family(raw),
+        sanitize(raw).to_lowercase(),
+    ];
+    keys.sort();
+    keys.dedup();
+    keys.retain(|k| !k.is_empty());
+    keys
+}
+
+struct DiskIndex {
+    by_key: HashMap<String, Vec<PathBuf>>,
+    names: Vec<String>,
+    corrupt: u32,
+}
+
+fn build_disk_index(app: &AppHandle) -> DiskIndex {
+    let mut by_key: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let mut names = Vec::new();
+    let mut corrupt = 0u32;
+    let Ok(root) = documents_root(app) else {
+        return DiskIndex {
+            by_key,
+            names,
+            corrupt,
+        };
+    };
+    let roots = [root.clone(), root.join("Activated"), root.join("Library")];
+    for dir in roots {
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            if name.eq_ignore_ascii_case("Activated") || name.eq_ignore_ascii_case("Library") {
+                continue;
+            }
+            let mut files = Vec::new();
+            walk_font_files(&path, &mut files);
+            let mut intact = Vec::new();
+            for file in files {
+                if ttf_intact(&file) {
+                    intact.push(file);
+                } else {
+                    corrupt += 1;
+                    unregister_path(&file);
+                    let _ = fs::remove_file(&file);
+                }
+            }
+            if intact.is_empty() {
+                continue;
+            }
+            names.push(name.clone());
+            for key in alias_keys(&name) {
+                by_key.entry(key).or_default().extend(intact.iter().cloned());
+            }
+        }
+    }
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.dedup();
+    DiskIndex {
+        by_key,
+        names,
+        corrupt,
+    }
+}
+
+fn index_has(index: &DiskIndex, family: &str) -> bool {
+    alias_keys(family).iter().any(|k| index.by_key.contains_key(k))
+}
+
+fn register_from_index(app: &AppHandle, index: &DiskIndex, family: &str) -> usize {
+    let mut n = 0usize;
+    let mut seen = HashSet::new();
+    for key in alias_keys(family) {
+        if let Some(paths) = index.by_key.get(&key) {
+            for path in paths {
+                if seen.insert(path.clone()) {
+                    register_path(path);
+                    n += 1;
+                }
+            }
+        }
+    }
+    if n == 0 {
+        n = register_intact_family(app, family);
+    }
+    n
+}
+
 fn purge_family_files(app: &AppHandle, family: &str) {
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
@@ -792,7 +903,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         .user_agent("FontManager/1.0")
         .build()
     {
-        Ok(c) => c,
+        Ok(c) => Arc::new(c),
         Err(_) => {
             if let Ok(mut p) = state.progress.lock() {
                 p.running = false;
@@ -802,86 +913,141 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
             return;
         }
     };
-    let mut queue: VecDeque<String> = families.into();
-    while !queue.is_empty() {
-        if state.cancel.load(Ordering::SeqCst) {
-            break;
+
+    let index = build_disk_index(&app);
+    let mut ready = Vec::new();
+    let mut missing = Vec::new();
+    for family in families {
+        if index_has(&index, &family) {
+            ready.push(family);
+        } else {
+            missing.push(family);
         }
-        if state.pause.load(Ordering::SeqCst) {
-            if let Ok(mut p) = state.progress.lock() {
-                p.paused = true;
-                p.running = true;
-            }
-            emit_progress(&app);
-            thread::sleep(Duration::from_millis(250));
-            continue;
+    }
+
+    if !ready.is_empty() {
+        let mut n = 0usize;
+        for family in &ready {
+            n += register_from_index(&app, &index, family);
+        }
+        if n > 0 {
+            notify_fonts_changed();
+            session_add(&app, &ready);
         }
         if let Ok(mut p) = state.progress.lock() {
-            p.paused = false;
-        }
-        let Some(family) = queue.pop_front() else {
-            break;
-        };
-        let denied = bulk()
-            .denied
-            .lock()
-            .map(|d| d.contains(&family.trim().to_lowercase()))
-            .unwrap_or(false);
-        if denied {
-            if let Ok(mut p) = state.progress.lock() {
-                p.done += 1;
-            }
-            emit_progress(&app);
-            continue;
-        }
-        {
-            let mut p = state.progress.lock().unwrap();
-            p.current = family.clone();
-            p.running = true;
-        }
-        emit_progress(&app);
-        let already = register_intact_family(&app, &family) > 0;
-        let result = if already {
-            Ok(1usize)
-        } else {
-            download_family(&app, &client, &family)
-        };
-        match &result {
-            Err(reason) => {
-                forget_queued(&family);
-                remember_failed(&family, reason);
-            }
-            Ok(_) => {
-                session_add(&app, &[family.clone()]);
-                if let Ok(mut p) = bulk().progress.lock() {
-                    if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
-                        p.ready_names.push(family.clone());
-                    }
-                    if already {
-                        p.skipped += 1;
-                    }
+            p.skipped += ready.len() as u32;
+            p.done += ready.len() as u32;
+            for family in &ready {
+                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.ready_names.push(family.clone());
                 }
             }
         }
-        {
-            let mut p = state.progress.lock().unwrap();
-            p.done += 1;
-            if result.is_err() {
-                p.failed += 1;
-            }
-            if p.done % 20 == 0 {
-                drop(p);
-                notify_fonts_changed();
-            }
-        }
-        if let Ok(mut extra) = state.pending.lock() {
-            while let Some(item) = extra.pop_front() {
-                queue.push_back(item);
-            }
-        }
         emit_progress(&app);
-        thread::sleep(Duration::from_millis(12));
+        for family in &ready {
+            forget_queued(family);
+        }
     }
+
+    if missing.is_empty() {
+        notify_fonts_changed();
+        if let Ok(mut p) = state.progress.lock() {
+            p.running = false;
+            p.current.clear();
+        }
+        state.running.store(false, Ordering::SeqCst);
+        emit_progress(&app);
+        return;
+    }
+
+    let queue = Arc::new(Mutex::new(VecDeque::from(missing)));
+    let workers = 2usize;
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            let app = app.clone();
+            let client = client.clone();
+            let queue = queue.clone();
+            scope.spawn(move || {
+                loop {
+                    let state = bulk();
+                    if state.cancel.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if state.pause.load(Ordering::SeqCst) {
+                        if let Ok(mut p) = state.progress.lock() {
+                            p.paused = true;
+                            p.running = true;
+                        }
+                        emit_progress(&app);
+                        thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.paused = false;
+                    }
+                    if let Ok(mut extra) = state.pending.lock() {
+                        if let Ok(mut q) = queue.lock() {
+                            while let Some(item) = extra.pop_front() {
+                                q.push_back(item);
+                            }
+                        }
+                    }
+                    let Some(family) = (queue.lock().ok().and_then(|mut q| q.pop_front())) else {
+                        break;
+                    };
+                    let denied = state
+                        .denied
+                        .lock()
+                        .map(|d| d.contains(&family.trim().to_lowercase()))
+                        .unwrap_or(false);
+                    if denied {
+                        if let Ok(mut p) = state.progress.lock() {
+                            p.done += 1;
+                        }
+                        emit_progress(&app);
+                        continue;
+                    }
+                    {
+                        let mut p = state.progress.lock().unwrap();
+                        p.current = family.clone();
+                        p.running = true;
+                    }
+                    emit_progress(&app);
+                    let already = register_intact_family(&app, &family) > 0;
+                    let result = if already {
+                        Ok(1usize)
+                    } else {
+                        download_family(&app, &client, &family)
+                    };
+                    match &result {
+                        Err(reason) => {
+                            forget_queued(&family);
+                            remember_failed(&family, reason);
+                        }
+                        Ok(_) => {
+                            session_add(&app, &[family.clone()]);
+                            if let Ok(mut p) = bulk().progress.lock() {
+                                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                                    p.ready_names.push(family.clone());
+                                }
+                                if already {
+                                    p.skipped += 1;
+                                }
+                            }
+                        }
+                    }
+                    {
+                        let mut p = state.progress.lock().unwrap();
+                        p.done += 1;
+                        if result.is_err() {
+                            p.failed += 1;
+                        }
+                    }
+                    emit_progress(&app);
+                }
+            });
+        }
+    });
     notify_fonts_changed();
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
@@ -1006,22 +1172,11 @@ pub fn font_family_installed(app: AppHandle, family: String) -> Result<bool, Str
 
 #[tauri::command]
 pub fn list_activated_families(app: AppHandle) -> Result<Vec<String>, String> {
-    let mut names = Vec::new();
-    let Ok(root) = documents_root(&app) else {
-        return Ok(names);
-    };
-    let Ok(rd) = fs::read_dir(&root) else {
-        return Ok(names);
-    };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if path.is_dir() && dir_has_intact(&path) {
-            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                names.push(name.to_string());
-            }
-        }
-    }
+    let index = build_disk_index(&app);
+    let mut names = index.names;
+    names.extend(index.by_key.keys().cloned());
     names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.dedup();
     Ok(names)
 }
 
@@ -1043,9 +1198,14 @@ pub fn register_existing_on_disk(app: AppHandle, families: Vec<String>) -> Resul
 
 #[tauri::command]
 pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Result<Vec<String>, String> {
+    if families.is_empty() {
+        return Ok(Vec::new());
+    }
+    let index = build_disk_index(&app);
     let mut ready = Vec::new();
     for family in families {
-        if register_intact_family(&app, &family) > 0 {
+        if index_has(&index, &family) {
+            let _ = register_from_index(&app, &index, &family);
             ready.push(family);
         }
     }
@@ -1054,6 +1214,39 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
         session_add(&app, &ready);
     }
     Ok(ready)
+}
+
+#[derive(Clone, Serialize)]
+pub struct ActivationPlan {
+    pub ready: Vec<String>,
+    pub missing: Vec<String>,
+    pub corrupt: u32,
+    pub scanned: u32,
+}
+
+/// Fast folder walk. Does not download. Intact files stay put.
+#[tauri::command]
+pub fn plan_google_activation(app: AppHandle, families: Vec<String>) -> Result<ActivationPlan, String> {
+    let index = build_disk_index(&app);
+    let mut ready = Vec::new();
+    let mut missing = Vec::new();
+    for family in families {
+        let t = family.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if index_has(&index, t) {
+            ready.push(family);
+        } else {
+            missing.push(family);
+        }
+    }
+    Ok(ActivationPlan {
+        scanned: (ready.len() + missing.len()) as u32,
+        ready,
+        missing,
+        corrupt: index.corrupt,
+    })
 }
 
 #[tauri::command]

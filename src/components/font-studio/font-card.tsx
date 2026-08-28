@@ -1,10 +1,12 @@
-import { memo, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
-import { Heart, Italic, Power } from "lucide-react";
+import { memo, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react";
+import { GripVertical, Heart, Italic, Power } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Slider } from "@/components/ui/slider";
 import { LicenseBadge } from "./license-badge";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
-import { axesForFont, defaultAxisValues, defaultWeightForFont, hasRealItalic, italicPreviewStyle, variationCss } from "@/lib/fonts/axes";
+import { axesForFont, defaultAxisValues, defaultWeightForFont, hasRealItalic, italicPreviewStyle, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
+import { colorKindLabel } from "@/lib/fonts/color-font";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
 import { fontLicense } from "@/lib/fonts/license";
 import { useFontStore } from "@/lib/fonts/store";
@@ -29,6 +31,47 @@ function isolate(e: MouseEvent | PointerEvent) {
   e.stopPropagation();
 }
 
+function FitSpecimen({
+  ready,
+  className,
+  style,
+  dir,
+  lang,
+  children,
+}: {
+  ready: boolean;
+  className?: string;
+  style: CSSProperties;
+  dir?: string;
+  lang?: string;
+  children: string;
+}) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const maxSize = typeof style.fontSize === "number" ? style.fontSize : Number.parseFloat(String(style.fontSize ?? 36));
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !ready) return;
+    const fit = () => {
+      let size = Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 36;
+      el.style.fontSize = `${size}px`;
+      let guard = 0;
+      while (el.scrollHeight > el.clientHeight + 1 && size > 13 && guard < 14) {
+        size *= 0.86;
+        el.style.fontSize = `${size}px`;
+        guard += 1;
+      }
+    };
+    fit();
+  }, [ready, children, maxSize, style.fontFamily, style.fontWeight, style.fontVariationSettings, style.fontStyle]);
+
+  return (
+    <p ref={ref} className={className} dir={dir} lang={lang} style={style}>
+      {children}
+    </p>
+  );
+}
+
 export const FontCard = memo(function FontCard({
   font,
   preview,
@@ -42,9 +85,11 @@ export const FontCard = memo(function FontCard({
   const [ready, setReady] = useState(false);
   const [italicOn, setItalicOn] = useState(Boolean(preview.italic) && font.italic);
   const [cardWeight, setCardWeight] = useState(() => defaultWeightForFont(font));
+  const vfPrimed = useRef(false);
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
   const pending = useFontStore((s) => s.pendingSet.has(font.id));
   const favorite = useFontStore((s) => s.favorites.includes(font.id));
+  const hasCollections = useFontStore((s) => s.collections.length > 0);
   const toggleActivated = useFontStore((s) => s.toggleActivated);
   const toggleFavorite = useFontStore((s) => s.toggleFavorite);
   const selectFont = useFontStore((s) => s.selectFont);
@@ -53,16 +98,21 @@ export const FontCard = memo(function FontCard({
     const el = ref.current;
     if (!el) return;
     const root = el.closest("[data-library-scroll]") as HTMLElement | null;
+    let timeout = 0;
     const io = new IntersectionObserver(
       ([entry]) => {
         if (!entry?.isIntersecting) return;
-        void loadFont(font).then(() => setReady(true));
+        void loadFont(font).finally(() => setReady(true));
+        timeout = window.setTimeout(() => setReady(true), 240);
         io.disconnect();
       },
-      { root, rootMargin: "80px" },
+      { root, rootMargin: "320px" },
     );
     io.observe(el);
-    return () => io.disconnect();
+    return () => {
+      io.disconnect();
+      window.clearTimeout(timeout);
+    };
   }, [font.id]);
 
   useEffect(() => {
@@ -90,36 +140,50 @@ export const FontCard = memo(function FontCard({
   const axisValues = font.variable
     ? { ...defaultAxisValues(axes), wght: cardWeight, ...(italicOn && axes.some((a) => a.tag === "ital") ? { ital: 1 } : {}) }
     : null;
+  const vs = axisValues ? variationStyle(axisValues, axes) : null;
   const specimenDir = scriptDir(font.family);
   const specimenLang = scriptLang(font.family);
-  const specimenStyle = {
+  const specimenStyle: CSSProperties = {
     fontFamily: stack,
     fontSize: layout === "list" ? Math.min(preview.fontSize, 48) : preview.fontSize,
     lineHeight: preview.lineHeight,
     letterSpacing: `${preview.letterSpacing}em`,
-    fontStyle: italicCss.fontStyle,
-    fontWeight: font.variable ? cardWeight : undefined,
-    fontVariationSettings: axisValues ? variationCss(axisValues, axes) : italicCss.fontVariationSettings,
+    fontStyle: italicCss.fontStyle ?? vs?.fontStyle,
+    fontWeight: vs?.fontWeight ?? (font.variable ? cardWeight : undefined),
+    fontVariationSettings: vs?.fontVariationSettings ?? italicCss.fontVariationSettings,
+    fontStretch: vs?.fontStretch,
     fontSynthesis: italicCss.fontSynthesis,
   };
 
   const weightSlider = wghtAxis ? (
-    <input
-      type="range"
-      min={wghtAxis.min}
-      max={wghtAxis.max}
-      step={1}
-      value={cardWeight}
-      aria-label={`${font.family} weight`}
+    <div
+      data-no-drag
+      className="fm-slider-row relative z-30 w-full"
       onPointerDown={isolate}
+      onMouseDown={isolate}
       onClick={isolate}
-      onChange={(e) => {
-        const n = Number(e.target.value);
-        setCardWeight(n);
-        if (font.variable) void loadFont(font, "full");
+      onDragStart={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
       }}
-      className="relative z-20 h-1 w-full cursor-pointer accent-current"
-    />
+    >
+      <Slider
+        min={wghtAxis.min}
+        max={wghtAxis.max}
+        step={1}
+        value={[cardWeight]}
+        aria-label={`${font.family} weight`}
+        className="fm-weight-slider-quiet"
+        onValueChange={([n]) => {
+          if (!Number.isFinite(n)) return;
+          setCardWeight(n);
+          if (font.variable && !vfPrimed.current) {
+            vfPrimed.current = true;
+            void loadFont(font, "full");
+          }
+        }}
+      />
+    </div>
   ) : null;
 
   const italicBtn = hasRealItalic(font) ? (
@@ -142,17 +206,31 @@ export const FontCard = memo(function FontCard({
     </button>
   ) : null;
 
+  const colorNote = font.colorKind && font.colorKind !== "none" ? colorKindLabel(font.colorKind) : "";
+
+  const specimen = (
+    <FitSpecimen
+      ready={ready}
+      className={cn(
+        "fm-spec fm-spec-fit w-full transition-opacity duration-200",
+        italicOn ? "fm-spec-italic" : "fm-spec-roman",
+        font.variable ? "fm-spec-variable" : "fm-spec-static",
+        align,
+        ready ? "opacity-100" : "opacity-0",
+      )}
+      dir={specimenDir}
+      lang={specimenLang}
+      style={specimenStyle}
+    >
+      {previewSample(font, preview.sampleText)}
+    </FitSpecimen>
+  );
+
   return (
     <article
       ref={ref}
       role="button"
       tabIndex={0}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("application/x-font-id", font.id);
-        e.dataTransfer.setData("text/plain", font.id);
-        e.dataTransfer.effectAllowed = "copy";
-      }}
       onClick={() => selectFont(font.id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -162,10 +240,30 @@ export const FontCard = memo(function FontCard({
       }}
       className={cn(
         "group relative w-full cursor-pointer overflow-hidden rounded-xl text-left shadow-border transition-[box-shadow,transform] duration-200 ease-out hover:shadow-border-hover",
-        layout === "list" ? "flex h-[8.5rem] flex-col" : "flex h-[12rem] flex-col",
+        layout === "list" ? "flex h-[9.5rem] flex-col" : "flex h-[14.5rem] flex-col",
         THEME[preview.theme],
       )}
     >
+      {hasCollections ? (
+        <button
+          type="button"
+          draggable
+          title="Drag to a collection"
+          aria-label="Drag to a collection"
+          className="absolute left-1 top-1/2 z-30 flex size-7 -translate-y-1/2 cursor-grab items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm group-hover:opacity-100 active:cursor-grabbing"
+          onPointerDown={isolate}
+          onClick={(e) => e.stopPropagation()}
+          onDragStart={(e) => {
+            e.stopPropagation();
+            e.dataTransfer.setData("application/x-font-id", font.id);
+            e.dataTransfer.setData("text/plain", font.id);
+            e.dataTransfer.effectAllowed = "copy";
+          }}
+        >
+          <GripVertical className="size-3.5" />
+        </button>
+      ) : null}
+
       {layout === "list" ? (
         <>
           <div className={cn("flex w-full min-w-0 items-center gap-2 border-b px-4 py-1.5 pr-20", metaTone)}>
@@ -177,49 +275,25 @@ export const FontCard = memo(function FontCard({
               {font.variable ? "Variable" : `${font.weights.length} wts`}
               {font.italic ? " · Italic" : ""}
             </span>
+            {wghtAxis ? (
+              <span className="hidden font-mono text-[10px] tabular-nums opacity-60 sm:inline">{Math.round(cardWeight)}</span>
+            ) : null}
             {italicBtn}
             <LicenseBadge license={fontLicense(font)} licenseName={font.licenseName} className="ml-auto opacity-100" />
             {font.source === "local" && <Badge variant="outline">Local</Badge>}
           </div>
-          {weightSlider ? <div className="px-4 pb-1">{weightSlider}</div> : null}
-          <div className="min-h-0 min-w-0 flex-1 overflow-hidden px-4 py-3">
-            <p
-              className={cn(
-                "fm-spec w-full break-words transition-opacity duration-200",
-                italicOn ? "fm-spec-italic" : "fm-spec-roman",
-                font.variable ? "fm-spec-variable" : "fm-spec-static",
-                align,
-                ready ? "opacity-100" : "opacity-40",
-              )}
-              dir={specimenDir}
-              lang={specimenLang}
-              style={specimenStyle}
-            >
-              {previewSample(font, preview.sampleText)}
-            </p>
-          </div>
+          {weightSlider ? <div className="px-4">{weightSlider}</div> : null}
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden px-4 py-2">{specimen}</div>
         </>
       ) : (
         <>
-          <div className="min-h-0 min-w-0 flex-1 overflow-hidden px-4 py-3">
-            <p
-              className={cn(
-                "fm-spec w-full break-words line-clamp-3 transition-opacity duration-200",
-                italicOn ? "fm-spec-italic" : "fm-spec-roman",
-                font.variable ? "fm-spec-variable" : "fm-spec-static",
-                align,
-                ready ? "opacity-100" : "opacity-40",
-              )}
-              dir={specimenDir}
-              lang={specimenLang}
-              style={specimenStyle}
-            >
-              {previewSample(font, preview.sampleText)}
-            </p>
-          </div>
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden px-4 py-3">{specimen}</div>
           <div className={cn("flex flex-col gap-0.5 border-t px-3 py-1.5", metaTone)}>
             <div className="flex w-full min-w-0 items-center gap-2">
               <span className="truncate text-sm font-medium">{font.family}</span>
+              {wghtAxis ? (
+                <span className="font-mono text-[10px] tabular-nums opacity-55">{Math.round(cardWeight)}</span>
+              ) : null}
               <span className="ml-auto hidden text-xs uppercase tracking-wide opacity-70 sm:inline">
                 {CATEGORY_LABEL[font.category]}
               </span>
@@ -229,6 +303,11 @@ export const FontCard = memo(function FontCard({
                 {font.variable ? "Variable" : `${font.weights.length} wts`}
                 {font.italic ? " · Italic" : ""}
               </span>
+              {colorNote ? (
+                <span className="truncate text-[10px] uppercase tracking-wide opacity-80" title={colorNote}>
+                  Color
+                </span>
+              ) : null}
               {italicBtn}
               <LicenseBadge
                 license={fontLicense(font)}

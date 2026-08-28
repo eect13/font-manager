@@ -35,15 +35,29 @@ export function Slider({
       value={current}
       disabled={disabled}
       aria-label={ariaLabel}
-      onPointerDown={(e) => e.stopPropagation()}
+      draggable={false}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+      }}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
+      onDragStart={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
       onChange={(e) => {
         const n = Number(e.target.value);
         if (Number.isFinite(n)) onValueChange?.([n]);
       }}
       className={cn(
-        "h-6 w-full cursor-pointer appearance-none bg-transparent accent-primary disabled:opacity-40",
+        "fm-weight-slider h-8 w-full cursor-pointer appearance-none bg-transparent accent-primary disabled:opacity-40",
         className,
       )}
     />

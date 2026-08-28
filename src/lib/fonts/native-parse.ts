@@ -28,9 +28,21 @@ export async function nativeFamilyLayout(family: string): Promise<NativeLayout |
 }
 
 export async function nativeLayoutFromBytes(buffer: ArrayBuffer): Promise<NativeLayout | null> {
-  // JSON-encoding megabyte fonts over IPC freezes the window. Prefer path parse.
+  const faces = await nativeLayoutsFromBytes(buffer);
+  if (faces?.length) {
+    return faces.reduce((best, face) =>
+      face.glyphCount > best.glyphCount || (face.glyphCount === best.glyphCount && face.axes.length > best.axes.length)
+        ? face
+        : best,
+    );
+  }
   if (buffer.byteLength > 180_000) return null;
   return invoke<NativeLayout>("parse_font_layout", { bytes: Array.from(new Uint8Array(buffer)) });
+}
+
+export async function nativeLayoutsFromBytes(buffer: ArrayBuffer): Promise<NativeLayout[] | null> {
+  if (buffer.byteLength > 180_000) return null;
+  return invoke<NativeLayout[]>("parse_font_layouts", { bytes: Array.from(new Uint8Array(buffer)) });
 }
 
 export async function nativeCmapFromBytes(buffer: ArrayBuffer): Promise<NativeGlyph[] | null> {

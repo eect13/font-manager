@@ -138,9 +138,29 @@ async function rememberFileAxes(font: FontRecord, buffer: ArrayBuffer): Promise<
   }
 }
 
+let diskFamilyCache: Set<string> | null = null;
+
+/** Desktop: skip IPC for Google families that are not on disk. */
+export function noteDiskFamilies(names: string[]) {
+  diskFamilyCache = new Set();
+  for (const n of names) {
+    const t = n.trim();
+    if (!t) continue;
+    diskFamilyCache.add(t.toLowerCase());
+    diskFamilyCache.add(slugFamily(t));
+  }
+}
+
+function likelyOnDisk(font: FontRecord) {
+  if (font.source === "local") return true;
+  if (!diskFamilyCache) return false;
+  const fam = font.family.trim().toLowerCase();
+  return diskFamilyCache.has(fam) || diskFamilyCache.has(slugFamily(font.family));
+}
+
 async function loadGoogleFromLocal(font: FontRecord, mode: FontLoadMode = "preview"): Promise<boolean> {
   if (typeof document === "undefined") return false;
-  if (await inTauri()) {
+  if ((await inTauri()) && likelyOnDisk(font)) {
     try {
       const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
       const path = await invoke<string>("read_family_font", { family: font.family });
@@ -253,11 +273,11 @@ const previewFailNotified = new Set<string>();
 const loadedGoogle = new Map<string, FontLoadMode>();
 const loadedLocal = new Set<string>();
 const inflight = new Map<string, Promise<void>>();
-const googleLinks = new Map<string, HTMLLinkElement>();
+const googleLinks = new Map<string, HTMLElement>();
 const localFaces = new Map<string, { face: FontFace; url: string }>();
 const specialFaces = new Map<string, FontFace>();
 
-const MAX_CSS = 8;
+const MAX_CSS = 16;
 let cssActive = 0;
 const cssWait: Array<() => void> = [];
 
@@ -363,20 +383,42 @@ function injectGoogleCss(href: string, key: string): Promise<void> {
   const existing = googleLinks.get(key);
   if (existing) return Promise.resolve();
 
-  return withCssSlot(
-    () =>
-      new Promise((resolve) => {
-        const link = document.createElement("link");
-        link.rel = "stylesheet";
-        link.href = href;
-        link.dataset.fontKey = key;
-        link.onload = () => resolve();
-        link.onerror = () => resolve();
-        document.head.appendChild(link);
-        googleLinks.set(key, link);
-        window.setTimeout(() => resolve(), 2200);
-      }),
-  );
+  return withCssSlot(async () => {
+    const cacheId = `css:${key}`;
+    try {
+      const { idbGet, idbPut } = await import("./idb");
+      const cached = await idbGet(cacheId);
+      let text = cached ? await cached.text() : "";
+      if (!text) {
+        const res = await fetch(href);
+        if (res.ok) text = await res.text();
+        if (text.length > 80 && text.length < 400_000) {
+          void idbPut(cacheId, new Blob([text], { type: "text/css" }));
+        }
+      }
+      if (text) {
+        const style = document.createElement("style");
+        style.dataset.fontKey = key;
+        style.textContent = text;
+        document.head.appendChild(style);
+        googleLinks.set(key, style);
+        return;
+      }
+    } catch {
+      /* network / idb — fall through to <link> */
+    }
+    await new Promise<void>((resolve) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = href;
+      link.dataset.fontKey = key;
+      link.onload = () => resolve();
+      link.onerror = () => resolve();
+      document.head.appendChild(link);
+      googleLinks.set(key, link);
+      window.setTimeout(() => resolve(), 1400);
+    });
+  });
 }
 
 function familyLoaded(family: string, probe: string) {
@@ -498,10 +540,7 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
 
   const promise = (async () => {
     const desktop = await inTauri();
-    const subset =
-      !special && mode === "preview" && !desktop
-        ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 "
-        : undefined;
+    const subset = undefined;
     const hrefs =
       mode === "preview"
         ? previewFamilyParams(font).map((param) => googleCssHref(param, display, subset))
@@ -512,7 +551,12 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
     if (await loadGoogleFromLocal(font, mode)) {
       if (desktop) return;
       void ensureCatalogCss(font);
-      if (loadedGoogle.get(font.id) === "full" || !font.variable) return;
+      if (loadedGoogle.get(font.id) === "full" || (mode === "preview" && !font.variable)) return;
+    }
+    if (mode === "preview" && !special) {
+      await Promise.all(hrefs.map((href) => injectGoogleCss(href, `${cssKey(font.id, mode)}:${href}`)));
+      loadedGoogle.set(font.id, "preview");
+      return;
     }
     if (font.variable && !special) {
       dropCssForFont(font.id);
@@ -744,9 +788,23 @@ export function googleCssUrls(fonts: FontRecord[]): string[] {
   const google = fonts.filter((f) => f.source === "google");
   if (!google.length) return [];
   const chunks: FontRecord[][] = [];
-  for (let i = 0; i < google.length; i += 24) chunks.push(google.slice(i, i + 24));
+  for (let i = 0; i < google.length; i += 18) chunks.push(google.slice(i, i + 18));
   return chunks.map((chunk) => {
-    const params = chunk.map((font) => googleFamilyParam(font, "full")).join("&");
+    const params = chunk.map((font) => previewFamilyParams(font)[0] ?? googleFamilyParam(font, "preview")).join("&");
     return `https://fonts.googleapis.com/css2?${params}&display=swap&v=${cssStamp()}`;
+  });
+}
+
+/** One or two CSS requests for the visible library page — same path on Grok and desktop. */
+export function primeGooglePreview(fonts: FontRecord[]): Promise<void> {
+  const google = fonts.filter((f) => f.source === "google" && !isSpecialPreviewFont(f));
+  if (!google.length || typeof document === "undefined") return Promise.resolve();
+  const urls = googleCssUrls(google);
+  return Promise.all(
+    urls.map((href, i) => injectGoogleCss(href, `prime:${i}:${href.slice(-48)}`)),
+  ).then(() => {
+    for (const font of google) {
+      if (!loadedGoogle.has(font.id)) loadedGoogle.set(font.id, "preview");
+    }
   });
 }

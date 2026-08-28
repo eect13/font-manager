@@ -16,7 +16,9 @@ export function DownloadBar() {
   const job = useSyncExternalStore(subscribeDownloadJob, getDownloadJob, getDownloadJob);
   if (!job.running && !job.paused && job.mode === "idle" && !job.failedNames.length) return null;
 
+  const skipped = job.skipped ?? 0;
   const n = job.done + job.failed;
+  const remaining = Math.max(0, job.total - n);
   const label =
     job.mode === "remove"
       ? `Deactivating ${n.toLocaleString()} / ${job.total.toLocaleString()}`
@@ -24,7 +26,11 @@ export function DownloadBar() {
         ? `${job.failed.toLocaleString()} failed — retry or skip`
         : job.paused
           ? `Paused ${n.toLocaleString()} / ${job.total.toLocaleString()}`
-          : `Downloading one family at a time ${n.toLocaleString()} / ${job.total.toLocaleString()}`;
+          : skipped && remaining === 0 && job.running
+            ? `Scan done — ${skipped.toLocaleString()} already on disk`
+            : skipped && job.running
+              ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, n - skipped).toLocaleString()} / ${Math.max(0, job.total - skipped).toLocaleString()}`
+              : `Downloading ${n.toLocaleString()} / ${job.total.toLocaleString()}`;
 
   return (
     <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
@@ -41,7 +47,7 @@ export function DownloadBar() {
         <span className="text-muted-foreground">
           {job.paused
             ? " · queue held, files already on disk are skipped"
-            : " · UI stays usable — one family at a time, skip intact files"}
+            : " · scan first, skip intact, download only missing or corrupt"}
         </span>
       </p>
       <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => void openActivatedFolder()}>

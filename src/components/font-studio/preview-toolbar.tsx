@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { HelpTip } from "./help-tip";
+import { SearchChips } from "./search-chips";
 import { ALIGN_LABEL, SAMPLE_PRESETS, SORT_LABEL, type LibrarySort, type PreviewAlign, type PreviewTheme } from "@/lib/fonts/types";
 import { useFontStore } from "@/lib/fonts/store";
 import { cn } from "@/lib/utils";
@@ -181,6 +182,9 @@ export function PreviewToolbar() {
             </Button>
           </HelpTip>
         </div>
+      </div>
+      <div className="flex gap-1 overflow-x-auto">
+        <SearchChips />
       </div>
       <div className="flex gap-1 overflow-x-auto">
         {SAMPLE_PRESETS.map((preset) => (

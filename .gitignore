@@ -15,6 +15,7 @@ test-results/
 *.exe
 !desktop-setup.bat
 !deploy.bat
+!fix-install.bat
 .idea/
 .vscode/*
 !.vscode/extensions.json

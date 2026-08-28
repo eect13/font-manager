@@ -133,7 +133,11 @@ fn sfnt_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn with_face<T>(data: &[u8], f: impl FnOnce(&Face<'_>) -> T) -> Result<T, String> {
-    let owned = sfnt_bytes(data)?;
+    let owned = match sfnt_bytes(data) {
+        Ok(v) => v,
+        Err(e) if e == "woff2" => return Err("woff2".into()),
+        Err(e) => return Err(e),
+    };
     let count = ttf_parser::fonts_in_collection(&owned).unwrap_or(1);
     let mut last_err = String::from("no faces");
     for i in 0..count {
@@ -143,6 +147,23 @@ fn with_face<T>(data: &[u8], f: impl FnOnce(&Face<'_>) -> T) -> Result<T, String
         }
     }
     Err(last_err)
+}
+
+fn all_faces<T>(data: &[u8], mut f: impl FnMut(u32, &Face<'_>) -> T) -> Result<Vec<T>, String> {
+    let owned = sfnt_bytes(data)?;
+    let count = ttf_parser::fonts_in_collection(&owned).unwrap_or(1);
+    let mut out = Vec::new();
+    for i in 0..count {
+        match Face::parse(&owned, i) {
+            Ok(face) => out.push(f(i, &face)),
+            Err(_) => continue,
+        }
+    }
+    if out.is_empty() {
+        Err("no faces".into())
+    } else {
+        Ok(out)
+    }
 }
 
 fn cmap_from_face(face: &Face<'_>) -> Vec<CmapGlyph> {
@@ -292,12 +313,33 @@ pub fn parse_family_cmap(app: AppHandle, family: String) -> Result<Vec<CmapGlyph
 pub fn parse_family_layout(app: AppHandle, family: String) -> Result<FontLayout, String> {
     let path = activate::read_family_font(app, family, None)?;
     let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-    with_face(&data, layout_from_face)
+    merge_layouts(all_faces(&data, |_, face| layout_from_face(face))?)
+}
+
+fn merge_layouts(faces: Vec<FontLayout>) -> Result<FontLayout, String> {
+    let mut iter = faces.into_iter();
+    let Some(mut best) = iter.next() else {
+        return Err("no faces".into());
+    };
+    for face in iter {
+        if face.glyph_count > best.glyph_count
+            || (face.glyph_count == best.glyph_count && face.axes.len() > best.axes.len())
+        {
+            best = face;
+        }
+    }
+    Ok(best)
 }
 
 #[tauri::command]
 pub fn parse_font_layout(bytes: Vec<u8>) -> Result<FontLayout, String> {
     with_face(&bytes, layout_from_face)
+}
+
+/// Every face in a TTC / OTC. WOFF2 is rejected here — JS FontFace handles preview.
+#[tauri::command]
+pub fn parse_font_layouts(bytes: Vec<u8>) -> Result<Vec<FontLayout>, String> {
+    all_faces(&bytes, |_, face| layout_from_face(face))
 }
 
 #[tauri::command]

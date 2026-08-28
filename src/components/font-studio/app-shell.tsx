@@ -130,14 +130,14 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
             </Link>
           </div>
 
-          <HelpTip label="Search family, tag, or license:personal — press /">
+          <HelpTip label="Search family or tag — or tap a chip. Press /">
             <div className="relative min-w-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 ref={searchRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name, tag, license:personal…"
+                placeholder="Search name or tag…"
                 className="h-8 bg-card pl-8"
                 aria-label="Search typefaces"
               />

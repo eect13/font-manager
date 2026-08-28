@@ -138,26 +138,6 @@ function withoutBuiltinFolders(list: Collection[] | undefined): Collection[] {
     }));
 }
 
-async function mapPool<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  if (!items.length) return [];
-  const out: R[] = new Array(items.length);
-  let cursor = 0;
-  async function worker() {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      out[index] = await fn(items[index] as T);
-    }
-  }
-  const n = Math.min(limit, items.length);
-  await Promise.all(Array.from({ length: n }, () => worker()));
-  return out;
-}
-
 const DEFAULT_ACTIVATED: string[] = [];
 
 const LEGACY_SEED_ACTIVATED = new Set(["g:Inter", "g:Playfair Display", "g:JetBrains Mono"]);
@@ -496,27 +476,18 @@ export const useFontStore = create<FontState>()(
         const folderOf = new Map<string, string[]>();
 
         try {
-          const parsedList = await mapPool(files, 4, async (file) => {
-            try {
-              const { parseFontCollection } = await import("./parse-font");
-              const faces = await parseFontCollection(file);
-              await new Promise((r) => setTimeout(r, 0));
-              return {
-                ok: true as const,
-                file,
-                faces: faces.map((parsed) => {
-                  const refined = refineLicense(parsed, {
-                    fileName: file.name,
-                    relativePath: file.webkitRelativePath,
-                    collectionName: opts?.collectionName,
-                  });
-                  return { ...parsed, ...refined };
-                }),
-              };
-            } catch {
-              return { ok: false as const, file };
-            }
-          });
+          const parsedList = await (await import("./parse-pool")).parseFilesPool(files);
+          for (const item of parsedList) {
+            if (!item.ok) continue;
+            item.faces = item.faces.map((parsed) => {
+              const refined = refineLicense(parsed, {
+                fileName: item.file.name,
+                relativePath: item.file.webkitRelativePath,
+                collectionName: opts?.collectionName,
+              });
+              return { ...parsed, ...refined };
+            });
+          }
 
           const savedDisk = new Set<string>();
           for (let i = 0; i < parsedList.length; i += 1) {
@@ -1001,16 +972,13 @@ export function filterLibrary(
     list = list.filter((f) => ids.has(f.id));
   } else if (scope.startsWith("category:")) {
     const cat = scope.slice(9);
-    const on = new Set(activated);
-    list = list.filter((f) => on.has(f.id) && f.category === cat);
+    list = list.filter((f) => f.category === cat);
   } else if (scope.startsWith("tag:")) {
     const tag = scope.slice(4);
-    const on = new Set(activated);
-    list = list.filter((f) => on.has(f.id) && tagsFor(f, customTags).includes(tag));
+    list = list.filter((f) => tagsFor(f, customTags).includes(tag));
   } else if (scope.startsWith("license:")) {
     const license = scope.slice(8) as FontLicense;
-    const on = new Set(activated);
-    list = list.filter((f) => on.has(f.id) && fontLicense(f) === license);
+    list = list.filter((f) => fontLicense(f) === license);
   }
   if (query.trim()) list = list.filter((f) => matchesQuery(f, query, customTags));
   return list;
