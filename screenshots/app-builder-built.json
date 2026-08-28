@@ -7,9 +7,9 @@
       "status": 200,
       "title": "Font Manager",
       "hasCanvas": false,
-      "bodyTextLen": 1936,
-      "bodyTextHash": "8bf6c100e1d13b918a6c7202b50be3602a94611e84c67d2e6e9b329f9363876e",
-      "bodyTextPrefix": "Font Manager 1.0.78 Library Playground Duplicates Glyphs CSS Fil",
+      "bodyTextLen": 1948,
+      "bodyTextHash": "3cdad8d7cfadc524fc903d89f298ef7987f2cf5399b6041e9a7dd9ccac218d1d",
+      "bodyTextPrefix": "Font Manager 1.0.82 Library Playground Duplicates Glyphs CSS Fil",
       "horizontalOverflow": false,
       "consoleErrors": [],
       "pageErrors": [],
@@ -21,9 +21,9 @@
       "status": 200,
       "title": "Font Manager",
       "hasCanvas": false,
-      "bodyTextLen": 1363,
-      "bodyTextHash": "a427fdf2340072415ba8ed6fe05112b786de57fe9a1b7ca14c8f898277262f15",
-      "bodyTextPrefix": "Font Manager 1.0.78 36 1.3 Paper Ink News Print Variable Italic ",
+      "bodyTextLen": 1249,
+      "bodyTextHash": "9156dbffdcd069f293bfd55c513e5684dc7e2fbe6a64633bf4f84183e81fa115",
+      "bodyTextPrefix": "Font Manager 1.0.82 36 1.3 Paper Ink News Print Variable Italic ",
       "horizontalOverflow": false,
       "consoleErrors": [],
       "pageErrors": [],
@@ -33,6 +33,8 @@
   "brandWarnings": [],
   "authWarnings": [],
   "verdictFile": "/workspace/screenshots/app-builder-built.json",
-  "divergesFromBaseline": false,
-  "baselineReasons": []
+  "divergesFromBaseline": true,
+  "baselineReasons": [
+    "mobile: body text changed (639 -> 1249 chars, hash mismatch)"
+  ]
 }

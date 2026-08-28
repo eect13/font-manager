@@ -31,7 +31,6 @@ if (existsSync(desktopPath)) {
   const html = readFileSync(desktopPath, "utf8");
   if (looksLikeDesktopShell(html)) {
     copyFileSync(desktopPath, indexPath);
-    console.log("[tauri-index] index.html ← desktop.html (hashed bundle)");
     process.exit(0);
   }
 }
@@ -56,16 +55,31 @@ if (!js) {
 }
 
 const html = `<!doctype html>
-<html lang="en">
+<html lang="en" class="antialiased" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Font Manager</title>
     <meta name="theme-color" content="#0c0c0d" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     ${css ? `<link rel="stylesheet" href="./assets/${css}" />` : ""}
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("font-manager:theme");
+          if (t !== "light" && t !== "dark") t = "dark";
+          var r = document.documentElement;
+          r.setAttribute("data-theme", t);
+          r.style.colorScheme = t;
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
-  <body>
+  <body class="bg-background text-foreground">
     <div id="fm-root">Loading Font Manager…</div>
     <script type="module" src="./assets/${js}"></script>
   </body>
@@ -73,4 +87,3 @@ const html = `<!doctype html>
 `;
 
 writeFileSync(indexPath, html);
-console.log("[tauri-index] wrote hashed SPA shell", indexPath);

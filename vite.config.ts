@@ -15,6 +15,13 @@ import { isMigrationFile } from "./scripts/migration-plan.mjs";
 
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 
+function quietRolldownChecks() {
+  return {
+    pluginTimings: false as const,
+    ineffectiveDynamicImport: false as const,
+  };
+}
+
 /** `tauri build` sets these. Skip Nitro SSR — the installer only needs static files + index.html. */
 const isTauriBuild = Boolean(
   process.env.TAURI_ENV_PLATFORM || process.env.TAURI_ENV_FAMILY || process.env.TAURI_PLATFORM,
@@ -207,7 +214,6 @@ function tauriIndexPlugin(): Plugin {
       const html = readFileSync(desktop, "utf8");
       if (!html.includes("fm-root") || html.includes("/src/main.tsx")) return;
       copyFileSync(desktop, index);
-      console.log("[tauri-index] Vite closeBundle: index.html ← desktop.html");
     },
   };
 }
@@ -232,9 +238,11 @@ export default defineConfig(({ command, isPreview }) => {
         chunkSizeWarningLimit: 900,
         rolldownOptions: {
           input: join(projectRoot, "desktop.html"),
-          checks: {
-            pluginTimings: false,
-            ineffectiveDynamicImport: false,
+          checks: quietRolldownChecks(),
+          onLog(level, log, defaultHandler) {
+            const code = String((log as { code?: string }).code ?? "");
+            if (code === "INEFFECTIVE_DYNAMIC_IMPORT" || code === "PLUGIN_TIMINGS") return;
+            defaultHandler(level, log);
           },
         },
       },
@@ -292,9 +300,11 @@ export default defineConfig(({ command, isPreview }) => {
   build: {
     chunkSizeWarningLimit: 900,
     rolldownOptions: {
-      checks: {
-        pluginTimings: false,
-        ineffectiveDynamicImport: false,
+      checks: quietRolldownChecks(),
+      onLog(level, log, defaultHandler) {
+        const code = String((log as { code?: string }).code ?? "");
+        if (code === "INEFFECTIVE_DYNAMIC_IMPORT" || code === "PLUGIN_TIMINGS") return;
+        defaultHandler(level, log);
       },
     },
   },

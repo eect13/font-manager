@@ -1,15 +1,14 @@
-# Font Manager **1.0.78**
+# Font Manager **1.0.82**
 
-**TL;DR.** FontBase-style desktop typeface library. Browse ~1,942 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
+**TL;DR.** FontBase-style desktop typeface library. Browse ~1,968 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.78** sits next to the logo, not in the window title.
+Version **1.0.82** sits next to the logo, not in the window title.
 
-**1.0.78** — scan Documents first, then download only missing or corrupt Google files (two workers, no re-fetch of intact families). Variable sliders live in a quiet footer row and no longer overlay the pangram. Cards are taller; only the grip handle is draggable. The library virtual-scrolls all ~1,968 families. Display faces shrink-to-fit. License / style / tags work without Activate. Search chips replace typing `license:personal`.
+**1.0.82** — Library preview is the same CSS/FontFace path on this website and in the desktop WebView. Documents TTFs stay for Activate (other apps), not a second preview. Disk files are only used if the network preview fails (offline).
 
-**1.0.77** batched Google CSS for visible cards. **1.0.76** made library weight sliders drag without moving the card. **X closes the app**; activated families come back on the next launch. Tray is only while the window is open.
+**1.0.81** — launch no longer downloads Google Fonts. One fast disk scan registers intact files from the last session; missing or corrupt families wait until you click Activate. Compile log no longer prints `INEFFECTIVE_DYNAMIC_IMPORT` / `PLUGIN_TIMINGS` / `tauri-index` chatter. Library cards share one footer height; variable sliders pop on hover and follow the paper/ink theme.
 
-**1.0.75** installs over an older copy. Setup no longer runs the previous `uninstall.exe`. **1.0.74** started the repair path. **1.0.73** quieted the desktop build log. **1.0.72** keeps activations after Quit.
-
+**1.0.80** — uniform cards, hover weight slider, vertically centered specimens. **1.0.79** — slider overlay instead of a static strip. **1.0.78** — scan Documents first, two download workers, virtual scroll, search chips. **X closes the app**; activated families that are already on disk come back on the next launch.
 
 ![Library](screenshots/app-builder-preview.png)
 
@@ -21,8 +20,8 @@ Version **1.0.78** sits next to the logo, not in the window title.
 | Area | What it does |
 | --- | --- |
 | Library | Search, sort, grid/list, search chips. Cards virtual-scroll (~280px columns). No “Show more” button. |
-| Activate | Session fonts via `AddFontResourceW`. Other apps see them until you Deactivate. Close quits; next launch restores the session. |
-| Google Fonts | Scan the Documents folder first. Intact files are registered, not re-downloaded. Only missing or corrupt families fetch, two at a time. |
+| Activate | Session fonts via `AddFontResourceW`. Other apps see them until you Deactivate. Close quits. Next launch re-registers **files already in Documents** — it does not download. |
+| Google Fonts | Catalog is metadata only. Nothing fetches a TTF until you click Activate. Then: one folder scan, skip intact, replace corrupt, download the rest (two workers). |
 | Uploads | Drop files or a folder (TTF, OTF, WOFF, WOFF2, TTC). Parsed on a worker so the grid stays live. Stay in Documents. Deactivate unloads; Delete removes files. |
 
 | Inspector | In-flow right column (not a dimmed overlay). Weight, italic, variable axes, OpenType toggles, license. |
@@ -55,7 +54,7 @@ Version **1.0.78** sits next to the logo, not in the window title.
 | **Deactivate** | File stays | Unload |
 | **Delete** | Remove the family folder | Unload |
 
-**X** closes the app. Activated families are restored the next time you open it.
+**X** closes the app. Families already saved in Documents are registered again. Google files are **not** downloaded until you Activate.
 
 ---
 
@@ -74,17 +73,17 @@ Version **1.0.78** sits next to the logo, not in the window title.
 
 NSIS always builds. MSI needs [WiX Toolset v3](https://wixtoolset.org); without it you still get the NSIS setup. If WiX is installed but not on PATH, setup now adds its `bin` folder automatically. No Visual Studio IDE. WebView2 is embedded if missing.
 
-**X** closes the app. Activations come back on the next launch.
+**X** closes the app. On-disk activations come back on the next launch. Google downloads only happen when you click Activate.
 
-### What the 1.0.72 yellow log meant
+### What the yellow compile log meant
 
 | Line | Meaning |
 | --- | --- |
-| `INEFFECTIVE_DYNAMIC_IMPORT` | Cycle-breaking `import()` of store/loader. Not a failure. Silenced in 1.0.73. |
-| `PLUGIN_TIMINGS` Tailwind ~21% | Vite timing info. Not a failure. Silenced. |
-| `[tauri-index] wrote …\index.html` | UI pack finished. **Rust had not started yet.** |
-| `DATABASE_URL not set` | Website migrate skip. Desktop no longer runs it. |
-| Tab title `db:migrate` | Nested npm script. Desktop now uses a dedicated hook so the tab stays on `tauri build`. |
+| `INEFFECTIVE_DYNAMIC_IMPORT` | Harmless cycle-breaking `import()`. Filtered as of **1.0.81**. |
+| `PLUGIN_TIMINGS` | Vite timing info. Filtered. |
+| `[tauri-index] wrote …\index.html` | UI pack finished. Quiet now. **Rust had not started yet.** |
+| `DATABASE_URL not set` | Website migrate skip. Desktop never runs it. |
+| Tab title `db:migrate` | Nested npm script. Desktop uses a dedicated hook so the tab stays on `tauri build`. |
 
 Closing the window after `index.html` aborts cargo. Wait for Explorer to open `bundle\`.
 
@@ -113,7 +112,7 @@ You never opened an IDE first. You talked to **Grok Build**, watched the live pr
 - **UI:** Vite, React, Zustand persist (favorites, activated, collections, tags, uploads, preview, scope — not the download queue).
 - **Desktop:** Tauri 2, Rust `reqwest` downloads, `AddFontResourceW` + `SendNotifyMessageW(WM_FONTCHANGE)`.
 - **Parse:** Fast table reader for TTF/OTF/WOFF1/TTC (name, OS/2, fvar, GSUB tags). `opentype.js` is the fallback. Desktop also has Rust `ttf-parser` for cmap / axes on files in Documents. WOFF2 previews in the browser; Windows install still wants TTF/OTF.
-- **Preview:** Chromium `FontFace` (same as this website). Word/Adobe use DirectWrite/GDI after Activate.
+- **Preview:** Chromium `FontFace` + Google CSS2 (same on this website and in the desktop WebView). Word/Adobe use DirectWrite/GDI after Activate.
 
 Not wired in on purpose: **skrifa**, **DirectWrite in the WebView**, auto-update of the installer.
 
@@ -121,13 +120,13 @@ Not wired in on purpose: **skrifa**, **DirectWrite in the WebView**, auto-update
 
 ## Activation after close
 
-Activate is a **session** register (`AddFontResourceW`). Files stay in `Documents / Font Manager`. Closing the window **quits** the app (fonts unload with the process). The last Activate list is saved.
+Activate is a **session** register (`AddFontResourceW`). Files stay in `Documents / Font Manager`. Closing the window **quits** the app (fonts unload with the process).
 
 Next launch:
 
-1. The process re-registers last session’s families so Word/Adobe see them again.
-2. The UI restores Activate / Queued from storage.
-3. Missing Google families download in the background (intact files are skipped).
+1. One walk of Documents. Intact last-session files are registered so Word/Adobe see them again.
+2. The UI marks those families Activate. Missing names are **not** queued.
+3. Nothing is downloaded until you click Activate. Then: skip intact, replace corrupt, fetch the rest (two workers).
 
 Deactivate still unloads and keeps files. Delete removes the folder.
 
@@ -135,7 +134,20 @@ Deactivate still unloads and keeps files. Delete removes the folder.
 
 ## Variable weight slider
 
-Library cards (grid and list) show a weight slider on variable families. Preview CSS loads the `wght` range (`100..900`), so dragging changes the specimen — it is not a fake 400-only stylesheet. The inspector still has the full axis set.
+Hover a variable card (grid or list) to pop a weight slider at the bottom of the specimen. It uses the card’s paper/ink/news/print colors. The toolbar left/center/right alignment still applies; the pangram is vertically centered in the card. The inspector has the full axis set. Desktop uses the same CSS face as this website, so a weight of 400 here is 400 there.
+
+---
+
+## Website vs desktop library
+
+| | This website | Desktop window |
+| --- | --- | --- |
+| Library cards | Google CSS2 + FontFace | **Same CSS2 + FontFace** |
+| Activate | Preview only (no GDI) | `AddFontResourceW` so Word/Adobe see the TTF |
+| Documents folder | Not used | Scan first; skip intact; download missing on Activate |
+
+Do not expect a second “desktop-only” preview. If a family is already in Documents, Activate still registers that file; the card still paints through CSS so it matches Grok.
+
 
 ---
 
@@ -168,7 +180,7 @@ The connected GitHub account (`eect13`) cannot create repositories from this cha
 
 A sentinel with an 800px margin used to append cards until **all ~1,942** were in the DOM.
 
-Now: first paint is **one viewport** — `auto-fill` columns (~17.5rem), **3–6 rows** from height (ultrawide and 1440p get more cards, still capped at 72). **Show N more** adds another screen.
+Now: the grid **virtual-scrolls**. Only the rows in view (plus a small overscan) are in the DOM, so all ~1,968 families stay scrollable without a “Show more” button.
 
 Library / Playground / Duplicates / Glyphs stay **mounted** after the first visit (`visibility` hide, not `display: none`) so search, scroll, and the glyphs atlas survive like browser tabs. Visited tabs are remembered in `sessionStorage` for this window.
 
@@ -188,13 +200,13 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 
 | Symptom | What to do |
 | --- | --- |
-| First Activate is slow | Download. Next toggle uses the file on disk. |
-| `tauri.conf.json` parse error | Version must be `"1.0.78",` — **one** comma. |
+| First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
+| `tauri.conf.json` parse error | Version must be `"1.0.82",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.78** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.82** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 
-**1.0.78 — ready for personal desktop use.** License / style / tags stay inferred. Not legal advice.
+**1.0.81 — ready for personal desktop use.** License / style / tags stay inferred. Not legal advice.

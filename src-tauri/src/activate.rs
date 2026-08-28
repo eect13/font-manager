@@ -325,12 +325,20 @@ pub fn session_begin(app: &AppHandle) {
         if families.is_empty() {
             return;
         }
+        let index = build_disk_index(app);
         let mut n = 0usize;
+        let mut ready = Vec::new();
         for family in &families {
-            n += register_intact_family(app, family);
+            if index_has(&index, family) {
+                n += register_from_index(app, &index, family);
+                ready.push(family.clone());
+            }
         }
         if n > 0 {
             notify_fonts_changed();
+        }
+        if ready.len() != families.len() {
+            save_session_families(app, &ready);
         }
     }
     #[cfg(not(windows))]
@@ -1185,14 +1193,20 @@ pub fn register_existing_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     if families.is_empty() {
         return Ok(0);
     }
+    let index = build_disk_index(&app);
     let mut n = 0usize;
+    let mut ready = Vec::new();
     for family in &families {
-        n += register_intact_family(&app, family);
+        let added = register_from_index(&app, &index, family);
+        if added > 0 {
+            n += added;
+            ready.push(family.clone());
+        }
     }
     if n > 0 {
         notify_fonts_changed();
+        session_add(&app, &ready);
     }
-    session_add(&app, &families);
     Ok(n)
 }
 
@@ -1222,9 +1236,10 @@ pub struct ActivationPlan {
     pub missing: Vec<String>,
     pub corrupt: u32,
     pub scanned: u32,
+    pub on_disk: Vec<String>,
 }
 
-/// Fast folder walk. Does not download. Intact files stay put.
+/// Fast folder walk. Does not download. Intact files stay put. Corrupt files are dropped.
 #[tauri::command]
 pub fn plan_google_activation(app: AppHandle, families: Vec<String>) -> Result<ActivationPlan, String> {
     let index = build_disk_index(&app);
@@ -1246,6 +1261,7 @@ pub fn plan_google_activation(app: AppHandle, families: Vec<String>) -> Result<A
         ready,
         missing,
         corrupt: index.corrupt,
+        on_disk: index.names,
     })
 }
 

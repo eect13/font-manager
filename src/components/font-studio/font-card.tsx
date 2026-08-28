@@ -52,11 +52,18 @@ function FitSpecimen({
   useEffect(() => {
     const el = ref.current;
     if (!el || !ready) return;
+    const pane = el.parentElement;
     const fit = () => {
       let size = Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 36;
       el.style.fontSize = `${size}px`;
+      let budget = el.clientHeight;
+      if (pane) {
+        const cs = getComputedStyle(pane);
+        budget =
+          pane.clientHeight - (Number.parseFloat(cs.paddingTop) || 0) - (Number.parseFloat(cs.paddingBottom) || 0);
+      }
       let guard = 0;
-      while (el.scrollHeight > el.clientHeight + 1 && size > 13 && guard < 14) {
+      while (el.scrollHeight > budget + 1 && size > 13 && guard < 14) {
         size *= 0.86;
         el.style.fontSize = `${size}px`;
         guard += 1;
@@ -85,6 +92,7 @@ export const FontCard = memo(function FontCard({
   const [ready, setReady] = useState(false);
   const [italicOn, setItalicOn] = useState(Boolean(preview.italic) && font.italic);
   const [cardWeight, setCardWeight] = useState(() => defaultWeightForFont(font));
+  const [axisHeld, setAxisHeld] = useState(false);
   const vfPrimed = useRef(false);
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
   const pending = useFontStore((s) => s.pendingSet.has(font.id));
@@ -155,11 +163,17 @@ export const FontCard = memo(function FontCard({
     fontSynthesis: italicCss.fontSynthesis,
   };
 
-  const weightSlider = wghtAxis ? (
+  const axisPop = wghtAxis ? (
     <div
       data-no-drag
-      className="fm-slider-row relative z-30 w-full"
-      onPointerDown={isolate}
+      data-open={axisHeld ? "true" : undefined}
+      className="fm-axis-pop absolute inset-x-3 bottom-2 z-30 flex items-center gap-2 rounded-md px-2 py-0.5"
+      onPointerDown={(e) => {
+        isolate(e);
+        setAxisHeld(true);
+      }}
+      onPointerUpCapture={() => setAxisHeld(false)}
+      onPointerCancel={() => setAxisHeld(false)}
       onMouseDown={isolate}
       onClick={isolate}
       onDragStart={(e) => {
@@ -167,13 +181,15 @@ export const FontCard = memo(function FontCard({
         e.stopPropagation();
       }}
     >
+      <span className="w-7 shrink-0 text-center font-mono text-[10px] tabular-nums opacity-55">
+        {Math.round(cardWeight)}
+      </span>
       <Slider
         min={wghtAxis.min}
         max={wghtAxis.max}
         step={1}
         value={[cardWeight]}
         aria-label={`${font.family} weight`}
-        className="fm-weight-slider-quiet"
         onValueChange={([n]) => {
           if (!Number.isFinite(n)) return;
           setCardWeight(n);
@@ -198,7 +214,7 @@ export const FontCard = memo(function FontCard({
         setItalicOn((v) => !v);
       }}
       className={cn(
-        "relative z-20 inline-flex size-6 items-center justify-center rounded border text-[10px]",
+        "relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded border",
         italicOn ? "border-current bg-current/15" : "border-current/30",
       )}
     >
@@ -226,6 +242,13 @@ export const FontCard = memo(function FontCard({
     </FitSpecimen>
   );
 
+  const specimenPane = (
+    <div className={cn("fm-spec-pane px-4", layout === "list" ? "py-2" : "py-3")}>
+      {specimen}
+      {axisPop}
+    </div>
+  );
+
   return (
     <article
       ref={ref}
@@ -239,7 +262,7 @@ export const FontCard = memo(function FontCard({
         }
       }}
       className={cn(
-        "group relative w-full cursor-pointer overflow-hidden rounded-xl text-left shadow-border transition-[box-shadow,transform] duration-200 ease-out hover:shadow-border-hover",
+        "fm-font-card group relative w-full cursor-pointer overflow-hidden rounded-xl text-left shadow-border",
         layout === "list" ? "flex h-[9.5rem] flex-col" : "flex h-[14.5rem] flex-col",
         THEME[preview.theme],
       )}
@@ -266,57 +289,49 @@ export const FontCard = memo(function FontCard({
 
       {layout === "list" ? (
         <>
-          <div className={cn("flex w-full min-w-0 items-center gap-2 border-b px-4 py-1.5 pr-20", metaTone)}>
-            <span className="truncate text-sm font-medium">{font.family}</span>
+          <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
+            <span className="min-w-0 truncate text-sm font-medium">{font.family}</span>
+            {wghtAxis ? (
+              <span className="hidden font-mono text-[10px] tabular-nums opacity-55 sm:inline">{Math.round(cardWeight)}</span>
+            ) : null}
             <span className="hidden text-xs uppercase tracking-wide opacity-70 sm:inline">
               {CATEGORY_LABEL[font.category]}
             </span>
-            <span className="hidden text-xs opacity-70 md:inline">
+            <span className="hidden truncate text-xs opacity-70 md:inline">
               {font.variable ? "Variable" : `${font.weights.length} wts`}
               {font.italic ? " · Italic" : ""}
             </span>
-            {wghtAxis ? (
-              <span className="hidden font-mono text-[10px] tabular-nums opacity-60 sm:inline">{Math.round(cardWeight)}</span>
-            ) : null}
             {italicBtn}
             <LicenseBadge license={fontLicense(font)} licenseName={font.licenseName} className="ml-auto opacity-100" />
             {font.source === "local" && <Badge variant="outline">Local</Badge>}
           </div>
-          {weightSlider ? <div className="px-4">{weightSlider}</div> : null}
-          <div className="min-h-0 min-w-0 flex-1 overflow-hidden px-4 py-2">{specimen}</div>
+          {specimenPane}
         </>
       ) : (
         <>
-          <div className="min-h-0 min-w-0 flex-1 overflow-hidden px-4 py-3">{specimen}</div>
-          <div className={cn("flex flex-col gap-0.5 border-t px-3 py-1.5", metaTone)}>
-            <div className="flex w-full min-w-0 items-center gap-2">
-              <span className="truncate text-sm font-medium">{font.family}</span>
-              {wghtAxis ? (
-                <span className="font-mono text-[10px] tabular-nums opacity-55">{Math.round(cardWeight)}</span>
-              ) : null}
-              <span className="ml-auto hidden text-xs uppercase tracking-wide opacity-70 sm:inline">
+          {specimenPane}
+          <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-t px-3", metaTone)}>
+            <span className="min-w-0 truncate text-sm font-medium">{font.family}</span>
+            {wghtAxis ? (
+              <span className="font-mono text-[10px] tabular-nums opacity-55">{Math.round(cardWeight)}</span>
+            ) : null}
+            {italicBtn}
+            <span className="ml-auto flex min-w-0 items-center gap-1.5">
+              <span className="hidden truncate text-xs uppercase tracking-wide opacity-70 sm:inline">
                 {CATEGORY_LABEL[font.category]}
               </span>
-            </div>
-            <div className="flex w-full items-center gap-1.5 text-xs opacity-70">
-              <span>
+              <span className="hidden truncate text-xs opacity-70 sm:inline">
                 {font.variable ? "Variable" : `${font.weights.length} wts`}
                 {font.italic ? " · Italic" : ""}
               </span>
               {colorNote ? (
-                <span className="truncate text-[10px] uppercase tracking-wide opacity-80" title={colorNote}>
+                <span className="hidden truncate text-[10px] uppercase tracking-wide opacity-70 md:inline" title={colorNote}>
                   Color
                 </span>
               ) : null}
-              {italicBtn}
-              <LicenseBadge
-                license={fontLicense(font)}
-                licenseName={font.licenseName}
-                className="ml-auto opacity-100"
-              />
+              <LicenseBadge license={fontLicense(font)} licenseName={font.licenseName} className="opacity-100" />
               {font.source === "local" && <Badge variant="outline">Local</Badge>}
-            </div>
-            {weightSlider}
+            </span>
           </div>
         </>
       )}

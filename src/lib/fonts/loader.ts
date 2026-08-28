@@ -539,20 +539,15 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
   const display = special ? "block" : "swap";
 
   const promise = (async () => {
-    const desktop = await inTauri();
-    const subset = undefined;
     const hrefs =
       mode === "preview"
-        ? previewFamilyParams(font).map((param) => googleCssHref(param, display, subset))
+        ? previewFamilyParams(font).map((param) => googleCssHref(param, display))
         : [
             googleCssHref(googleFamilyParam(font, mode), display),
             googleCssHref(`family=${font.family.replace(/ /g, "+")}`, display),
           ];
-    if (await loadGoogleFromLocal(font, mode)) {
-      if (desktop) return;
-      void ensureCatalogCss(font);
-      if (loadedGoogle.get(font.id) === "full" || (mode === "preview" && !font.variable)) return;
-    }
+    // Library preview is CSS2 + FontFace on the website and in the desktop WebView.
+    // Files in Documents are for Activate (Word/Adobe), not a second preview pipeline.
     if (mode === "preview" && !special) {
       await Promise.all(hrefs.map((href) => injectGoogleCss(href, `${cssKey(font.id, mode)}:${href}`)));
       loadedGoogle.set(font.id, "preview");
@@ -602,6 +597,10 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
     );
     await waitForFamily(font.family, probe, special ? 2500 : 600);
     if (fallback || familyLoaded(font.family, probe)) {
+      loadedGoogle.set(font.id, special ? "full" : mode);
+      return;
+    }
+    if (await loadGoogleFromLocal(font, mode)) {
       loadedGoogle.set(font.id, special ? "full" : mode);
       return;
     }
@@ -707,16 +706,6 @@ async function loadItalicFromDisk(font: FontRecord): Promise<boolean> {
 }
 
 export async function loadItalicFace(font: FontRecord): Promise<void> {
-  if (await loadItalicFromDisk(font)) {
-    if (typeof document !== "undefined" && document.fonts?.load) {
-      try {
-        await document.fonts.load(`italic 48px "${font.cssFamily || font.family}"`);
-      } catch {
-        /* ignore */
-      }
-    }
-    return;
-  }
   if (font.source === "local") {
     await loadLocalFont(font);
     return;
@@ -739,6 +728,7 @@ export async function loadItalicFace(font: FontRecord): Promise<void> {
       /* ignore */
     }
   }
+  if (await loadItalicFromDisk(font)) return;
 }
 
 export async function loadFontWeight(font: FontRecord, weight: number, italic = false): Promise<void> {

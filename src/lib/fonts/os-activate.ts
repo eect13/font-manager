@@ -135,14 +135,28 @@ export async function skipFailedDownloads(): Promise<void> {
   });
 }
 
-export async function registerExistingOnDisk(families: string[]): Promise<void> {
-  if (!families.length) return;
-  if (!(await inDesktopShell())) return;
-  try {
-    await tauriInvoke<number>("register_existing_on_disk", { families });
-  } catch {
-    /* ignore */
+export async function restoreSessionFromDisk(families: string[]): Promise<{
+  ready: string[];
+  missing: string[];
+  onDisk: string[];
+}> {
+  const empty = { ready: [] as string[], missing: [] as string[], onDisk: [] as string[] };
+  if (!(await inDesktopShell())) return empty;
+  const plan = await tauriInvoke<{
+    ready: string[];
+    missing: string[];
+    on_disk?: string[];
+  }>("plan_google_activation", { families }).catch(() => null);
+  const onDisk = plan?.on_disk?.length ? plan.on_disk : (plan?.ready ?? []);
+  const readyNames = plan?.ready ?? [];
+  if (!readyNames.length) {
+    return { ready: [], missing: plan?.missing ?? [], onDisk };
   }
+  const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: readyNames }).catch(
+    () => readyNames,
+  );
+  if (ready?.length) applyReadyFamilies(ready);
+  return { ready: ready ?? [], missing: plan?.missing ?? [], onDisk };
 }
 
 export async function resumeGoogleFamilies(families: string[]): Promise<void> {

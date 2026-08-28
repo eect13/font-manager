@@ -6,7 +6,7 @@ import { refineLicense } from "./license";
 import { findFont, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
-import { registerExistingOnDisk, listDiskFamilies, resumeGoogleFamilies, rememberSessionFamilies } from "./os-activate";
+import { restoreSessionFromDisk, rememberSessionFamilies } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { startWatchPolling } from "./watch-folder";
 import type { FontRecord } from "./types";
@@ -113,64 +113,36 @@ export function useHydrateFonts() {
         useFontStore.getState().setScope("all");
       }
       setHydrated(true);
+      useFontStore.getState().clearPendingActivate();
       void requestPersistentStorage();
       persistStorageOnGesture();
 
       const google = googleFonts.length ? googleFonts : GOOGLE_FONTS;
       void primeGooglePreview(google.slice(0, 24));
-      const wantIds = Array.from(
-        new Set([...useFontStore.getState().activated, ...useFontStore.getState().pendingActivate]),
-      );
+      const wantIds = Array.from(new Set(useFontStore.getState().activated));
       const desktop = await inDesktopShell();
       if (desktop) {
         const wantNames = wantIds
           .map((id) => findFont(id, localFonts, google)?.family)
           .filter((name): name is string => Boolean(name));
-        await registerExistingOnDisk(wantNames);
-        const disk = cancelled ? [] : await listDiskFamilies();
-        if (cancelled) return;
-        noteDiskFamilies(disk);
-        if (disk.length) {
-          const allow = new Set(disk.map((n) => n.trim().toLowerCase()));
+        void restoreSessionFromDisk(wantNames).then((result) => {
+          if (cancelled) return;
+          noteDiskFamilies(result.onDisk);
+          const allow = new Set(result.ready.map((n) => n.trim().toLowerCase()));
+          for (const n of result.onDisk) allow.add(n.trim().toLowerCase());
           const live: string[] = [];
-          const need: string[] = [];
           for (const id of wantIds) {
             const font = findFont(id, localFonts, google);
             if (!font) continue;
             if (font.source === "local" || allow.has(font.family.toLowerCase())) live.push(id);
-            else if (font.source === "google") need.push(id);
           }
-          useFontStore.getState().restoreActivation(live, need);
+          useFontStore.getState().restoreActivation(live, []);
           void rememberSessionFamilies(
             live
               .map((id) => findFont(id, localFonts, google)?.family)
               .filter((name): name is string => Boolean(name)),
           );
-          if (need.length) {
-            void resumeGoogleFamilies(
-              need
-                .map((id) => findFont(id, localFonts, google)?.family)
-                .filter((name): name is string => Boolean(name)),
-            );
-          }
-        } else if (wantIds.length) {
-          const live: string[] = [];
-          const need: string[] = [];
-          for (const id of wantIds) {
-            const font = findFont(id, localFonts, google);
-            if (!font) continue;
-            if (font.source === "local") live.push(id);
-            else need.push(id);
-          }
-          useFontStore.getState().restoreActivation(live, need);
-          if (need.length) {
-            void resumeGoogleFamilies(
-              need
-                .map((id) => findFont(id, localFonts, google)?.family)
-                .filter((name): name is string => Boolean(name)),
-            );
-          }
-        }
+        });
       }
       const liveIds = useFontStore.getState().activated;
       const toLoad = liveIds.slice(0, 12).map((id) => findFont(id, localFonts, google));

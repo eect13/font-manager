@@ -761,7 +761,7 @@ export const useFontStore = create<FontState>()(
       partialize: (s): PersistedSlice => ({
         favorites: s.favorites,
         activated: s.activated,
-        pendingActivate: s.pendingActivate,
+        pendingActivate: [],
         collections: s.collections,
         customTags: s.customTags,
         localFonts: s.localFonts,
