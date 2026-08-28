@@ -1,0 +1,321 @@
+//! Font metadata via `ttf-parser`. WOFF1 is inflated to SFNT first. WOFF2 stays JS.
+
+use crate::activate;
+use flate2::read::ZlibDecoder;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use tauri::AppHandle;
+use ttf_parser::Face;
+
+#[derive(Serialize, Clone)]
+pub struct CmapGlyph {
+    pub cp: u32,
+    pub gid: u16,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct FontAxisOut {
+    pub tag: String,
+    pub name: String,
+    pub min: f32,
+    pub max: f32,
+    #[serde(rename = "def")]
+    pub def_value: f32,
+}
+
+#[derive(Serialize, Clone)]
+pub struct FontLayout {
+    pub axes: Vec<FontAxisOut>,
+    #[serde(rename = "otFeatures")]
+    pub ot_features: Vec<String>,
+    pub variable: bool,
+    #[serde(rename = "glyphCount")]
+    pub glyph_count: u16,
+}
+
+#[derive(Serialize, Clone)]
+pub struct DiffOut {
+    pub near: bool,
+    pub diffs: u64,
+}
+
+fn u16be(data: &[u8], o: usize) -> Option<u16> {
+    let bytes: [u8; 2] = data.get(o..o + 2)?.try_into().ok()?;
+    Some(u16::from_be_bytes(bytes))
+}
+
+fn u32be(data: &[u8], o: usize) -> Option<u32> {
+    let bytes: [u8; 4] = data.get(o..o + 4)?.try_into().ok()?;
+    Some(u32::from_be_bytes(bytes))
+}
+
+fn decode_woff1(data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() < 44 {
+        return Err("woff header".into());
+    }
+    let flavor = u32be(data, 4).ok_or("woff flavor")?;
+    let num_tables = u16be(data, 12).ok_or("woff tables")? as usize;
+    let mut tables: Vec<(u32, Vec<u8>)> = Vec::with_capacity(num_tables);
+    for i in 0..num_tables {
+        let o = 44 + i * 20;
+        let tag = u32be(data, o).ok_or("woff tag")?;
+        let offset = u32be(data, o + 4).ok_or("woff offset")? as usize;
+        let comp_len = u32be(data, o + 8).ok_or("woff comp")? as usize;
+        let orig_len = u32be(data, o + 12).ok_or("woff orig")? as usize;
+        let end = offset.checked_add(comp_len).ok_or("woff range")?;
+        if end > data.len() {
+            return Err("woff table truncated".into());
+        }
+        let slice = &data[offset..end];
+        let raw = if comp_len >= orig_len {
+            slice.get(..orig_len).unwrap_or(slice).to_vec()
+        } else {
+            let mut out = Vec::with_capacity(orig_len);
+            ZlibDecoder::new(slice)
+                .read_to_end(&mut out)
+                .map_err(|e| e.to_string())?;
+            out.truncate(orig_len);
+            out
+        };
+        tables.push((tag, raw));
+    }
+    let n = tables.len() as u16;
+    let mut search = 1u16;
+    let mut exp = 0u16;
+    while (search as u32) * 2 <= u32::from(n) {
+        search *= 2;
+        exp += 1;
+    }
+    let search_range = search.saturating_mul(16);
+    let range_shift = n.saturating_mul(16).saturating_sub(search_range);
+    let mut out = Vec::new();
+    out.extend_from_slice(&flavor.to_be_bytes());
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&search_range.to_be_bytes());
+    out.extend_from_slice(&exp.to_be_bytes());
+    out.extend_from_slice(&range_shift.to_be_bytes());
+    let mut offset = 12 + 16 * tables.len();
+    let mut dir = Vec::new();
+    let mut body = Vec::new();
+    for (tag, raw) in &tables {
+        let padded = (raw.len() + 3) & !3;
+        dir.extend_from_slice(&tag.to_be_bytes());
+        dir.extend_from_slice(&0u32.to_be_bytes());
+        dir.extend_from_slice(&(offset as u32).to_be_bytes());
+        dir.extend_from_slice(&(raw.len() as u32).to_be_bytes());
+        body.extend_from_slice(raw);
+        body.resize(body.len() + (padded - raw.len()), 0);
+        offset += padded;
+    }
+    out.extend_from_slice(&dir);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+fn sfnt_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() < 4 {
+        return Err("file too small".into());
+    }
+    if data.starts_with(b"wOFF") {
+        return decode_woff1(data);
+    }
+    if data.starts_with(b"wOF2") {
+        return Err("woff2".into());
+    }
+    Ok(data.to_vec())
+}
+
+fn with_face<T>(data: &[u8], f: impl FnOnce(&Face<'_>) -> T) -> Result<T, String> {
+    let owned = sfnt_bytes(data)?;
+    let count = ttf_parser::fonts_in_collection(&owned).unwrap_or(1);
+    let mut last_err = String::from("no faces");
+    for i in 0..count {
+        match Face::parse(&owned, i) {
+            Ok(face) => return Ok(f(&face)),
+            Err(e) => last_err = format!("ttf-parser: {e} (faces {count})"),
+        }
+    }
+    Err(last_err)
+}
+
+fn cmap_from_face(face: &Face<'_>) -> Vec<CmapGlyph> {
+    let Some(cmap) = face.tables().cmap else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for subtable in cmap.subtables {
+        if !subtable.is_unicode() {
+            continue;
+        }
+        subtable.codepoints(|cp| {
+            if cp < 0x20 || (0xD800..=0xDFFF).contains(&cp) {
+                return;
+            }
+            if !seen.insert(cp) {
+                return;
+            }
+            let gid = subtable.glyph_index(cp).map(|g| g.0).unwrap_or(0);
+            out.push(CmapGlyph {
+                cp,
+                gid,
+                name: String::new(),
+            });
+        });
+    }
+    out.sort_by_key(|g| g.cp);
+    out
+}
+
+fn axes_from_face(face: &Face<'_>) -> Vec<FontAxisOut> {
+    let mut axes = Vec::new();
+    for axis in face.variation_axes() {
+        let tag = axis.tag.to_string();
+        let mut name = tag.clone();
+        for n in face.names() {
+            if n.name_id == axis.name_id {
+                if let Some(s) = n.to_string() {
+                    if !s.trim().is_empty() {
+                        name = s;
+                        break;
+                    }
+                }
+            }
+        }
+        axes.push(FontAxisOut {
+            tag,
+            name,
+            min: axis.min_value,
+            max: axis.max_value,
+            def_value: axis.def_value,
+        });
+    }
+    axes
+}
+
+fn layout_from_face(face: &Face<'_>) -> FontLayout {
+    let mut ot = HashSet::new();
+    for table in [face.tables().gsub, face.tables().gpos] {
+        if let Some(layout) = table {
+            for feat in layout.features {
+                ot.insert(feat.tag.to_string());
+            }
+        }
+    }
+    let mut ot_features: Vec<String> = ot.into_iter().collect();
+    ot_features.sort();
+    let axes = axes_from_face(face);
+    FontLayout {
+        variable: !axes.is_empty(),
+        glyph_count: face.number_of_glyphs(),
+        axes,
+        ot_features,
+    }
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hash_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn nearly_same(a: &[u8], b: &[u8]) -> DiffOut {
+    if a.len() != b.len() {
+        return DiffOut {
+            near: false,
+            diffs: a.len().abs_diff(b.len()) as u64,
+        };
+    }
+    let cap = 128usize.max(a.len() / 1000);
+    let mut diffs = 0usize;
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x != y {
+            diffs += 1;
+            if diffs > cap {
+                return DiffOut {
+                    near: false,
+                    diffs: diffs as u64,
+                };
+            }
+        }
+    }
+    DiffOut {
+        near: diffs <= cap,
+        diffs: diffs as u64,
+    }
+}
+
+fn cmap_cache() -> &'static Mutex<HashMap<String, Vec<CmapGlyph>>> {
+    static C: OnceLock<Mutex<HashMap<String, Vec<CmapGlyph>>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+pub fn parse_family_cmap(app: AppHandle, family: String) -> Result<Vec<CmapGlyph>, String> {
+    let key = family.to_ascii_lowercase();
+    if let Ok(cache) = cmap_cache().lock() {
+        if let Some(hit) = cache.get(&key) {
+            return Ok(hit.clone());
+        }
+    }
+    let path = activate::read_family_font(app, family, None)?;
+    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let glyphs = with_face(&data, cmap_from_face)?;
+    if let Ok(mut cache) = cmap_cache().lock() {
+        cache.insert(key, glyphs.clone());
+    }
+    Ok(glyphs)
+}
+
+#[tauri::command]
+pub fn parse_family_layout(app: AppHandle, family: String) -> Result<FontLayout, String> {
+    let path = activate::read_family_font(app, family, None)?;
+    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    with_face(&data, layout_from_face)
+}
+
+#[tauri::command]
+pub fn parse_font_layout(bytes: Vec<u8>) -> Result<FontLayout, String> {
+    with_face(&bytes, layout_from_face)
+}
+
+#[tauri::command]
+pub fn parse_font_cmap(bytes: Vec<u8>) -> Result<Vec<CmapGlyph>, String> {
+    with_face(&bytes, cmap_from_face)
+}
+
+#[tauri::command]
+pub fn hash_bytes(bytes: Vec<u8>) -> String {
+    hex_sha256(&bytes)
+}
+
+#[tauri::command]
+pub fn hash_font_path(path: String) -> Result<String, String> {
+    hash_file(Path::new(&path))
+}
+
+#[tauri::command]
+pub fn diff_font_bytes(left: Vec<u8>, right: Vec<u8>) -> DiffOut {
+    nearly_same(&left, &right)
+}

@@ -1,0 +1,176 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-background: #0c0c0d;
+  --color-foreground: #f2efe8;
+  --color-card: #151516;
+  --color-popover: #151516;
+  --color-popover-foreground: #f2efe8;
+  --color-primary: #c8cdd6;
+  --color-primary-foreground: #0c0c0d;
+  --color-secondary: #1c1c1e;
+  --color-secondary-foreground: #f2efe8;
+  --color-muted: #1c1c1e;
+  --color-muted-foreground: #8e8b84;
+  --color-accent: #222226;
+  --color-accent-foreground: #f2efe8;
+  --color-destructive: #c45c4a;
+  --color-destructive-foreground: #f2efe8;
+  --color-border: #2a2a2c;
+  --color-input: #2a2a2c;
+  --color-ring: #c8cdd6;
+  --color-paper: #f4f0e8;
+  --color-ink: #161513;
+  --color-newsprint: #e4dcc8;
+  --color-newsprint-fg: #2a261c;
+  --color-blueprint: #1a2744;
+  --color-blueprint-fg: #d6e4f0;
+  --color-success: #6f8f6a;
+
+  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-heading: Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius: 12px;
+
+  --shadow-border: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-border-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
+
+  --width-sidebar: 17rem;
+}
+
+html {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-background: #f3efe6;
+  --color-foreground: #161513;
+  --color-card: #faf8f3;
+  --color-popover: #faf8f3;
+  --color-popover-foreground: #161513;
+  --color-primary: #1c1c1e;
+  --color-primary-foreground: #f3efe6;
+  --color-secondary: #e8e3d8;
+  --color-secondary-foreground: #161513;
+  --color-muted: #e8e3d8;
+  --color-muted-foreground: #6a6761;
+  --color-accent: #e0dbd0;
+  --color-accent-foreground: #161513;
+  --color-destructive: #b44a3a;
+  --color-destructive-foreground: #faf8f3;
+  --color-border: #d9d3c6;
+  --color-input: #d9d3c6;
+  --color-ring: #1c1c1e;
+  --color-success: #4f7a4a;
+  --shadow-border: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.06);
+  --shadow-border-hover: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.08);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body,
+  #app {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    transition:
+      background-color 200ms ease,
+      color 200ms ease;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input[type="range"] {
+    accent-color: var(--color-primary);
+    height: 1.5rem;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.sidebar-nav {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--color-foreground) 28%, transparent) transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--color-foreground) 22%, transparent);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--color-foreground) 40%, transparent);
+}
+
+/* Isolated specimen styles so library/inspector italic is not overridden by Tailwind or a parent. */
+.fm-spec {
+  font-synthesis: none;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+.fm-spec.fm-spec-roman {
+  font-style: normal !important;
+  font-synthesis: none !important;
+}
+.fm-spec.fm-spec-italic {
+  font-style: italic !important;
+}
+.fm-spec.fm-spec-italic.fm-spec-static {
+  font-synthesis: style !important;
+}
+.fm-spec.fm-spec-italic.fm-spec-variable {
+  font-synthesis: none !important;
+}

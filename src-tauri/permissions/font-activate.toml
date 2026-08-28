@@ -1,0 +1,36 @@
+[[permission]]
+identifier = "allow-font-activate"
+description = "Write activated fonts to Documents/Font Manager and register them with the OS"
+commands.allow = [
+  "activation_folder",
+  "install_font_file",
+  "unload_font_family",
+  "unload_font_families",
+  "uninstall_font_family",
+  "font_family_installed",
+  "list_activated_families",
+  "open_activation_folder",
+  "register_font_path",
+  "flush_font_cache",
+  "save_library_file",
+  "remove_library_file",
+  "start_google_downloads",
+  "retry_google_downloads",
+  "skip_google_failures",
+  "cancel_google_downloads",
+  "pause_google_downloads",
+  "resume_google_downloads",
+  "google_download_progress",
+  "register_existing_on_disk",
+  "activate_families_on_disk",
+  "set_session_families",
+  "read_family_font",
+  "scan_disk_families",
+  "parse_family_cmap",
+  "parse_family_layout",
+  "parse_font_layout",
+  "parse_font_cmap",
+  "hash_bytes",
+  "hash_font_path",
+  "diff_font_bytes"
+]

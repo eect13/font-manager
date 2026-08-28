@@ -1,0 +1,71 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Font Manager",
+  "version": "1.0.73",
+  "identifier": "app.fontmanager.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:8080",
+    "beforeBuildCommand": {
+      "script": "node scripts/tauri-before-build.mjs"
+    },
+    "beforeBundleCommand": {
+      "script": "node scripts/tauri-before-build.mjs bundle"
+    },
+    "frontendDist": "../.vercel/output/static"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Font Manager",
+        "width": 1320,
+        "height": 860,
+        "minWidth": 880,
+        "minHeight": 560,
+        "resizable": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://fonts.googleapis.com https://fonts.gstatic.com https://cdn.jsdelivr.net https://api.fontsource.org https://unpkg.com; font-src 'self' data: blob: asset: http://asset.localhost https://fonts.gstatic.com https://cdn.jsdelivr.net https://unpkg.com; img-src 'self' data: asset:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' ipc: http://ipc.localhost https://asset.localhost; worker-src 'self' blob:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "category": "GraphicsAndDesign",
+    "publisher": "Eric Emerson Tan",
+    "copyright": "Copyright © 2026 Eric Emerson Tan",
+    "homepage": "https://github.com/eect13/font-manager",
+    "licenseFile": "../LICENSE",
+    "shortDescription": "Activate, preview, and organize typefaces",
+    "longDescription": "Font Manager is a desktop typeface library: browse Google Fonts, upload TTF/OTF/WOFF files, activate them for other apps while the window is open, pair faces in the playground, find duplicates, and explore glyphs like Character Map.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
