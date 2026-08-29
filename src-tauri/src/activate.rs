@@ -583,6 +583,30 @@ fn pick_subsets(all: &[String]) -> Vec<String> {
     }
 }
 
+fn pull_fontsource_subset(
+    client: &reqwest::blocking::Client,
+    slug: &str,
+    subsets: &[String],
+    weights: &[u16],
+    styles: &[bool],
+) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    for subset in subsets {
+        for weight in weights {
+            if bulk().cancel.load(Ordering::SeqCst) {
+                return out;
+            }
+            for italic in styles {
+                let style = if *italic { "italic" } else { "normal" };
+                if let Ok(bytes) = fetch_ttf(client, slug, *weight, *italic, subset) {
+                    out.push((format!("{slug}-{subset}-{weight}-{style}.ttf"), bytes));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec<(String, Vec<u8>)> {
     let (all_subsets, weights, has_italic) = fontsource_meta(client, slug)
         .unwrap_or((vec!["latin".into()], vec![400, 700], true));
@@ -597,23 +621,7 @@ fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec
     } else {
         &[false]
     };
-    let mut out = Vec::new();
-    let mut pull = |subs: &[String]| {
-        for subset in subs {
-            for weight in &weights {
-                if bulk().cancel.load(Ordering::SeqCst) {
-                    return;
-                }
-                for italic in styles {
-                    let style = if *italic { "italic" } else { "normal" };
-                    if let Ok(bytes) = fetch_ttf(client, slug, *weight, *italic, subset) {
-                        out.push((format!("{slug}-{subset}-{weight}-{style}.ttf"), bytes));
-                    }
-                }
-            }
-        }
-    };
-    pull(&subsets);
+    let mut out = pull_fontsource_subset(client, slug, &subsets, &weights, styles);
     if out.is_empty() {
         let rest: Vec<String> = all_subsets
             .iter()
@@ -622,7 +630,7 @@ fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec
             .cloned()
             .collect();
         if !rest.is_empty() {
-            pull(&rest);
+            out = pull_fontsource_subset(client, slug, &rest, &weights, styles);
         }
     }
     out
