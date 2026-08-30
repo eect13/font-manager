@@ -12,6 +12,8 @@ const STACK: Record<FontCategory, string> = {
   display: '"Segoe UI", system-ui, sans-serif',
   handwriting: '"Segoe Script", "Comic Sans MS", cursive',
   mono: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
+  other: '"Segoe UI", system-ui, sans-serif',
+  icons: '"Segoe UI Symbol", "Segoe UI", sans-serif',
 };
 
 export function scriptSample(font: Pick<FontRecord, "family" | "tags">): string | null {

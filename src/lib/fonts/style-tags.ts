@@ -39,6 +39,9 @@ function categoryFromName(hay: string): NameHit | null {
   if (/\b(dingbat|dingbats|symbol|ornament|initials|icon[- ]?set|barcode)\b/i.test(hay)) {
     return { category: "display", tags: ["symbols"], strong: true };
   }
+  if (/\b(material icons|font awesome|icon font|\bicons?\b)\b/i.test(hay)) {
+    return { category: "icons", tags: ["symbols"], strong: true };
+  }
   if (
     /\b(script|handwriting|hand[- ]?letter(?:ing)?|calligraph(?:y|ic)?|signature|cursive)\b/i.test(hay) ||
     /\bbrush script\b/i.test(hay)
@@ -167,11 +170,13 @@ export function inferLocalStyle(input: {
 }
 
 const CATEGORY_AS_TAG: Record<FontCategory, Set<string>> = {
-  sans: new Set(["sans"]),
+  sans: new Set(["sans", "sans-serif"]),
   serif: new Set(["serif"]),
   display: new Set(["display"]),
   handwriting: new Set(["handwriting", "script"]),
   mono: new Set(["monospace", "mono"]),
+  other: new Set(["other"]),
+  icons: new Set(["icons", "icon"]),
 };
 
 export function tagsForGoogleFamily(

@@ -22,6 +22,8 @@ const CATEGORY: Record<string, FontCategory> = {
   display: "display",
   handwriting: "handwriting",
   monospace: "mono",
+  other: "other",
+  icons: "icons",
 };
 
 function licenseFromSource(raw?: string): { license: FontLicense; licenseName: string } {
@@ -66,7 +68,7 @@ export async function refreshGoogleCatalog(): Promise<{ count: number; added: nu
     const data = (await res.json()) as FontsourceItem[];
     if (!Array.isArray(data) || data.length < 1000) return null;
 
-    const rows = data.filter((item) => item.category !== "icons" && item.family);
+    const rows = data.filter((item) => item.family);
     const indexByFamily = new Map(GOOGLE_FONTS.map((font, i) => [font.family, i]));
     const next = GOOGLE_FONTS.slice();
     let added = 0;

@@ -13,6 +13,8 @@ const CHIPS: { token: string; label: string; scope?: `license:${FontLicense}` | 
   { token: "display", label: CATEGORY_LABEL.display, scope: "category:display" },
   { token: "handwriting", label: CATEGORY_LABEL.handwriting, scope: "category:handwriting" },
   { token: "mono", label: CATEGORY_LABEL.mono, scope: "category:mono" },
+  { token: "other", label: CATEGORY_LABEL.other, scope: "category:other" },
+  { token: "icons", label: CATEGORY_LABEL.icons, scope: "category:icons" },
 ];
 
 function hasToken(query: string, token: string) {

@@ -28,7 +28,7 @@ export function UploadsResetDialog({
           <DialogTitle>Uploaded fonts</DialogTitle>
           <DialogDescription>
             {count
-              ? `${count.toLocaleString()} uploaded typeface${count === 1 ? "" : "s"} in this library. Google Fonts are not affected.`
+              ? `${count.toLocaleString()} uploaded typeface${count === 1 ? "" : "s"} in this library. Fontsource families are not affected.`
               : "No uploaded typefaces. Reset still restores default activations."}
           </DialogDescription>
         </DialogHeader>

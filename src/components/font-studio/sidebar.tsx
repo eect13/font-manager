@@ -25,7 +25,7 @@ import type { FontCategory, FontLicense, LibraryScope } from "@/lib/fonts/types"
 import { CATEGORY_LABEL, LICENSE_LABEL } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
 
-const CATEGORIES: FontCategory[] = ["sans", "serif", "display", "handwriting", "mono"];
+const CATEGORIES: FontCategory[] = ["sans", "serif", "display", "handwriting", "mono", "other", "icons"];
 
 const LICENSE_NAV: { id: FontLicense; icon: typeof Library }[] = [
   { id: "free", icon: BadgeCheck },
@@ -58,7 +58,7 @@ const SIDEBAR_TAGS = [
 const KNOWN_TAGS = new Set(ALL_TAGS);
 
 const STYLE_TIP =
-  "Fontsource categories (Sans, Serif, Display, Script, Mono). Uploads use the file name first. Dummy PANOSE from free-font sites is ignored: " +
+  "Fontsource categories: Sans Serif, Serif, Display, Handwriting, Monospace, Other, Icons. Uploads use the file name first. Dummy PANOSE from free-font sites is ignored: " +
   (UNTRUSTED_FONT_SOURCES ?? []).join(", ") +
   ".";
 
@@ -108,7 +108,7 @@ export function Sidebar({
   const counts = useMemo(() => {
     const list = allFonts(localFonts, googleFonts);
     const license = { free: 0, freeware: 0, personal: 0, commercial: 0, unknown: 0 };
-    const category = { sans: 0, serif: 0, display: 0, handwriting: 0, mono: 0 };
+    const category = { sans: 0, serif: 0, display: 0, handwriting: 0, mono: 0, other: 0, icons: 0 };
     const tags = new Map<string, number>();
     for (const font of list) {
       license[fontLicense(font)] += 1;

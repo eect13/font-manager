@@ -1,4 +1,4 @@
-export type FontCategory = "sans" | "serif" | "display" | "handwriting" | "mono";
+export type FontCategory = "sans" | "serif" | "display" | "handwriting" | "mono" | "other" | "icons";
 export type FontSource = "google" | "local" | "system";
 export type FontLicense = "free" | "freeware" | "personal" | "commercial" | "unknown";
 export type PreviewTheme = "paper" | "ink" | "newsprint" | "blueprint";
@@ -85,11 +85,13 @@ export interface DuplicateGroup {
 }
 
 export const CATEGORY_LABEL: Record<FontCategory, string> = {
-  sans: "Sans",
+  sans: "Sans Serif",
   serif: "Serif",
   display: "Display",
-  handwriting: "Script",
-  mono: "Mono",
+  handwriting: "Handwriting",
+  mono: "Monospace",
+  other: "Other",
+  icons: "Icons",
 };
 
 export const LICENSE_OPTIONS: FontLicense[] = ["free", "freeware", "personal", "commercial", "unknown"];

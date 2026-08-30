@@ -13,6 +13,7 @@ type SystemFontOut = {
 
 function categoryOf(family: string): FontCategory {
   const n = family.toLowerCase();
+  if (/mdl2|fluent icons|wingdings|webdings|symbol/i.test(n)) return "icons";
   if (/mono|consolas|courier|cascadia|fixedsys|terminal/i.test(n)) return "mono";
   if (/script|hand|comic|cursive|segoe script|ink/i.test(n)) return "handwriting";
   if (/display|black|poster|impact/i.test(n)) return "display";

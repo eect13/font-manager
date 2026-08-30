@@ -43,10 +43,10 @@ export function CssExportDialog({
 
   const snippets = {
     bundle: exportBundle(fonts),
-    import: exportGoogleImport(fonts) || "/* No Google Fonts in the current set */",
-    link: exportLinkTag(fonts) || "<!-- No Google Fonts in the current set -->",
+    import: exportGoogleImport(fonts) || "/* No Fontsource families in the current set */",
+    link: exportLinkTag(fonts) || "<!-- No Fontsource families in the current set -->",
     families: exportFontFamilies(fonts),
-    faces: exportLocalFaces(fonts) || "/* No uploaded files — Google Fonts do not need @font-face */",
+    faces: exportLocalFaces(fonts) || "/* No uploaded files — Fontsource CSS does not need local @font-face */",
     tailwind: exportTailwind(fonts),
   };
 
