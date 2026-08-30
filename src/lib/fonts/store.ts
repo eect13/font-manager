@@ -33,6 +33,7 @@ interface PersistedSlice {
   localFonts: FontRecord[];
   preview: PreviewSettings;
   scope: LibraryScope;
+  previewAxes: Record<string, Record<string, number>>;
 }
 
 interface FontState extends PersistedSlice {
@@ -44,7 +45,8 @@ interface FontState extends PersistedSlice {
   selectedId: string | null;
   inspectorOpen: boolean;
   uploadBusy: boolean;
-  previewAxes: Record<string, Record<string, number>>;
+  diskFamilies: string[];
+  diskFamilySet: Set<string>;
   activatedSet: Set<string>;
   pendingActivate: string[];
   pendingSet: Set<string>;
@@ -67,6 +69,8 @@ interface FontState extends PersistedSlice {
   selectFont: (id: string | null) => void;
   setInspectorOpen: (open: boolean) => void;
   setPreviewAxis: (id: string, tag: string, value: number) => void;
+  setDiskFamilies: (names: string[]) => void;
+  addDiskFamilies: (names: string[]) => void;
   addCollection: (name: string, parentId?: string | null) => string;
   setCollectionWatch: (id: string, watchPath: string | undefined, autoActivate?: boolean) => void;
   setCollectionAutoActivate: (id: string, autoActivate: boolean) => void;
@@ -152,6 +156,20 @@ function withPending(pendingActivate: string[]) {
   return { pendingActivate, pendingSet: new Set(pendingActivate) };
 }
 
+function withDisk(names: string[]) {
+  const diskFamilies: string[] = [];
+  const diskFamilySet = new Set<string>();
+  for (const raw of names) {
+    const t = raw.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (diskFamilySet.has(key)) continue;
+    diskFamilySet.add(key);
+    diskFamilies.push(t);
+  }
+  return { diskFamilies, diskFamilySet };
+}
+
 function stripLegacySeedActivation(activated: string[] | undefined, localCount: number): string[] {
   const list = activated ?? [];
   if (localCount > 0) return list;
@@ -179,6 +197,7 @@ export const useFontStore = create<FontState>()(
       inspectorOpen: false,
       uploadBusy: false,
       previewAxes: {},
+      ...withDisk([]),
       setHydrated: (value) => set({ hydrated: value }),
       setGoogleFonts: (fonts) =>
         set((s) => {
@@ -348,6 +367,12 @@ export const useFontStore = create<FontState>()(
               [id]: { ...prev, [tag]: value },
             },
           };
+        }),
+      setDiskFamilies: (names) => set(withDisk(names)),
+      addDiskFamilies: (names) =>
+        set((s) => {
+          if (!names.length) return s;
+          return withDisk([...s.diskFamilies, ...names]);
         }),
       addCollection: (name, parentId = null) => {
         const id = uid("c");
@@ -723,6 +748,7 @@ export const useFontStore = create<FontState>()(
             customTags: p.customTags && typeof p.customTags === "object" ? p.customTags : {},
             localFonts: Array.isArray(p.localFonts) ? p.localFonts : [],
             preview: { ...DEFAULT_PREVIEW, ...(p.preview as PreviewSettings | undefined) },
+            previewAxes: p.previewAxes && typeof p.previewAxes === "object" ? p.previewAxes : {},
             scope: (typeof p.scope === "string" ? p.scope : "all") as LibraryScope,
           } satisfies PersistedSlice;
         }
@@ -769,6 +795,7 @@ export const useFontStore = create<FontState>()(
             align: p.preview?.align ?? "left",
             italic: Boolean(p.preview?.italic),
           },
+          previewAxes: p.previewAxes && typeof p.previewAxes === "object" ? p.previewAxes : {},
           scope: p.scope ?? current.scope ?? "all",
         };
       },
@@ -780,6 +807,7 @@ export const useFontStore = create<FontState>()(
         customTags: s.customTags,
         localFonts: s.localFonts,
         preview: s.preview,
+        previewAxes: s.previewAxes,
         scope: s.scope,
       }),
     },
@@ -971,6 +999,7 @@ export function filterLibrary(
   activated: string[],
   collections: Collection[],
   customTags: Record<string, string[]>,
+  diskFamilies: string[] = [],
 ): FontRecord[] {
   let list = fonts;
   if (scope === "activated") {
@@ -981,6 +1010,10 @@ export function filterLibrary(
     list = list.filter((f) => fav.has(f.id));
   } else if (scope === "uploaded") list = list.filter((f) => f.source === "local");
   else if (scope === "google") list = list.filter((f) => f.source === "google");
+  else if (scope === "disk") {
+    const onDisk = new Set(diskFamilies.map((n) => n.trim().toLowerCase()));
+    list = list.filter((f) => f.source === "google" && onDisk.has(f.family.toLowerCase()));
+  }
   else if (scope.startsWith("collection:")) {
     const ids = collectFolderFontIds(collections, scope.slice(11));
     list = list.filter((f) => ids.has(f.id));

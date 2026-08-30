@@ -10,6 +10,7 @@ import {
   Type,
   Upload,
   User,
+  HardDrive,
 } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import { LibraryGroups } from "./folder-tree";
@@ -103,6 +104,7 @@ export function Sidebar({
   const customTags = useFontStore((s) => s.customTags);
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
+  const diskCount = useFontStore((s) => s.diskFamilies.length);
   const counts = useMemo(() => {
     const list = allFonts(localFonts, googleFonts);
     const license = { free: 0, freeware: 0, personal: 0, commercial: 0, unknown: 0 };
@@ -181,6 +183,14 @@ export function Sidebar({
               count={googleFonts.length}
               mainProps={{ "aria-label": "Google Fonts" }}
               menu={<GoogleActivateMenuItem />}
+            />
+            <SidebarRow
+              active={scope === "disk"}
+              onClick={() => go("disk")}
+              icon={<HardDrive className="size-4 shrink-0" />}
+              label="On disk"
+              count={diskCount}
+              mainProps={{ "aria-label": "On disk" }}
             />
           </section>
 

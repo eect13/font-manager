@@ -80,6 +80,7 @@ function applyReadyFamilies(names: string[]) {
       if (id) ids.push(id);
     }
     if (ids.length) markLiveActivated(ids);
+    useFontStore.getState().addDiskFamilies(names);
   });
 }
 
@@ -183,6 +184,15 @@ export async function rememberSessionFamilies(families: string[]): Promise<void>
     await tauriInvoke("set_session_families", { families });
   } catch {
     /* older installer */
+  }
+}
+
+export async function listSessionFamilies(): Promise<string[]> {
+  if (!(await inDesktopShell())) return [];
+  try {
+    return (await tauriInvoke<string[]>("session_families")) ?? [];
+  } catch {
+    return [];
   }
 }
 

@@ -6,7 +6,7 @@ import { refineLicense } from "./license";
 import { findFont, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
-import { restoreSessionFromDisk, rememberSessionFamilies } from "./os-activate";
+import { restoreSessionFromDisk, rememberSessionFamilies, listDiskFamilies, listSessionFamilies } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { startWatchPolling } from "./watch-folder";
 import type { FontRecord } from "./types";
@@ -122,19 +122,38 @@ export function useHydrateFonts() {
       const wantIds = Array.from(new Set(useFontStore.getState().activated));
       const desktop = await inDesktopShell();
       if (desktop) {
-        const wantNames = wantIds
+        const [sessionNames, diskNames] = await Promise.all([listSessionFamilies(), listDiskFamilies()]);
+        useFontStore.getState().setDiskFamilies(diskNames);
+        noteDiskFamilies(diskNames);
+        const persistNames = wantIds
           .map((id) => findFont(id, localFonts, google)?.family)
           .filter((name): name is string => Boolean(name));
+        const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
         void restoreSessionFromDisk(wantNames).then((result) => {
           if (cancelled) return;
-          noteDiskFamilies(result.onDisk);
-          const allow = new Set(result.ready.map((n) => n.trim().toLowerCase()));
+          noteDiskFamilies(result.onDisk.length ? result.onDisk : diskNames);
+          useFontStore.getState().setDiskFamilies(result.onDisk.length ? result.onDisk : diskNames);
+          const allow = new Set<string>();
+          for (const n of result.ready) allow.add(n.trim().toLowerCase());
           for (const n of result.onDisk) allow.add(n.trim().toLowerCase());
+          for (const n of sessionNames) allow.add(n.trim().toLowerCase());
           const live: string[] = [];
-          for (const id of wantIds) {
+          const seen = new Set<string>();
+          const consider = (id: string) => {
+            if (seen.has(id)) return;
             const font = findFont(id, localFonts, google);
-            if (!font) continue;
-            if (font.source === "local" || allow.has(font.family.toLowerCase())) live.push(id);
+            if (!font) return;
+            if (font.source === "local" || allow.has(font.family.toLowerCase())) {
+              seen.add(id);
+              live.push(id);
+            }
+          };
+          for (const id of wantIds) consider(id);
+          const byFamily = new Map<string, string>();
+          for (const font of [...localFonts, ...google]) byFamily.set(font.family.toLowerCase(), font.id);
+          for (const name of sessionNames) {
+            const id = byFamily.get(name.trim().toLowerCase());
+            if (id && allow.has(name.trim().toLowerCase())) consider(id);
           }
           useFontStore.getState().restoreActivation(live, []);
           void rememberSessionFamilies(

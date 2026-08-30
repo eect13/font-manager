@@ -319,6 +319,11 @@ pub fn set_session_families(app: AppHandle, families: Vec<String>) -> Result<(),
     Ok(())
 }
 
+#[tauri::command]
+pub fn session_families(app: AppHandle) -> Result<Vec<String>, String> {
+    Ok(load_session_families(&app))
+}
+
 pub fn session_begin(app: &AppHandle) {
     #[cfg(windows)]
     {

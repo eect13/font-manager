@@ -11,6 +11,7 @@ export type LibraryScope =
   | "favorites"
   | "uploaded"
   | "google"
+  | "disk"
   | `collection:${string}`
   | `category:${FontCategory}`
   | `tag:${string}`

@@ -89,6 +89,7 @@ fn main() {
             activate::activate_families_on_disk,
             activate::plan_google_activation,
             activate::set_session_families,
+            activate::session_families,
             activate::read_family_font,
             activate::scan_disk_families,
             parse::parse_family_cmap,

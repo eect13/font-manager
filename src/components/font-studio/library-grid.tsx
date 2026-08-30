@@ -67,6 +67,7 @@ export function LibraryGrid() {
   const collections = useFontStore((s) =>
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
   );
+  const diskFamilies = useFontStore((s) => (s.scope === "disk" ? s.diskFamilies : EMPTY_IDS));
   const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const list = preview.view === "list";
@@ -82,10 +83,11 @@ export function LibraryGrid() {
           activated,
           collections,
           customTags,
+          diskFamilies,
         ),
         preview.sort ?? "name-asc",
       ),
-    [localFonts, googleFonts, scope, query, favorites, activated, collections, customTags, preview.sort],
+    [localFonts, googleFonts, scope, query, favorites, activated, collections, customTags, diskFamilies, preview.sort],
   );
 
   const inner = Math.max(280, box.width - 24);
