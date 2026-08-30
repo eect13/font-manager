@@ -361,3 +361,139 @@ pub fn hash_font_path(path: String) -> Result<String, String> {
 pub fn diff_font_bytes(left: Vec<u8>, right: Vec<u8>) -> DiffOut {
     nearly_same(&left, &right)
 }
+
+#[derive(Serialize, Clone)]
+pub struct SystemFontOut {
+    pub family: String,
+    pub path: String,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    pub italic: bool,
+    pub variable: bool,
+    pub weight: u16,
+}
+
+fn face_family(face: &Face<'_>) -> Option<String> {
+    let mut family = None;
+    let mut typo = None;
+    for n in face.names() {
+        let Some(s) = n.to_string() else { continue };
+        let t = s.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if n.name_id == ttf_parser::name_id::TYPOGRAPHIC_FAMILY {
+            typo = Some(t.to_string());
+        } else if n.name_id == ttf_parser::name_id::FAMILY && family.is_none() {
+            family = Some(t.to_string());
+        }
+    }
+    typo.or(family)
+}
+
+fn system_font_dirs() -> Vec<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+        return vec![std::path::PathBuf::from(windir).join("Fonts")];
+    }
+    #[cfg(not(windows))]
+    {
+        let mut dirs = vec![
+            std::path::PathBuf::from("/usr/share/fonts"),
+            std::path::PathBuf::from("/usr/local/share/fonts"),
+        ];
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(std::path::PathBuf::from(&home).join(".fonts"));
+            dirs.push(std::path::PathBuf::from(home).join(".local/share/fonts"));
+        }
+        dirs
+    }
+}
+
+fn push_system_font(path: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>) {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
+        return;
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() < 256 || meta.len() > 40_000_000 {
+        return;
+    }
+    let Ok(data) = std::fs::read(path) else {
+        return;
+    };
+    let Ok(faces) = all_faces(&data, |_, face| {
+        let family = face_family(face).unwrap_or_default();
+        let italic = face.is_italic();
+        let variable = face.is_variable();
+        let weight = face.weight().to_number();
+        (family, italic, variable, weight)
+    }) else {
+        return;
+    };
+    for (family, italic, variable, weight) in faces {
+        let family = family.trim().to_string();
+        if family.is_empty() {
+            continue;
+        }
+        let key = family.to_ascii_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(SystemFontOut {
+            family,
+            path: path.to_string_lossy().into_owned(),
+            file_name: path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("font.ttf")
+                .to_string(),
+            italic,
+            variable,
+            weight,
+        });
+        if out.len() >= 480 {
+            return;
+        }
+    }
+}
+
+fn walk_system_dir(dir: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>, depth: u8) {
+    if out.len() >= 480 || depth > 6 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        if out.len() >= 480 {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            walk_system_dir(&path, out, seen, depth + 1);
+            continue;
+        }
+        push_system_font(&path, out, seen);
+    }
+}
+
+#[tauri::command]
+pub fn list_system_fonts() -> Result<Vec<SystemFontOut>, String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for dir in system_font_dirs() {
+        if dir.is_dir() {
+            walk_system_dir(&dir, &mut out, &mut seen, 0);
+        }
+    }
+    out.sort_by(|a, b| a.family.to_lowercase().cmp(&b.family.to_lowercase()));
+    Ok(out)
+}

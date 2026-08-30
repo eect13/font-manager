@@ -482,6 +482,11 @@ function specialSourceUrls(family: string) {
       "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/Noto-COLRv1.ttf",
       "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf",
     );
+  } else if (/emoji/i.test(family)) {
+    urls.unshift(
+      `https://cdn.jsdelivr.net/fontsource/fonts/${slug}@latest/emoji-400-normal.ttf`,
+      `https://cdn.jsdelivr.net/npm/@fontsource/${slug}/files/${slug}-emoji-400-normal.ttf`,
+    );
   }
   return urls;
 }
@@ -680,7 +685,40 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
 }
 
 export function loadFont(font: FontRecord, mode: FontLoadMode = "preview"): Promise<void> {
+  if (font.source === "system") return loadPathFont(font);
   return font.source === "local" ? loadLocalFont(font) : loadGoogleFont(font, mode);
+}
+
+async function loadPathFont(font: FontRecord): Promise<void> {
+  if (!font.originPath) return;
+  if (loadedLocal.has(font.id)) return;
+  if (typeof document === "undefined") return;
+  const pending = inflight.get(font.id);
+  if (pending) return pending;
+  const promise = (async () => {
+    const { convertFileSrc } = await import("@tauri-apps/api/core");
+    const url = convertFileSrc(font.originPath!);
+    const family = font.cssFamily || font.family;
+    const isVf = font.variable;
+    const face = new FontFace(family, `url(${JSON.stringify(url)})`, {
+      display: isSpecialPreviewFont(font) ? "block" : "swap",
+      style: font.italic && !isVf ? "italic" : "normal",
+      weight: isVf ? vfWeight(font) : String(font.weights[0] ?? 400),
+      ...(isVf ? { stretch: "50% 200%" } : {}),
+    });
+    await face.load();
+    document.fonts.add(face);
+    localFaces.set(font.id, { face, url: "" });
+    loadedLocal.add(font.id);
+  })().catch(() => {
+    /* system font still types in other apps */
+  });
+  inflight.set(font.id, promise);
+  try {
+    await promise;
+  } finally {
+    inflight.delete(font.id);
+  }
 }
 
 async function loadItalicFromDisk(font: FontRecord): Promise<boolean> {

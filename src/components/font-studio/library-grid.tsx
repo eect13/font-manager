@@ -5,10 +5,11 @@ import { UploadsResetDialog } from "./uploads-reset-dialog";
 import { Button } from "@/components/ui/button";
 import { primeGooglePreview } from "@/lib/fonts/loader";
 import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
-import type { Collection } from "@/lib/fonts/types";
+import type { Collection, FontRecord } from "@/lib/fonts/types";
 
 const EMPTY_IDS: string[] = [];
 const EMPTY_COLS: Collection[] = [];
+const EMPTY_FONTS: FontRecord[] = [];
 
 const COL_MIN = 280;
 const GAP = 8;
@@ -68,17 +69,18 @@ export function LibraryGrid() {
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
   );
   const diskFamilies = useFontStore((s) => (s.scope === "disk" ? s.diskFamilies : EMPTY_IDS));
+  const systemFonts = useFontStore((s) => (s.scope === "system" ? s.systemFonts : EMPTY_FONTS));
   const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const list = preview.view === "list";
   const sortMode =
-    scope === "disk" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
+    (scope === "disk" || scope === "system") && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
 
   const fonts = useMemo(
     () =>
       sortLibrary(
         filterLibrary(
-          allFonts(localFonts, googleFonts),
+          scope === "system" ? systemFonts : allFonts(localFonts, googleFonts),
           scope,
           query,
           favorites,
@@ -89,7 +91,7 @@ export function LibraryGrid() {
         ),
         sortMode,
       ),
-    [localFonts, googleFonts, scope, query, favorites, activated, collections, customTags, diskFamilies, sortMode],
+    [localFonts, googleFonts, systemFonts, scope, query, favorites, activated, collections, customTags, diskFamilies, sortMode],
   );
 
   const inner = Math.max(280, box.width - 24);
@@ -158,6 +160,12 @@ export function LibraryGrid() {
             : "Nothing downloaded yet. Activate a Google family to save TTF files here."}
         </p>
       </div>
+    ) : scope === "system" ? (
+      <div className="border-b border-border px-3 py-2 md:px-4">
+        <p className="text-sm text-muted-foreground">
+          Fonts already in Windows (Arial, Calibri, Segoe, …). View and favorite them here. Font Manager will not uninstall or deactivate them.
+        </p>
+      </div>
     ) : null;
 
   if (fonts.length === 0) {
@@ -170,6 +178,8 @@ export function LibraryGrid() {
           <p className="mt-2 max-w-sm text-sm text-muted-foreground">
             {scope === "uploaded"
               ? "Drop a folder of TTF, OTF, or WOFF files here, or use Files / Folder in the header."
+              : scope === "system"
+                ? "Open the desktop app to list Arial, Calibri, and the rest of C:\\Windows\\Fonts. This website cannot read that folder."
               : scope === "disk"
                 ? "Activate a Google family to download TTF files into Documents. This is not the Windows fonts folder."
               : scopeNeedsActivated(scope)

@@ -135,7 +135,7 @@ export function FontInspector() {
             {font.family}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {CATEGORY_LABEL[font.category]} · {font.source === "google" ? "Google Fonts" : "Uploaded"}
+            {font.source === "google" ? "Google Fonts" : font.source === "system" ? "Windows" : "Uploaded"}
             {font.variable ? " · Variable" : ""}
             {scriptLang(font.family) ? ` · ${scriptLang(font.family)}` : ""}
             {` · ${LICENSE_LABEL[fontLicense(font)]}`}
@@ -176,12 +176,19 @@ export function FontInspector() {
                   weight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
                   smcp: Boolean(features.smcp),
                 }),
+                ...(colorKindOf(font) !== "none" ? { fontPalette: "normal", fontVariantEmoji: "emoji" as const } : {}),
               }}
             >
               {previewSample(font, preview.sampleText)}
             </p>
 
             <div className="flex flex-wrap gap-2">
+              {font.source === "system" ? (
+                <p className="text-sm text-muted-foreground">
+                  Windows font — already available to Word and other apps. Read-only here (no Activate or Delete).
+                </p>
+              ) : (
+                <>
               <HelpTip
                 label={
                   isOn
@@ -248,6 +255,8 @@ export function FontInspector() {
                     Delete files
                   </Button>
                 </HelpTip>
+              )}
+                </>
               )}
             </div>
 

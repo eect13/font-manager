@@ -1,5 +1,5 @@
 export type FontCategory = "sans" | "serif" | "display" | "handwriting" | "mono";
-export type FontSource = "google" | "local";
+export type FontSource = "google" | "local" | "system";
 export type FontLicense = "free" | "freeware" | "personal" | "commercial" | "unknown";
 export type PreviewTheme = "paper" | "ink" | "newsprint" | "blueprint";
 export type LibraryView = "grid" | "list";
@@ -12,6 +12,7 @@ export type LibraryScope =
   | "uploaded"
   | "google"
   | "disk"
+  | "system"
   | `collection:${string}`
   | `category:${FontCategory}`
   | `tag:${string}`

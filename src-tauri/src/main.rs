@@ -100,6 +100,7 @@ fn main() {
             parse::hash_bytes,
             parse::hash_font_path,
             parse::diff_font_bytes,
+            parse::list_system_fonts,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Font Manager")

@@ -47,6 +47,7 @@ interface FontState extends PersistedSlice {
   uploadBusy: boolean;
   diskFamilies: string[];
   diskFamilySet: Set<string>;
+  systemFonts: FontRecord[];
   activatedSet: Set<string>;
   pendingActivate: string[];
   pendingSet: Set<string>;
@@ -71,6 +72,7 @@ interface FontState extends PersistedSlice {
   setPreviewAxis: (id: string, tag: string, value: number) => void;
   setDiskFamilies: (names: string[]) => void;
   addDiskFamilies: (names: string[]) => void;
+  setSystemFonts: (fonts: FontRecord[]) => void;
   addCollection: (name: string, parentId?: string | null) => string;
   setCollectionWatch: (id: string, watchPath: string | undefined, autoActivate?: boolean) => void;
   setCollectionAutoActivate: (id: string, autoActivate: boolean) => void;
@@ -198,6 +200,7 @@ export const useFontStore = create<FontState>()(
       uploadBusy: false,
       previewAxes: {},
       ...withDisk([]),
+      systemFonts: [],
       setHydrated: (value) => set({ hydrated: value }),
       setGoogleFonts: (fonts) =>
         set((s) => {
@@ -237,6 +240,9 @@ export const useFontStore = create<FontState>()(
         const live = get().activatedSet.has(id);
         const pending = get().pendingSet.has(id);
         const font = findFont(id, get().localFonts, get().googleFonts);
+        if (font?.source === "system") {
+          return;
+        }
         if (pending) {
           return;
         }
@@ -286,7 +292,7 @@ export const useFontStore = create<FontState>()(
         for (const id of ids) {
           if (live.has(id) || pending.has(id)) continue;
           const font = findFont(id, local, google);
-          if (!font) continue;
+          if (!font || font.source === "system") continue;
           pack.push(font);
           if (font.source === "google") googleIds.push(id);
           else localIds.push(id);
@@ -377,6 +383,7 @@ export const useFontStore = create<FontState>()(
           if (!names.length) return s;
           return withDisk([...s.diskFamilies, ...names]);
         }),
+      setSystemFonts: (fonts) => set({ systemFonts: fonts }),
       addCollection: (name, parentId = null) => {
         const id = uid("c");
         set((s) => ({
@@ -393,7 +400,7 @@ export const useFontStore = create<FontState>()(
         }));
         return id;
       },
-      setCollectionWatch: (id, watchPath, autoActivate) =>
+      setCollectionWatch: (id, watchPath, autoActivate) => {
         set((s) => ({
           collections: s.collections.map((c) =>
             c.id === id
@@ -404,7 +411,9 @@ export const useFontStore = create<FontState>()(
                 }
               : c,
           ),
-        })),
+        }));
+        if (watchPath) void import("./watch-folder").then((m) => m.refreshWatchedFolders());
+      },
       setCollectionAutoActivate: (id, autoActivate) =>
         set((s) => ({
           collections: s.collections.map((c) => (c.id === id ? { ...c, autoActivate } : c)),
@@ -822,7 +831,12 @@ export function findFont(
   localFonts: FontRecord[],
   googleFonts: FontRecord[] = GOOGLE_FONTS,
 ): FontRecord | undefined {
-  return FONT_BY_ID.get(id) ?? localFonts.find((f) => f.id === id) ?? googleFonts.find((f) => f.id === id);
+  return (
+    FONT_BY_ID.get(id) ??
+    localFonts.find((f) => f.id === id) ??
+    googleFonts.find((f) => f.id === id) ??
+    (id.startsWith("s:") ? useFontStore.getState().systemFonts.find((f) => f.id === id) : undefined)
+  );
 }
 
 export function allFonts(
@@ -1016,6 +1030,8 @@ export function filterLibrary(
   else if (scope === "disk") {
     const onDisk = new Set(diskFamilies.map((n) => n.trim().toLowerCase()));
     list = list.filter((f) => f.source === "google" && onDisk.has(f.family.toLowerCase()));
+  } else if (scope === "system") {
+    list = list.filter((f) => f.source === "system");
   }
   else if (scope.startsWith("collection:")) {
     const ids = collectFolderFontIds(collections, scope.slice(11));

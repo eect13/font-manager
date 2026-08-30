@@ -1,3 +1,3 @@
 export const APP_NAME = "Font Manager";
-export const APP_VERSION = "1.0.91";
+export const APP_VERSION = "1.0.92";
 export const APP_TITLE = APP_NAME;

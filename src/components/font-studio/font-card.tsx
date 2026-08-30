@@ -164,6 +164,9 @@ export const FontCard = memo(function FontCard({
     fontVariationSettings: vs?.fontVariationSettings ?? italicCss.fontVariationSettings,
     fontStretch: vs?.fontStretch,
     fontSynthesis: italicCss.fontSynthesis,
+    ...(font.colorKind && font.colorKind !== "none"
+      ? { fontPalette: "normal", fontVariantEmoji: "emoji" as const }
+      : {}),
   };
 
   const axisPop = wghtAxis ? (
@@ -356,6 +359,14 @@ export const FontCard = memo(function FontCard({
         >
           <Heart className={cn("size-3.5", favorite && "fill-current")} />
         </button>
+        {font.source === "system" ? (
+          <span
+            title="Windows font — already installed. Read-only."
+            className="flex size-8 items-center justify-center rounded-full bg-background/80 text-[10px] font-medium uppercase tracking-wide text-muted-foreground backdrop-blur-sm"
+          >
+            OS
+          </span>
+        ) : (
         <button
           type="button"
           title={activated ? "Deactivate — hide from other apps, keep files" : pending ? "Queued" : "Activate"}
@@ -373,6 +384,7 @@ export const FontCard = memo(function FontCard({
         >
           <Power className="size-3.5" />
         </button>
+        )}
       </div>
     </article>
   );

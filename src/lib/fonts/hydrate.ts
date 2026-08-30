@@ -9,6 +9,7 @@ import { inferLocalStyle } from "./style-tags";
 import { restoreSessionFromDisk, rememberSessionFamilies, listDiskFamilies, listSessionFamilies } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { startWatchPolling } from "./watch-folder";
+import { loadSystemFonts } from "./system-fonts";
 import type { FontRecord } from "./types";
 
 async function reclassifyStoredLocalFonts(cancelled: () => boolean) {
@@ -170,6 +171,7 @@ export function useHydrateFonts() {
       void reclassifyStoredLocalFonts(() => cancelled);
 
       startWatchPolling();
+      void loadSystemFonts();
 
       window.setTimeout(() => {
         if (cancelled) return;

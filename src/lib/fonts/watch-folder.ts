@@ -15,8 +15,11 @@ function underWatch(origin: string, root: string) {
 let pollTimer = 0;
 let lastSig = "";
 
-function signature(paths: string[]) {
-  return paths.slice().sort().join("|");
+function signature(paths: string[], sizes: number[]) {
+  return paths
+    .map((path, i) => `${norm(path)}:${sizes[i] ?? 0}`)
+    .sort()
+    .join("|");
 }
 
 export async function addWatchedFolder(): Promise<void> {
@@ -59,18 +62,22 @@ export async function refreshWatchedFolders(): Promise<void> {
   const watched = collections.filter((c) => c.watchPath);
   if (!watched.length) return;
   const allOrigins: string[] = [];
+  const allSizes: number[] = [];
   for (const folder of watched) {
     const scanned = await scanWatchFolder(folder.watchPath!);
     allOrigins.push(...scanned.originPaths);
-    const known = new Set(
-      localFonts.filter((f) => f.originPath && underWatch(f.originPath, folder.watchPath!)).map((f) => norm(f.originPath!)),
-    );
+    allSizes.push(...scanned.files.map((file) => file.size));
+    const known = localFonts.filter((f) => f.originPath && underWatch(f.originPath, folder.watchPath!));
+    const knownByPath = new Map(known.map((f) => [norm(f.originPath!), f]));
     const freshFiles: File[] = [];
     const freshPaths: string[] = [];
     for (let i = 0; i < scanned.files.length; i += 1) {
       const origin = scanned.originPaths[i]!;
-      if (known.has(norm(origin))) continue;
-      freshFiles.push(scanned.files[i]!);
+      const file = scanned.files[i]!;
+      const prev = knownByPath.get(norm(origin));
+      if (prev && (prev.fileSize ?? 0) === file.size) continue;
+      if (prev) await removeLocalFont(prev.id);
+      freshFiles.push(file);
       freshPaths.push(origin);
     }
     if (freshFiles.length) {
@@ -81,7 +88,7 @@ export async function refreshWatchedFolders(): Promise<void> {
       });
     }
   }
-  const sig = signature(allOrigins);
+  const sig = signature(allOrigins, allSizes);
   if (sig === lastSig) return;
   lastSig = sig;
   const live = new Set(allOrigins.map(norm));
@@ -99,7 +106,7 @@ export function startWatchPolling() {
   const tick = () => {
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
     window.clearInterval(pollTimer);
-    pollTimer = window.setInterval(() => void refreshWatchedFolders(), hidden ? 20_000 : 4_000);
+    pollTimer = window.setInterval(() => void refreshWatchedFolders(), hidden ? 12_000 : 2_500);
   };
   tick();
   document.addEventListener("visibilitychange", () => {

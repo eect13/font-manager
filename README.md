@@ -1,10 +1,12 @@
-# Font Manager **1.0.91**
+# Font Manager **1.0.92**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse ~1,968 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.91** sits next to the logo, not in the window title.
+Version **1.0.92** sits next to the logo, not in the window title.
 
-**1.0.91** — Activate no longer freezes the window. Scan and register run in the background. Missing files download **one family at a time**. **On disk** sits under Library (downloaded Google families in Documents — not Windows Arial/Calibri). Deactivate still keeps files. Settings still persist on exit.
+**1.0.92** — **Windows** drawer lists `C:\\Windows\\Fonts` (Arial, Calibri, Segoe) as read-only. COLRv1 / emoji specimens use `font-palette` and a color TTF when Google only serves WOFF2. Watched folders re-scan every 2.5s and pick up replaced files. Activate is still sequential and off the UI thread.
+
+**1.0.91** — sequential Google activate, On disk in Library. **1.0.90** — scan before download. **1.0.86** — Fontsource TTF for WOFF2-only families.
 
 **1.0.90** — Scan before download flag. **1.0.89** — session restore + slider persist. **1.0.88** — card/inspector axes share a store. **1.0.86** — Fontsource TTF for WOFF2-only families. **1.0.85** — Deactivate keeps files.
 
@@ -153,16 +155,13 @@ Deactivate unloads and **keeps files**. Activate again is register-only. Preview
 
 ---
 
-## Next version (not in 1.0.91)
+## Next version (not in 1.0.92)
 
-- Windows system fonts as a read-only drawer (Arial, Calibri, Segoe — view, never uninstall).
-- Signed installer + auto-update (SmartScreen / Store).
-- Native WOFF2 → TTF in the app so Fontsource is a fallback, not the only path.
-- COLRv1 / emoji preview quality.
-- Search chips (`license:personal` without typing).
-- Watched folders that stay in sync.
-- Extra TTC faces, color-font install notes.
-- More providers (Fontshare, Bunny, GitHub releases) behind the same scan-then-download rules.
+- Signed installer + auto-update (SmartScreen / Store) — needs a code-signing cert; not a code change we can fake.
+- Native WOFF2 → TTF in Rust — new crate / MSRV; Fontsource TTF already covers install.
+- Search chips (`license:personal` without typing) — license rows already filter; chips are sugar.
+- Extra TTC faces as separate cards — TTC already registers every face with Windows; splitting preview cards is optional.
+- Other providers (Fontshare, Bunny) behind the same scan-then-download rules.
 
 ---
 
@@ -235,11 +234,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.91",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.92",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.91** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.92** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 

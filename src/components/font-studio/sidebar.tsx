@@ -11,6 +11,7 @@ import {
   Upload,
   User,
   HardDrive,
+  Monitor,
 } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import { LibraryGroups } from "./folder-tree";
@@ -105,6 +106,7 @@ export function Sidebar({
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
   const diskCount = useFontStore((s) => s.diskFamilies.length);
+  const systemCount = useFontStore((s) => s.systemFonts.length);
   const counts = useMemo(() => {
     const list = allFonts(localFonts, googleFonts);
     const license = { free: 0, freeware: 0, personal: 0, commercial: 0, unknown: 0 };
@@ -178,6 +180,17 @@ export function Sidebar({
               mainProps={{
                 "aria-label": "On disk",
                 title: "Google families already downloaded into Documents / Font Manager. Not Windows system fonts (Arial, Calibri).",
+              }}
+            />
+            <SidebarRow
+              active={scope === "system"}
+              onClick={() => go("system")}
+              icon={<Monitor className="size-4 shrink-0" />}
+              label="Windows"
+              count={systemCount}
+              mainProps={{
+                "aria-label": "Windows fonts",
+                title: "Fonts already in C:\\Windows\\Fonts. View only — Font Manager will not uninstall them.",
               }}
             />
           </section>
