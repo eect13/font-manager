@@ -671,19 +671,44 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     tellWebPreview();
     return true;
   }
+  if (font.source === "google") {
+    const plan = await tauriInvoke<{ ready: string[]; missing: string[] }>("plan_google_activation", {
+      families: [font.family],
+    }).catch(() => null);
+    if (plan?.ready.length) {
+      const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
+        families: plan.ready,
+      }).catch(() => plan.ready);
+      if (ready?.length) {
+        installedCache.add(font.family.toLowerCase());
+        await markPreviewLive([font.id]);
+        return true;
+      }
+    }
+    const added = await tauriInvoke<number>("start_google_downloads", {
+      families: [font.family],
+    }).catch(() => 0);
+    if (added) {
+      startGooglePoll();
+      return true;
+    }
+    const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
+      families: [font.family],
+    }).catch(() => [] as string[]);
+    if (ready.length) {
+      installedCache.add(font.family.toLowerCase());
+      await markPreviewLive([font.id]);
+    } else {
+      startGooglePoll();
+    }
+    return true;
+  }
   const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
     families: [font.family],
   }).catch(() => [] as string[]);
   if (ready.length) {
     installedCache.add(font.family.toLowerCase());
     await markPreviewLive([font.id]);
-    return true;
-  }
-  if (font.source === "google") {
-    await tauriInvoke<number>("start_google_downloads", {
-      families: [font.family],
-    }).catch(() => 0);
-    startGooglePoll();
     return true;
   }
   job = {

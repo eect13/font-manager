@@ -911,6 +911,65 @@ fn index_has(index: &DiskIndex, family: &str) -> bool {
     alias_keys(family).iter().any(|k| index.by_key.contains_key(k))
 }
 
+fn family_has_intact(app: &AppHandle, family: &str) -> bool {
+    family_locations(app, family).iter().any(|dir| dir_has_intact(dir))
+}
+
+fn family_on_disk(app: &AppHandle, index: &DiskIndex, family: &str) -> bool {
+    index_has(index, family) || family_has_intact(app, family)
+}
+
+fn split_ready_missing(app: &AppHandle, families: Vec<String>, bust: bool) -> (Vec<String>, Vec<String>) {
+    let index = build_disk_index(app);
+    let mut ready = Vec::new();
+    let mut missing = Vec::new();
+    for family in families {
+        let t = family.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if !bust && family_on_disk(app, &index, t) {
+            ready.push(family);
+        } else {
+            missing.push(family);
+        }
+    }
+    (ready, missing)
+}
+
+fn commit_ready_families(app: &AppHandle, ready: &[String]) {
+    if ready.is_empty() {
+        return;
+    }
+    let index = build_disk_index(app);
+    let mut n = 0usize;
+    for family in ready {
+        let mut added = register_from_index(app, &index, family);
+        if added == 0 {
+            added = register_intact_family(app, family);
+        }
+        n += added;
+        forget_queued(family);
+        if let Ok(mut denied) = bulk().denied.lock() {
+            denied.remove(&family.trim().to_lowercase());
+        }
+    }
+    if n > 0 {
+        notify_fonts_changed();
+        session_add(app, ready);
+    }
+    if let Ok(mut p) = bulk().progress.lock() {
+        p.skipped += ready.len() as u32;
+        p.done += ready.len() as u32;
+        for family in ready {
+            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                p.ready_names.push(family.clone());
+            }
+        }
+    }
+    emit_progress(app);
+}
+
 fn register_from_index(app: &AppHandle, index: &DiskIndex, family: &str) -> usize {
     let mut n = 0usize;
     let mut seen = HashSet::new();
@@ -1107,6 +1166,22 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
 
 fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     let state = bulk();
+    let bust = state.bust.load(Ordering::SeqCst);
+    let (_ready, missing) = split_ready_missing(&app, families, bust);
+    commit_ready_families(&app, &_ready);
+
+    if missing.is_empty() {
+        notify_fonts_changed();
+        if let Ok(mut p) = state.progress.lock() {
+            p.running = false;
+            p.current.clear();
+        }
+        state.running.store(false, Ordering::SeqCst);
+        state.bust.store(false, Ordering::SeqCst);
+        emit_progress(&app);
+        return;
+    }
+
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent("FontManager/1.0")
@@ -1123,53 +1198,6 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
             return;
         }
     };
-
-    let index = build_disk_index(&app);
-    let mut ready = Vec::new();
-    let mut missing = Vec::new();
-    for family in families {
-        if index_has(&index, &family) {
-            ready.push(family);
-        } else {
-            missing.push(family);
-        }
-    }
-
-    if !ready.is_empty() {
-        let mut n = 0usize;
-        for family in &ready {
-            n += register_from_index(&app, &index, family);
-        }
-        if n > 0 {
-            notify_fonts_changed();
-            session_add(&app, &ready);
-        }
-        if let Ok(mut p) = state.progress.lock() {
-            p.skipped += ready.len() as u32;
-            p.done += ready.len() as u32;
-            for family in &ready {
-                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                    p.ready_names.push(family.clone());
-                }
-            }
-        }
-        emit_progress(&app);
-        for family in &ready {
-            forget_queued(family);
-        }
-    }
-
-    if missing.is_empty() {
-        notify_fonts_changed();
-        if let Ok(mut p) = state.progress.lock() {
-            p.running = false;
-            p.current.clear();
-        }
-        state.running.store(false, Ordering::SeqCst);
-        state.bust.store(false, Ordering::SeqCst);
-        emit_progress(&app);
-        return;
-    }
 
     let queue = Arc::new(Mutex::new(VecDeque::from(missing)));
     let workers = 3usize;
@@ -1423,7 +1451,7 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     let index = build_disk_index(&app);
     let mut ready = Vec::new();
     for family in families {
-        if index_has(&index, &family) {
+        if family_on_disk(&app, &index, &family) {
             let _ = register_from_index(&app, &index, &family);
             ready.push(family);
         }
@@ -1455,7 +1483,7 @@ pub fn plan_google_activation(app: AppHandle, families: Vec<String>) -> Result<A
         if t.is_empty() {
             continue;
         }
-        if index_has(&index, t) {
+        if index_has(&index, t) || family_has_intact(&app, t) {
             ready.push(family);
         } else {
             missing.push(family);
@@ -1593,8 +1621,22 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
 
 #[tauri::command]
 pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
-    let fresh = accept_new_families(families);
+    if families.is_empty() {
+        return Ok(0);
+    }
+    let bust = bulk().bust.load(Ordering::SeqCst);
+    let (ready, missing) = split_ready_missing(&app, families, bust);
+    commit_ready_families(&app, &ready);
+
+    let fresh = accept_new_families(missing);
     if fresh.is_empty() {
+        if !bulk().running.load(Ordering::SeqCst) {
+            if let Ok(mut p) = bulk().progress.lock() {
+                p.running = false;
+                p.current.clear();
+            }
+            emit_progress(&app);
+        }
         return Ok(0);
     }
     let added = fresh.len();
@@ -1603,15 +1645,14 @@ pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
         let mut p = state.progress.lock().map_err(|e| e.to_string())?;
         p.running = true;
         if !state.running.load(Ordering::SeqCst) {
-            p.done = 0;
             p.failed = 0;
-            p.skipped = 0;
-            p.total = added as u32;
+            p.skipped = ready.len() as u32;
+            p.done = ready.len() as u32;
+            p.total = (ready.len() + added) as u32;
             p.current = fresh.first().cloned().unwrap_or_default();
             p.failed_names.clear();
             p.failed_details.clear();
             p.paused = false;
-            p.ready_names.clear();
             reset_circuits();
         } else {
             p.total += added as u32;

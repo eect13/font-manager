@@ -237,7 +237,10 @@ export const useFontStore = create<FontState>()(
         const live = get().activatedSet.has(id);
         const pending = get().pendingSet.has(id);
         const font = findFont(id, get().localFonts, get().googleFonts);
-        if (live || pending) {
+        if (pending) {
+          return;
+        }
+        if (live) {
           set((s) => ({
             ...withActivated(s.activated.filter((x) => x !== id)),
             ...withPending(s.pendingActivate.filter((x) => x !== id)),

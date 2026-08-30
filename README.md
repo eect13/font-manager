@@ -1,8 +1,10 @@
-# Font Manager **1.0.89**
+# Font Manager **1.0.90**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse ~1,968 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.89** sits next to the logo, not in the window title.
+Version **1.0.90** sits next to the logo, not in the window title.
+
+**1.0.90** — Activate scans Documents **before** any download flag. Intact Google families register immediately. The progress bar only covers missing/corrupt files. A second click while queued no longer cancels the scan.
 
 **1.0.89** — Exit restores the last session even if the UI persist lagged. Slider positions are saved. Provider list has **On disk** (downloaded Google families). Activate still scans first; Deactivate still keeps files.
 
@@ -140,7 +142,7 @@ Deactivate unloads and **keeps files**. Activate again does **not** download. De
 
 ## Google download
 
-1. Scan Documents. Intact TTF/OTF/TTC → register, skip fetch.
+1. Scan Documents **on the Activate click**, before any download worker starts. Intact TTF/OTF/TTC → register, skip fetch. The family turns on immediately.
 2. Missing or broken (empty, truncated, WOFF2) → download TTF. Google CSS first; if it only has WOFF2, Fontsource TTF for that script (khmer, lao, lycian, …).
 3. Three workers. Retry replaces files. Pause / Stop still work.
 
@@ -217,11 +219,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.89",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.90",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.89** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.90** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 
