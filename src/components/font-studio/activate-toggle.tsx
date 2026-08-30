@@ -124,7 +124,7 @@ export function GoogleActivateMenuItem() {
         disabled={!count}
         onSelect={() => {
           const ids = useFontStore.getState().googleFonts.map((font) => font.id);
-          activateSet(ids, "Google Fonts");
+          activateSet(ids, "Fontsource");
         }}
       >
         <Power className="size-3.5" />
@@ -136,7 +136,7 @@ export function GoogleActivateMenuItem() {
         disabled={!anyOn}
         onSelect={() => {
           const ids = useFontStore.getState().googleFonts.map((font) => font.id);
-          deactivateSet(ids, "Google Fonts");
+          deactivateSet(ids, "Fontsource");
         }}
       >
         <Power className="size-3.5" />

@@ -135,7 +135,7 @@ export function FontInspector() {
             {font.family}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {font.source === "google" ? "Google Fonts" : font.source === "system" ? "Windows" : "Uploaded"}
+            {font.source === "google" ? "Fontsource" : font.source === "system" ? "Windows" : "Uploaded"}
             {font.variable ? " · Variable" : ""}
             {scriptLang(font.family) ? ` · ${scriptLang(font.family)}` : ""}
             {` · ${LICENSE_LABEL[fontLicense(font)]}`}
@@ -241,7 +241,7 @@ export function FontInspector() {
                 </HelpTip>
               )}
               {font.source === "google" && (
-                <HelpTip label="Delete downloaded files from Documents. The family stays in Google Fonts. Deactivate only unloads them from other apps.">
+                <HelpTip label="Delete downloaded files from Documents. The family stays in Fontsource. Deactivate only unloads them from other apps.">
                   <Button
                     size="sm"
                     variant="ghost"

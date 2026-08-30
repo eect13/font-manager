@@ -786,6 +786,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
       emit();
       toast.success(
         `Deactivated ${names.length.toLocaleString()} — files kept in Documents`,
+        { description: names.length > 8 ? "Windows is catching up in the background." : undefined },
       );
     } catch {
       for (const font of fonts) removeQueue.push(font);

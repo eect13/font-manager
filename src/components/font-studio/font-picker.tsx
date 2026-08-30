@@ -65,7 +65,7 @@ export function FontPicker({
     const google = visible.filter((f) => f.source !== "local");
     return [
       { label: "Uploaded", items: uploaded },
-      { label: "Google Fonts", items: google },
+      { label: "Fontsource", items: google },
     ].filter((g) => g.items.length);
   }, [visible]);
 

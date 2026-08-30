@@ -58,7 +58,7 @@ const SIDEBAR_TAGS = [
 const KNOWN_TAGS = new Set(ALL_TAGS);
 
 const STYLE_TIP =
-  "Google Fonts use Google’s official class (Sans, Serif, Display, Script, Mono). Uploads use the file name first. These hosts often ship dummy PANOSE, so we ignore it: " +
+  "Fontsource categories (Sans, Serif, Display, Script, Mono). Uploads use the file name first. Dummy PANOSE from free-font sites is ignored: " +
   (UNTRUSTED_FONT_SOURCES ?? []).join(", ") +
   ".";
 
@@ -66,7 +66,7 @@ const LICENSE_TIP =
   "Read from the font’s license name/URL (OpenType name IDs 13–14), then the file path. Dafont-style packs are treated as personal-use until you confirm. Not legal advice — override in the inspector.";
 
 const TAGS_TIP =
-  "Guessed from the family name, Google stroke/classifications, and real OS/2 data when it looks filled in. Dummy PANOSE from free-font sites is ignored. Add your own tags in the inspector.";
+  "Guessed from the family name, Fontsource category, and real OS/2 data when it looks filled in. Dummy PANOSE from free-font sites is ignored. Add your own tags in the inspector.";
 
 function SidebarHint({
   label,
@@ -190,9 +190,9 @@ export function Sidebar({
               active={scope === "google"}
               onClick={() => go("google")}
               icon={<Type className="size-4 shrink-0" />}
-              label="Google Fonts"
+              label="Fontsource"
               count={googleFonts.length}
-              mainProps={{ "aria-label": "Google Fonts" }}
+              mainProps={{ "aria-label": "Fontsource" }}
               menu={<GoogleActivateMenuItem />}
             />
           </section>

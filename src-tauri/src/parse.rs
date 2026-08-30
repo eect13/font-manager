@@ -394,7 +394,9 @@ fn face_family(face: &Face<'_>) -> Option<String> {
 fn system_font_dirs() -> Vec<std::path::PathBuf> {
     #[cfg(windows)]
     {
-        let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+        let windir = std::env::var("SYSTEMROOT")
+            .or_else(|_| std::env::var("WINDIR"))
+            .unwrap_or_else(|_| "C:\\Windows".into());
         return vec![std::path::PathBuf::from(windir).join("Fonts")];
     }
     #[cfg(not(windows))]
@@ -411,6 +413,15 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
     }
 }
 
+fn stem_family(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Font")
+        .replace(['_', '-'], " ")
+        .trim()
+        .to_string()
+}
+
 fn push_system_font(path: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>) {
     let ext = path
         .extension()
@@ -423,50 +434,75 @@ fn push_system_font(path: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSe
     let Ok(meta) = std::fs::metadata(path) else {
         return;
     };
-    if meta.len() < 256 || meta.len() > 40_000_000 {
+    if meta.len() < 256 {
         return;
     }
-    let Ok(data) = std::fs::read(path) else {
-        return;
-    };
-    let Ok(faces) = all_faces(&data, |_, face| {
-        let family = face_family(face).unwrap_or_default();
-        let italic = face.is_italic();
-        let variable = face.is_variable();
-        let weight = face.weight().to_number();
-        (family, italic, variable, weight)
-    }) else {
-        return;
-    };
-    for (family, italic, variable, weight) in faces {
-        let family = family.trim().to_string();
-        if family.is_empty() {
-            continue;
+    let fallback = stem_family(path);
+    let mut added = false;
+    let cap = (meta.len() as usize).min(512 * 1024);
+    if let Ok(mut file) = File::open(path) {
+        let mut data = vec![0u8; cap];
+        if let Ok(n) = file.read(&mut data) {
+            data.truncate(n);
+            if let Ok(faces) = all_faces(&data, |_, face| {
+                let family = face_family(face).unwrap_or_default();
+                let italic = face.is_italic();
+                let variable = face.is_variable();
+                let weight = face.weight().to_number();
+                (family, italic, variable, weight)
+            }) {
+                for (family, italic, variable, weight) in faces {
+                    let family = family.trim().to_string();
+                    let family = if family.is_empty() {
+                        fallback.clone()
+                    } else {
+                        family
+                    };
+                    let key = family.to_ascii_lowercase();
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    out.push(SystemFontOut {
+                        family,
+                        path: path.to_string_lossy().into_owned(),
+                        file_name: path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("font.ttf")
+                            .to_string(),
+                        italic,
+                        variable,
+                        weight,
+                    });
+                    added = true;
+                    if out.len() >= 480 {
+                        return;
+                    }
+                }
+            }
         }
-        let key = family.to_ascii_lowercase();
-        if !seen.insert(key) {
-            continue;
-        }
-        out.push(SystemFontOut {
-            family,
-            path: path.to_string_lossy().into_owned(),
-            file_name: path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("font.ttf")
-                .to_string(),
-            italic,
-            variable,
-            weight,
-        });
-        if out.len() >= 480 {
-            return;
+    }
+    if !added {
+        let key = fallback.to_ascii_lowercase();
+        if seen.insert(key) {
+            out.push(SystemFontOut {
+                family: fallback,
+                path: path.to_string_lossy().into_owned(),
+                file_name: path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("font.ttf")
+                    .to_string(),
+                italic: false,
+                variable: false,
+                weight: 400,
+            });
         }
     }
 }
 
 fn walk_system_dir(dir: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>, depth: u8) {
-    if out.len() >= 480 || depth > 6 {
+    if out.len() >= 480 || depth > 4 {
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else {

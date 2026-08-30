@@ -194,7 +194,7 @@ fn disk_family_keys(app: &AppHandle) -> HashSet<String> {
 
 #[cfg(windows)]
 mod winfont {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -221,6 +221,11 @@ mod winfont {
     fn loaded() -> &'static Mutex<HashSet<PathBuf>> {
         static LOADED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
         LOADED.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn by_family() -> &'static Mutex<HashMap<String, HashSet<PathBuf>>> {
+        static M: OnceLock<Mutex<HashMap<String, HashSet<PathBuf>>>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     fn last_notify() -> &'static Mutex<Option<Instant>> {
@@ -252,6 +257,31 @@ mod winfont {
             g.insert(path.to_path_buf());
         }
         dirty().store(true, Ordering::SeqCst);
+    }
+
+    pub fn bind(family: &str, path: &Path) {
+        let key = family.trim().to_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        if let Ok(mut g) = by_family().lock() {
+            g.entry(key).or_default().insert(path.to_path_buf());
+        }
+    }
+
+    pub fn unregister_family(family: &str) -> u32 {
+        let key = family.trim().to_lowercase();
+        let paths = by_family()
+            .lock()
+            .ok()
+            .and_then(|mut g| g.remove(&key))
+            .unwrap_or_default();
+        let mut n = 0u32;
+        for path in paths {
+            unregister(&path);
+            n += 1;
+        }
+        n
     }
 
     pub fn unregister(path: &Path) {
@@ -315,6 +345,24 @@ mod winfont {
 fn register_path(path: &Path) {
     #[cfg(windows)]
     winfont::register(path);
+}
+
+fn register_family_path(family: &str, path: &Path) {
+    register_path(path);
+    #[cfg(windows)]
+    winfont::bind(family, path);
+}
+
+fn unregister_family_session(family: &str) -> u32 {
+    #[cfg(windows)]
+    {
+        return winfont::unregister_family(family);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = family;
+        0
+    }
 }
 
 fn unregister_path(path: &Path) {
@@ -921,7 +969,7 @@ fn register_intact_family(app: &AppHandle, family: &str) -> usize {
         walk_font_files(&dir, &mut files);
         for path in files {
             if ttf_intact(&path) {
-                register_path(&path);
+                register_family_path(family, &path);
                 n += 1;
             }
         }
@@ -1096,7 +1144,7 @@ fn register_from_index(app: &AppHandle, index: &DiskIndex, family: &str) -> usiz
         if let Some(paths) = index.by_key.get(&key) {
             for path in paths {
                 if seen.insert(path.clone()) {
-                    register_path(path);
+                    register_family_path(family, path);
                     n += 1;
                 }
             }
@@ -1241,33 +1289,34 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     let root = family_dir(app, family)?;
     fs::create_dir_all(&root).map_err(|e| format!("could not create folder: {e}"))?;
     let mut wrote = 0usize;
-    let faces = fetch_google_family_faces(client, family, &slug);
-    for (name, bytes) in faces {
+    for (name, bytes) in fetch_fontsource_faces(client, &slug) {
         if bulk().cancel.load(Ordering::SeqCst) {
             break;
         }
         let path = root.join(sanitize(&name));
         if ttf_intact(&path) {
-            register_path(&path);
+            register_family_path(family, &path);
             wrote += 1;
             continue;
         }
         if write_font_file(&path, &bytes).is_ok() {
+            register_family_path(family, &path);
             wrote += 1;
         }
     }
     if wrote == 0 {
-        for (name, bytes) in fetch_fontsource_faces(client, &slug) {
+        for (name, bytes) in fetch_google_family_faces(client, family, &slug) {
             if bulk().cancel.load(Ordering::SeqCst) {
                 break;
             }
             let path = root.join(sanitize(&name));
             if ttf_intact(&path) {
-                register_path(&path);
+                register_family_path(family, &path);
                 wrote += 1;
                 continue;
             }
             if write_font_file(&path, &bytes).is_ok() {
+                register_family_path(family, &path);
                 wrote += 1;
             }
         }
@@ -1491,32 +1540,47 @@ pub fn flush_font_cache() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn unload_font_family(app: AppHandle, family: String) -> Result<u32, String> {
-    unload_font_families(app, vec![family])
-}
-
-#[tauri::command]
-pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32, String> {
+fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
     let mut n = 0u32;
-    for family in &families {
-        for dir in family_locations(&app, family) {
-            let mut files = Vec::new();
-            walk_font_files(&dir, &mut files);
-            for path in files {
-                unregister_path(&path);
-                n += 1;
+    for family in families {
+        let mut k = unregister_family_session(family);
+        if k == 0 {
+            if let Ok(dir) = family_dir(app, family) {
+                let mut files = Vec::new();
+                walk_font_files(&dir, &mut files);
+                for path in files {
+                    unregister_path(&path);
+                    k += 1;
+                }
             }
         }
+        n += k;
         forget_queued(family);
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.insert(family.trim().to_lowercase());
         }
     }
-    session_remove(&app, &families);
+    session_remove(app, families);
     if n > 0 || !families.is_empty() {
         notify_fonts_changed();
     }
+    n
+}
+
+#[tauri::command]
+pub fn unload_font_family(app: AppHandle, family: String) -> Result<u32, String> {
+    Ok(unload_now(&app, &[family]))
+}
+
+#[tauri::command]
+pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32, String> {
+    if families.len() <= 8 {
+        return Ok(unload_now(&app, &families));
+    }
+    let n = families.len() as u32;
+    thread::spawn(move || {
+        let _ = unload_now(&app, &families);
+    });
     Ok(n)
 }
 

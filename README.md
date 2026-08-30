@@ -1,12 +1,12 @@
-# Font Manager **1.0.95**
+# Font Manager **1.0.96**
 
-**TL;DR.** FontBase-style desktop typeface library. Browse ~1,968 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
+**TL;DR.** FontBase-style desktop typeface library. Browse Fontsource families (TTF-first), upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.95** sits next to the logo, not in the window title.
+Version **1.0.96** sits next to the logo, not in the window title.
 
-**1.0.95** — Fontsource is a TTF fallback, not a second catalog. Fallback is capped at 4 files (latin 400/700). HTTP is 4s connect / 10s total. Stop ignores leftover progress events. Downloads run on a background thread, one family at a time.
+**1.0.96** — Provider is **Fontsource** (Google Fonts row removed). Activate downloads Fontsource TTF first, Google CSS only if that family has no TTF. Windows drawer lists `C:\\Windows\\Fonts` from filenames if parsing fails. Bulk Deactivate returns immediately and unregisters in the background so the window does not hang.
 
-**1.0.94** — debounce WM_FONTCHANGE. **1.0.93** — dropped On disk. **1.0.92** — Windows drawer. **1.0.91** — sequential Google activate. **1.0.90** — scan before download. **1.0.86** — Fontsource TTF for WOFF2-only families.
+**1.0.95** — Fontsource fallback cap. **1.0.94** — WM_FONTCHANGE debounce. **1.0.93** — dropped On disk. **1.0.91** — sequential activate.
 
 **1.0.90** — Scan before download flag. **1.0.89** — session restore + slider persist. **1.0.88** — card/inspector axes share a store. **1.0.86** — Fontsource TTF for WOFF2-only families. **1.0.85** — Deactivate keeps files.
 
@@ -146,8 +146,8 @@ Deactivate unloads and **keeps files**. Activate again does **not** download. De
 
 1. Click Activate. The UI returns immediately. A background thread scans `Documents / Font Manager`.
 2. Intact TTF/OTF/TTC → register, skip fetch. The family turns on as soon as the scan hits it.
-3. Missing or broken (empty, truncated, WOFF2) → download **one family at a time** on a background thread (not the UI thread). Google CSS TTF first; if Google has no TTF, Fontsource **for that family only**, latin 400/700 (max 4 files). Never the whole Fontsource repo.
-4. HTTP: 4s connect, 10s total. 404s skip extra CDNs. `WM_FONTCHANGE` at most every 1.5s, then once when the job ends. Stop kills the queue; leftover events are ignored.
+3. Missing or broken → download **one family at a time**. **Fontsource TTF first** (latin 400/700, max 4 files). Google CSS TTF only if Fontsource had nothing.
+4. HTTP: 4s connect, 10s total. `WM_FONTCHANGE` at most every 1.5s. Stop kills the queue. Deactivate unregisters from the in-memory session map and returns immediately when many families are selected.
 
 Deactivate unloads and **keeps files**. Activate again is register-only. Preview stays CSS in this window.
 
@@ -155,14 +155,13 @@ Google downloads sit in `Documents / Font Manager`. They are not listed as a sep
 
 ---
 
-## Next version (not in 1.0.95)
+## Next version (not in 1.0.96)
 
 - Signed installer + auto-update (SmartScreen / Store) — needs a code-signing cert.
 - Native WOFF2 → TTF in Rust — Fontsource TTF already covers install.
 - Search chips — license/tag rows already filter.
 - Extra TTC preview cards — TTC already registers every face with Windows.
-- **Fontsource as its own provider** — skip for now. Their catalog is ~90% the same families as Google Fonts. Metadata already refreshes the Google list from `api.fontsource.org`. A second drawer would duplicate Inter/Roboto. Unique non-Google Fontsource families can wait.
-- Other providers (Fontshare, Bunny) behind the same scan-then-download queue.
+- Fontshare / Bunny behind the same scan-then-download queue.
 
 ---
 
@@ -235,11 +234,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.95",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.96",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.95** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.96** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 

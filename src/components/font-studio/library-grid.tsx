@@ -4,6 +4,7 @@ import { FontCard } from "./font-card";
 import { UploadsResetDialog } from "./uploads-reset-dialog";
 import { Button } from "@/components/ui/button";
 import { primeGooglePreview } from "@/lib/fonts/loader";
+import { loadSystemFonts } from "@/lib/fonts/system-fonts";
 import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
 import type { Collection, FontRecord } from "@/lib/fonts/types";
 
@@ -115,6 +116,10 @@ export function LibraryGrid() {
     void primeGooglePreview(fonts.slice(start, prefetchEnd));
   }, [primeIds]);
 
+  useEffect(() => {
+    if (scope === "system") void loadSystemFonts();
+  }, [scope]);
+
   const uploadedBar =
     scope === "uploaded" ? (
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 md:px-4">
@@ -169,7 +174,9 @@ export function LibraryGrid() {
             {scope === "uploaded"
               ? "Drop a folder of TTF, OTF, or WOFF files here, or use Files / Folder in the header."
               : scope === "system"
-                ? "Open the desktop app to list Arial, Calibri, and the rest of C:\\Windows\\Fonts. This website cannot read that folder."
+                ? query.trim()
+                  ? "No Windows fonts match this search. Clear the search box in the header."
+                  : "Arial, Calibri, Segoe and the rest of C:\\Windows\\Fonts show here in the desktop app. Font Manager will not uninstall them."
               : scopeNeedsActivated(scope)
                 ? "This filter only lists activated typefaces. Open All typefaces, or click Activated."
                 : "Try another filter, or use Folder to add a whole directory of TTF, OTF, or WOFF files."}

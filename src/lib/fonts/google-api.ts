@@ -13,6 +13,7 @@ interface FontsourceItem {
   variable?: boolean;
   license?: string;
   type?: string;
+  subsets?: string[];
 }
 
 const CATEGORY: Record<string, FontCategory> = {
@@ -40,6 +41,8 @@ function fromFontsource(item: FontsourceItem, popularity: number, existing?: Fon
   const official = (styleMeta as Record<string, string[]>)[item.family] ?? [];
   const { license, licenseName } = licenseFromSource(item.license);
   const category = CATEGORY[item.category ?? ""] ?? existing?.category ?? "sans";
+  const extra = [...official, ...(existing?.tags ?? [])];
+  if (item.subsets?.includes("emoji")) extra.push("emoji");
   return {
     id: googleFontId(item.family),
     family: item.family,
@@ -48,7 +51,7 @@ function fromFontsource(item: FontsourceItem, popularity: number, existing?: Fon
     weights: item.weights?.length ? item.weights : existing?.weights ?? [400],
     italic: item.styles?.includes("italic") ?? existing?.italic ?? false,
     variable: Boolean(item.variable) || Boolean(existing?.variable),
-    tags: tagsForGoogleFamily(item.family, category, [...official, ...(existing?.tags ?? [])]),
+    tags: tagsForGoogleFamily(item.family, category, extra),
     popularity: existing?.popularity ?? popularity,
     license,
     licenseName,
@@ -63,12 +66,12 @@ export async function refreshGoogleCatalog(): Promise<{ count: number; added: nu
     const data = (await res.json()) as FontsourceItem[];
     if (!Array.isArray(data) || data.length < 1000) return null;
 
-    const google = data.filter((item) => item.type === "google" && item.category !== "icons");
+    const rows = data.filter((item) => item.category !== "icons" && item.family);
     const indexByFamily = new Map(GOOGLE_FONTS.map((font, i) => [font.family, i]));
     const next = GOOGLE_FONTS.slice();
     let added = 0;
 
-    for (const item of google) {
+    for (const item of rows) {
       if (!item.family) continue;
       const idx = indexByFamily.get(item.family);
       if (idx !== undefined) {

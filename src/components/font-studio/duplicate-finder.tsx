@@ -101,7 +101,7 @@ export function DuplicateFinder() {
                   Delete
                 </Button>
                 ) : (
-                  <span className="shrink-0 text-xs text-muted-foreground">Google Fonts</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">Fontsource</span>
                 )}
               </li>
             ))}
