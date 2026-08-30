@@ -380,6 +380,7 @@ const removeQueue: FontRecord[] = [];
 let lastPaint = 0;
 let pollTimer = 0;
 let rustSeenRunning = false;
+let ignoreProgress = false;
 
 function applyPayload(p: {
   running: boolean;
@@ -393,6 +394,7 @@ function applyPayload(p: {
   ready_names?: string[];
   skipped?: number;
 }) {
+  if (ignoreProgress) return;
   job = {
     running: p.running,
     paused: Boolean(p.paused),
@@ -462,6 +464,7 @@ async function bindDownloadEvents() {
 
 function startGooglePoll() {
   void bindDownloadEvents();
+  ignoreProgress = false;
   if (pollTimer) return;
   rustSeenRunning = false;
   pollTimer = window.setInterval(() => void pollRustProgress(), 800);
@@ -571,6 +574,7 @@ export function cancelDownloadQueue() {
   installQueue.length = 0;
   removeQueue.length = 0;
   workers = 0;
+  ignoreProgress = true;
   job = { ...EMPTY };
   emit();
   unlockUi();

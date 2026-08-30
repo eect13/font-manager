@@ -533,10 +533,6 @@ fn reset_circuits() {
     }
 }
 
-fn backoff(attempt: u32) -> Duration {
-    Duration::from_millis(200 * (1 << attempt.min(4)))
-}
-
 const UA_SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const UA_CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
@@ -576,6 +572,7 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic
     let urls = ttf_urls(slug, weight, italic, subset, bust);
     let mut last = String::from("all CDNs failed");
     let mut skipped_open = 0usize;
+    let mut not_found = 0u32;
     for url in urls.iter() {
         let host = host_label(url);
         if !circuit_allow(host) {
@@ -583,45 +580,43 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic
             skipped_open += 1;
             continue;
         }
-        for attempt in 0u32..2 {
-            if bulk().cancel.load(Ordering::SeqCst) {
-                return Err("cancelled".into());
-            }
-            let req = client.get(url);
-            match req.send() {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        match resp.bytes() {
-                            Ok(bytes) if ttf_magic(&bytes) && bytes.len() >= 256 => {
-                                circuit_success(host);
-                                return Ok(bytes.to_vec());
-                            }
-                            Ok(bytes) => {
-                                last = format!("not a TTF/OTF from {host} ({} bytes)", bytes.len());
-                                circuit_failure(host);
-                            }
-                            Err(err) => {
-                                last = format!("{host}: {err}");
-                                circuit_failure(host);
-                            }
+        if bulk().cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".into());
+        }
+        match client.get(url).send() {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    match resp.bytes() {
+                        Ok(bytes) if ttf_magic(&bytes) && bytes.len() >= 256 => {
+                            circuit_success(host);
+                            return Ok(bytes.to_vec());
                         }
-                    } else if status.as_u16() == 404 {
-                        last = format!("404 {host}");
-                        break;
-                    } else {
-                        last = format!("{} {host}", status.as_u16());
-                        if status.is_server_error() || status.as_u16() == 429 {
+                        Ok(bytes) => {
+                            last = format!("not a TTF/OTF from {host} ({} bytes)", bytes.len());
                             circuit_failure(host);
-                            thread::sleep(backoff(attempt));
+                        }
+                        Err(err) => {
+                            last = format!("{host}: {err}");
+                            circuit_failure(host);
                         }
                     }
+                } else if status.as_u16() == 404 {
+                    last = format!("404 {host}");
+                    not_found += 1;
+                    if not_found >= 2 {
+                        break;
+                    }
+                } else {
+                    last = format!("{} {host}", status.as_u16());
+                    if status.is_server_error() || status.as_u16() == 429 {
+                        circuit_failure(host);
+                    }
                 }
-                Err(err) => {
-                    last = format!("{host}: {err}");
-                    circuit_failure(host);
-                    thread::sleep(backoff(attempt));
-                }
+            }
+            Err(err) => {
+                last = format!("{host}: {err}");
+                circuit_failure(host);
             }
         }
     }
@@ -669,9 +664,25 @@ fn pick_subsets(all: &[String]) -> Vec<String> {
     if all.iter().any(|s| s == "latin") {
         vec!["latin".into()]
     } else {
-        all.iter().take(4).cloned().collect()
+        all.iter().take(1).cloned().collect()
     }
 }
+
+fn pick_fontsource_weights(all: &[u16]) -> Vec<u16> {
+    let mut out = Vec::new();
+    if all.contains(&400) {
+        out.push(400);
+    }
+    if all.contains(&700) {
+        out.push(700);
+    }
+    if out.is_empty() {
+        out.extend(all.iter().copied().take(2));
+    }
+    out
+}
+
+const MAX_FONTSOURCE_FILES: usize = 4;
 
 fn pull_fontsource_subset(
     client: &reqwest::blocking::Client,
@@ -683,10 +694,13 @@ fn pull_fontsource_subset(
     let mut out = Vec::new();
     for subset in subsets {
         for weight in weights {
-            if bulk().cancel.load(Ordering::SeqCst) {
+            if bulk().cancel.load(Ordering::SeqCst) || out.len() >= MAX_FONTSOURCE_FILES {
                 return out;
             }
             for italic in styles {
+                if out.len() >= MAX_FONTSOURCE_FILES {
+                    return out;
+                }
                 let style = if *italic { "italic" } else { "normal" };
                 if let Ok(bytes) = fetch_ttf(client, slug, *weight, *italic, subset) {
                     out.push((format!("{slug}-{subset}-{weight}-{style}.ttf"), bytes));
@@ -699,11 +713,12 @@ fn pull_fontsource_subset(
 
 fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec<(String, Vec<u8>)> {
     let (all_subsets, weights, has_italic) = fontsource_meta(client, slug)
-        .unwrap_or((vec!["latin".into()], vec![400, 700], true));
+        .unwrap_or((vec!["latin".into()], vec![400, 700], false));
     let mut subsets = pick_subsets(&all_subsets);
     if subsets.is_empty() {
         subsets.push("latin".into());
     }
+    let weights = pick_fontsource_weights(&weights);
     let styles: &[bool] = if slug.contains("emoji") {
         &[false]
     } else if has_italic {
@@ -716,11 +731,11 @@ fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec
         let rest: Vec<String> = all_subsets
             .iter()
             .filter(|s| *s != "latin")
-            .take(4)
+            .take(1)
             .cloned()
             .collect();
         if !rest.is_empty() {
-            out = pull_fontsource_subset(client, slug, &rest, &weights, styles);
+            out = pull_fontsource_subset(client, slug, &rest, &weights[..1.min(weights.len())], &[false]);
         }
     }
     out
@@ -1287,7 +1302,9 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     emit_progress(&app);
 
     let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(2)
         .user_agent("FontManager/1.0")
         .build()
     {
@@ -1354,6 +1371,15 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         } else {
             download_family(&app, &client, &family)
         };
+        let cancelled = state.cancel.load(Ordering::SeqCst)
+            || matches!(&result, Err(reason) if reason == "cancelled" || reason == "deactivated");
+        if cancelled {
+            forget_queued(&family);
+            if state.cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            continue;
+        }
         match &result {
             Err(reason) => {
                 forget_queued(&family);
@@ -1797,6 +1823,10 @@ pub fn cancel_google_downloads() -> Result<(), String> {
     }
     if let Ok(mut queued) = state.queued.lock() {
         queued.clear();
+    }
+    if let Ok(mut p) = state.progress.lock() {
+        p.paused = false;
+        p.current = "Stopping…".into();
     }
     Ok(())
 }
