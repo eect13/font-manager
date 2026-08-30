@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { LicenseBadge } from "./license-badge";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
-import { axesForFont, defaultAxisValues, defaultWeightForFont, hasRealItalic, italicPreviewStyle, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultWeightForFont, hasRealItalic, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { colorKindLabel } from "@/lib/fonts/color-font";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
@@ -143,14 +143,7 @@ export const FontCard = memo(function FontCard({
       ? "border-ink/10 bg-ink/5"
       : "border-paper/10 bg-paper/5";
   const italicCss = italicPreviewStyle(font, italicOn);
-  const axisValues = font.variable
-    ? {
-        ...defaultAxisValues(axes),
-        ...storedAxes,
-        wght: cardWeight,
-        ...(italicOn && axes.some((a) => a.tag === "ital") ? { ital: 1 } : {}),
-      }
-    : null;
+  const axisValues = font.variable ? previewAxisValues(font, storedAxes, cardWeight, italicOn) : null;
   const vs = axisValues ? variationStyle(axisValues, axes) : null;
   const specimenDir = scriptDir(font.family);
   const specimenLang = scriptLang(font.family);
@@ -217,7 +210,18 @@ export const FontCard = memo(function FontCard({
       onPointerDown={isolate}
       onClick={(e) => {
         isolate(e);
-        setItalicOn((v) => !v);
+        const next = !italicOn;
+        setItalicOn(next);
+        const ital = axes.find((a) => a.tag === "ital");
+        const slnt = axes.find((a) => a.tag === "slnt");
+        if (ital) setPreviewAxis(font.id, "ital", next ? 1 : 0);
+        if (slnt) {
+          setPreviewAxis(
+            font.id,
+            "slnt",
+            next ? (slnt.min < 0 ? slnt.min : slnt.max) : slnt.min <= 0 && slnt.max >= 0 ? 0 : slnt.def,
+          );
+        }
       }}
       className={cn(
         "relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded border",

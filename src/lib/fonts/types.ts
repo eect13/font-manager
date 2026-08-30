@@ -11,6 +11,7 @@ export type LibraryScope =
   | "favorites"
   | "uploaded"
   | "google"
+  | "gfonts"
   | "system"
   | `collection:${string}`
   | `category:${FontCategory}`
@@ -21,6 +22,8 @@ export interface FontRecord {
   id: string;
   family: string;
   source: FontSource;
+  /** Google-hosted vs Fontsource-only (type: other). */
+  catalog?: "google" | "other";
   category: FontCategory;
   weights: number[];
   italic: boolean;

@@ -34,6 +34,7 @@ interface PersistedSlice {
   preview: PreviewSettings;
   scope: LibraryScope;
   previewAxes: Record<string, Record<string, number>>;
+  autoHideDuplicates: boolean;
 }
 
 interface FontState extends PersistedSlice {
@@ -73,6 +74,9 @@ interface FontState extends PersistedSlice {
   setDiskFamilies: (names: string[]) => void;
   addDiskFamilies: (names: string[]) => void;
   setSystemFonts: (fonts: FontRecord[]) => void;
+  autoHideDuplicates: boolean;
+  duplicateHideIds: string[];
+  setAutoHideDuplicates: (on: boolean) => void;
   addCollection: (name: string, parentId?: string | null) => string;
   setCollectionWatch: (id: string, watchPath: string | undefined, autoActivate?: boolean) => void;
   setCollectionAutoActivate: (id: string, autoActivate: boolean) => void;
@@ -201,6 +205,8 @@ export const useFontStore = create<FontState>()(
       previewAxes: {},
       ...withDisk([]),
       systemFonts: [],
+      autoHideDuplicates: false,
+      duplicateHideIds: [],
       setHydrated: (value) => set({ hydrated: value }),
       setGoogleFonts: (fonts) =>
         set((s) => {
@@ -384,6 +390,15 @@ export const useFontStore = create<FontState>()(
           return withDisk([...s.diskFamilies, ...names]);
         }),
       setSystemFonts: (fonts) => set({ systemFonts: fonts }),
+      setAutoHideDuplicates: (on) => {
+        if (!on) {
+          set({ autoHideDuplicates: false, duplicateHideIds: [] });
+          return;
+        }
+        const hide = familyDuplicateHideIds(get().localFonts, get().googleFonts);
+        set({ autoHideDuplicates: true, duplicateHideIds: hide });
+        if (hide.length) get().setActivatedMany(hide, false);
+      },
       addCollection: (name, parentId = null) => {
         const id = uid("c");
         set((s) => ({
@@ -762,6 +777,7 @@ export const useFontStore = create<FontState>()(
             preview: { ...DEFAULT_PREVIEW, ...(p.preview as PreviewSettings | undefined) },
             previewAxes: p.previewAxes && typeof p.previewAxes === "object" ? p.previewAxes : {},
             scope: (typeof p.scope === "string" ? p.scope : "all") as LibraryScope,
+            autoHideDuplicates: Boolean(p.autoHideDuplicates),
           } satisfies PersistedSlice;
         }
         return persisted as PersistedSlice;
@@ -809,6 +825,10 @@ export const useFontStore = create<FontState>()(
           },
           previewAxes: p.previewAxes && typeof p.previewAxes === "object" ? p.previewAxes : {},
           scope: p.scope ?? current.scope ?? "all",
+          autoHideDuplicates: Boolean(p.autoHideDuplicates),
+          duplicateHideIds: Boolean(p.autoHideDuplicates)
+            ? familyDuplicateHideIds(p.localFonts ?? current.localFonts, current.googleFonts)
+            : [],
         };
       },
       partialize: (s): PersistedSlice => ({
@@ -821,6 +841,7 @@ export const useFontStore = create<FontState>()(
         preview: s.preview,
         previewAxes: s.previewAxes,
         scope: s.scope,
+        autoHideDuplicates: s.autoHideDuplicates,
       }),
     },
   ),
@@ -849,6 +870,32 @@ export function allFonts(
 export function tagsFor(font: FontRecord, customTags: Record<string, string[]>): string[] {
   const extra = customTags[font.id] ?? [];
   return Array.from(new Set([...font.tags, ...extra]));
+}
+
+export function familyDuplicateHideIds(localFonts: FontRecord[], googleFonts: FontRecord[]): string[] {
+  const catalog = new Set(googleFonts.map((f) => f.family.toLowerCase()));
+  const seen = new Set<string>();
+  const hide: string[] = [];
+  for (const font of localFonts) {
+    const key = font.family.toLowerCase();
+    if (catalog.has(key) || seen.has(key)) hide.push(font.id);
+    else seen.add(key);
+  }
+  return hide;
+}
+
+export function hideIdsFromDuplicateGroups(groups: DuplicateGroup[]): string[] {
+  const hide: string[] = [];
+  for (const group of groups) {
+    const keep =
+      group.fonts.find((f) => f.source === "google") ??
+      [...group.fonts].sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0))[0];
+    if (!keep) continue;
+    for (const font of group.fonts) {
+      if (font.id !== keep.id && font.source === "local") hide.push(font.id);
+    }
+  }
+  return hide;
 }
 
 export async function findDuplicates(
@@ -1026,6 +1073,9 @@ export function filterLibrary(
     list = list.filter((f) => fav.has(f.id));
   } else if (scope === "uploaded") list = list.filter((f) => f.source === "local");
   else if (scope === "google") list = list.filter((f) => f.source === "google");
+  else if (scope === "gfonts") {
+    list = list.filter((f) => f.source === "google" && f.catalog !== "other");
+  }
   else if (scope === "system") {
     list = list.filter((f) => f.source === "system");
   }

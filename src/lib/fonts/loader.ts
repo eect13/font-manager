@@ -305,26 +305,58 @@ function slugFamily(family: string) {
     .replace(/^-|-$/g, "");
 }
 
+function googleCssHref(param: string, display: string) {
+  return `https://fonts.googleapis.com/css2?${param}&display=${display}`;
+}
+
+function previewFamilyParam(font: FontRecord, italic = false): string {
+  const family = font.family.replace(/ /g, "+");
+  if (isSpecialPreviewFont(font)) return `family=${family}`;
+  if (font.variable) {
+    const wght = axesForFont(font).find((a) => a.tag === "wght");
+    const min = Math.round(wght?.min ?? 100);
+    const max = Math.round(wght?.max ?? 900);
+    if (italic && font.italic) return `family=${family}:ital,wght@1,${min}..${max}`;
+    // ital=0 (not a bare :wght@ range) so Google serves the roman VF face.
+    if (font.italic) return `family=${family}:ital,wght@0,${min}..${max}`;
+    return `family=${family}:wght@${min}..${max}`;
+  }
+  if (italic && font.italic) return `family=${family}:ital,wght@1,400`;
+  if (font.italic) return `family=${family}:ital,wght@0,400`;
+  return `family=${family}:wght@400`;
+}
+
+function catalogCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): string[] {
+  const display = isSpecialPreviewFont(font) ? "block" : "swap";
+  const google = googleCssHref(previewFamilyParam(font, italic), display);
+  return [google, ...fontsourceCssHrefs(font, mode, italic)];
+}
+
 function fontsourceCssHref(font: FontRecord, mode: FontLoadMode, italic = false): string {
   const slug = slugFamily(font.family);
-  const pkg = font.variable ? `@fontsource-variable/${slug}` : `@fontsource/${slug}`;
-  if (italic && !font.variable) {
-    return `https://cdn.jsdelivr.net/npm/${pkg}/latin-400-italic.css`;
+  if (font.variable) {
+    const face = italic ? "wght-italic.css" : "wght.css";
+    return `https://cdn.jsdelivr.net/npm/@fontsource-variable/${slug}/${face}`;
   }
-  if (mode === "full" && !font.variable) {
-    return `https://cdn.jsdelivr.net/npm/${pkg}/latin.css`;
-  }
+  const pkg = `@fontsource/${slug}`;
+  if (italic) return `https://cdn.jsdelivr.net/npm/${pkg}/latin-400-italic.css`;
+  if (mode === "full") return `https://cdn.jsdelivr.net/npm/${pkg}/latin.css`;
   return `https://cdn.jsdelivr.net/npm/${pkg}/index.css`;
 }
 
 function fontsourceCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): string[] {
   const slug = slugFamily(font.family);
   const primary = fontsourceCssHref(font, mode, italic);
-  const alt = font.variable
-    ? `https://cdn.jsdelivr.net/fontsource/css/${slug}:vf@latest/index.css`
-    : italic
-      ? `https://cdn.jsdelivr.net/fontsource/css/${slug}@latest/latin-400-italic.css`
-      : `https://cdn.jsdelivr.net/fontsource/css/${slug}@latest/index.css`;
+  if (font.variable) {
+    const index = `https://cdn.jsdelivr.net/npm/@fontsource-variable/${slug}/index.css`;
+    const alt = italic
+      ? `https://cdn.jsdelivr.net/fontsource/css/${slug}:vf@latest/wght-italic.css`
+      : `https://cdn.jsdelivr.net/fontsource/css/${slug}:vf@latest/wght.css`;
+    return primary === index ? [primary, alt] : [primary, index, alt];
+  }
+  const alt = italic
+    ? `https://cdn.jsdelivr.net/fontsource/css/${slug}@latest/latin-400-italic.css`
+    : `https://cdn.jsdelivr.net/fontsource/css/${slug}@latest/index.css`;
   return primary === alt ? [primary] : [primary, alt];
 }
 
@@ -465,7 +497,7 @@ function cssKey(id: string, mode: FontLoadMode) {
 }
 
 function ensureCatalogCss(font: FontRecord) {
-  return injectGoogleCss(fontsourceCssHref(font, "full"), `cover:${font.id}`);
+  return injectGoogleCss(googleCssHref(previewFamilyParam(font, false), "swap"), `cover:${font.id}`);
 }
 
 export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview"): Promise<void> {
@@ -480,11 +512,14 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
   const probe = isEmojiFamily(font.family) ? "😀" : scriptProbe(font.family);
 
   const promise = (async () => {
-    const hrefs = fontsourceCssHrefs(font, mode);
-    // Library preview is Fontsource CSS + FontFace on the website and in the desktop WebView.
-    // Files in Documents are for Activate (Word/Adobe), not a second preview pipeline.
+    const hrefs = catalogCssHrefs(font, mode);
+    // Library preview: Google CSS first (roman-only so VF italic stays off), Fontsource CSS if Google 404s.
     if (mode === "preview" && !special) {
-      await Promise.all(hrefs.map((href) => injectGoogleCss(href, `${cssKey(font.id, mode)}:${href}`)));
+      for (const href of hrefs) {
+        await injectGoogleCss(href, `${cssKey(font.id, mode)}:${href}`);
+        await waitForFamily(font.family, probe, 400);
+        if (familyLoaded(font.family, probe)) break;
+      }
       loadedGoogle.set(font.id, "preview");
       return;
     }
@@ -496,7 +531,7 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
         if (font.italic) void fetchFaceAndCache(font, variableSourceUrls(font.family, true), "italic");
         return;
       }
-      const vfHref = fontsourceCssHref(font, "full");
+      const vfHref = googleCssHref(previewFamilyParam(font, false), "swap");
       await injectGoogleCss(vfHref, `${cssKey(font.id, "full")}:${vfHref}`);
       await waitForFamily(font.family, probe, 1200);
       if (familyLoaded(font.family, probe)) {
@@ -684,7 +719,7 @@ export async function loadItalicFace(font: FontRecord): Promise<void> {
   if (await fetchFaceAndCache(font, latinSourceUrls(font.family, true, 400), "italic", 400)) {
     return;
   }
-  await injectGoogleCss(fontsourceCssHref(font, "preview", true), `italic:${font.id}`);
+  await injectGoogleCss(catalogCssHrefs(font, "preview", true)[0]!, `italic:${font.id}`);
   if (typeof document !== "undefined" && document.fonts?.load) {
     try {
       await document.fonts.load(`italic 48px "${font.cssFamily || font.family}"`);
@@ -739,18 +774,24 @@ export function googleCssUrl(fonts: FontRecord[]): string {
 }
 
 export function googleCssUrls(fonts: FontRecord[]): string[] {
-  return fonts.filter((f) => f.source === "google").map((font) => fontsourceCssHref(font, "preview"));
+  const google = fonts.filter((f) => f.source === "google");
+  if (!google.length) return [];
+  const chunks: FontRecord[][] = [];
+  for (let i = 0; i < google.length; i += 18) chunks.push(google.slice(i, i + 18));
+  return chunks.map((chunk) => {
+    const params = chunk.map((font) => previewFamilyParam(font, false)).join("&");
+    return googleCssHref(params, "swap");
+  });
 }
 
-/** One CSS request per visible family — Fontsource on jsDelivr, same path on Grok and desktop. */
+/** Batched Google CSS for the visible page; Fontsource CSS if a family 404s. */
 export function primeGooglePreview(fonts: FontRecord[]): Promise<void> {
   const google = fonts.filter((f) => f.source === "google" && !isSpecialPreviewFont(f));
   if (!google.length || typeof document === "undefined") return Promise.resolve();
-  return Promise.all(google.map((font) => injectGoogleCss(fontsourceCssHref(font, "preview"), `prime:${font.id}`))).then(
-    () => {
-      for (const font of google) {
-        if (!loadedGoogle.has(font.id)) loadedGoogle.set(font.id, "preview");
-      }
-    },
-  );
+  const urls = googleCssUrls(google);
+  return Promise.all(urls.map((href, i) => injectGoogleCss(href, `prime:${i}:${href.slice(-40)}`))).then(() => {
+    for (const font of google) {
+      if (!loadedGoogle.has(font.id)) loadedGoogle.set(font.id, "preview");
+    }
+  });
 }

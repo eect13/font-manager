@@ -38,6 +38,7 @@ function snapshotToRecord(row: SnapshotRow): FontRecord {
     id: googleFontId(family),
     family,
     source: "google",
+    catalog: "google",
     category,
     weights: Array.isArray(weights) && weights.length ? weights : [400],
     italic,

@@ -49,6 +49,7 @@ function fromFontsource(item: FontsourceItem, popularity: number, existing?: Fon
     id: googleFontId(item.family),
     family: item.family,
     source: "google",
+    catalog: item.type === "google" || !item.type ? "google" : "other",
     category,
     weights: item.weights?.length ? item.weights : existing?.weights ?? [400],
     italic: item.styles?.includes("italic") ?? existing?.italic ?? false,
@@ -90,6 +91,7 @@ export async function refreshGoogleCatalog(): Promise<{ count: number; added: nu
             [...((styleMeta as Record<string, string[]>)[item.family] ?? []), ...existing.tags],
           ),
           ...licenseFromSource(item.license),
+          catalog: item.type === "google" || !item.type ? "google" : "other",
         };
         continue;
       }

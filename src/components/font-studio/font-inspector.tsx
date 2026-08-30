@@ -13,7 +13,7 @@ import { synthesisForFont } from "@/lib/fonts/synthesis";
 import { findFont, folderTree, collectionIsWatched, tagsFor, useFontStore } from "@/lib/fonts/store";
 import { fontLicense } from "@/lib/fonts/license";
 import { CATEGORY_LABEL, LICENSE_HINT, LICENSE_LABEL, LICENSE_OPTIONS } from "@/lib/fonts/types";
-import { axesForFont, defaultWeightForFont, instancesForFont, realItalicAxes, resolvedAxisValues, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultWeightForFont, instancesForFont, previewAxisValues, realItalicAxes, variationStyle } from "@/lib/fonts/axes";
 import { AxisSliders } from "./axis-sliders";
 import { HelpTip } from "./help-tip";
 import { LicenseBadge } from "./license-badge";
@@ -112,7 +112,7 @@ export function FontInspector() {
 
   const stack = cssFamilyStack(font);
   const axes = axesForFont(font);
-  const liveAxes = resolvedAxisValues(axes, storedAxes ?? {}, instancesForFont(font));
+  const liveAxes = previewAxisValues(font, storedAxes, defaultWeightForFont(font), italicOn);
   const weight = liveAxes.wght ?? defaultWeightForFont(font);
   const { ital: italAxis, slnt: slntAxis } = realItalicAxes(font);
   const hasItalAxis = Boolean(italAxis || slntAxis);
@@ -120,8 +120,6 @@ export function FontInspector() {
     {
       ...liveAxes,
       ...(axes.some((a) => a.tag === "wght") ? {} : { wght: weight }),
-      ...(italicOn && italAxis ? { ital: 1 } : {}),
-      ...(italicOn && !italAxis && slntAxis ? { slnt: slntAxis.min < 0 ? slntAxis.min : slntAxis.max } : {}),
     },
     axes,
   );
@@ -135,7 +133,13 @@ export function FontInspector() {
             {font.family}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {font.source === "google" ? "Fontsource" : font.source === "system" ? "Windows" : "Uploaded"}
+            {font.source === "google"
+              ? font.catalog === "other"
+                ? "Fontsource"
+                : "Google Fonts"
+              : font.source === "system"
+                ? "Windows"
+                : "Local file"}
             {font.variable ? " · Variable" : ""}
             {scriptLang(font.family) ? ` · ${scriptLang(font.family)}` : ""}
             {` · ${LICENSE_LABEL[fontLicense(font)]}`}
@@ -276,6 +280,7 @@ export function FontInspector() {
                       void loadFontWeight(font, Math.round(value), italicOn);
                     }
                     if (tag === "ital") setItalicOn(value >= 0.5);
+                    if (tag === "slnt") setItalicOn(Math.abs(value) > 0.05);
                   }}
                 />
               </section>
@@ -309,6 +314,20 @@ export function FontInspector() {
                   checked={italicOn}
                   onCheckedChange={(on) => {
                     setItalicOn(on);
+                    if (italAxis) setPreviewAxis(font.id, "ital", on ? 1 : 0);
+                    if (slntAxis) {
+                      setPreviewAxis(
+                        font.id,
+                        "slnt",
+                        on
+                          ? slntAxis.min < 0
+                            ? slntAxis.min
+                            : slntAxis.max
+                          : slntAxis.min <= 0 && slntAxis.max >= 0
+                            ? 0
+                            : slntAxis.def,
+                      );
+                    }
                     if (on) void loadItalicFace(font);
                   }}
                 />

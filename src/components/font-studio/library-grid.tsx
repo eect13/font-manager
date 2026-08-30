@@ -70,6 +70,7 @@ export function LibraryGrid() {
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
   );
   const systemFonts = useFontStore((s) => (s.scope === "system" ? s.systemFonts : EMPTY_FONTS));
+  const hideDupIds = useFontStore((s) => (s.autoHideDuplicates ? s.duplicateHideIds : EMPTY_IDS));
   const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const list = preview.view === "list";
@@ -77,20 +78,20 @@ export function LibraryGrid() {
     scope === "system" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
 
   const fonts = useMemo(
-    () =>
-      sortLibrary(
-        filterLibrary(
-          scope === "system" ? systemFonts : allFonts(localFonts, googleFonts),
-          scope,
-          query,
-          favorites,
-          activated,
-          collections,
-          customTags,
-        ),
-        sortMode,
-      ),
-    [localFonts, googleFonts, systemFonts, scope, query, favorites, activated, collections, customTags, sortMode],
+    () => {
+      const skip = hideDupIds.length ? new Set(hideDupIds) : null;
+      const list = filterLibrary(
+        scope === "system" ? systemFonts : allFonts(localFonts, googleFonts),
+        scope,
+        query,
+        favorites,
+        activated,
+        collections,
+        customTags,
+      );
+      return sortLibrary(skip ? list.filter((f) => !skip.has(f.id)) : list, sortMode);
+    },
+    [localFonts, googleFonts, systemFonts, scope, query, favorites, activated, collections, customTags, sortMode, hideDupIds],
   );
 
   const inner = Math.max(280, box.width - 24);

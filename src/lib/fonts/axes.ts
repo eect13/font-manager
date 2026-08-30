@@ -201,7 +201,32 @@ export function instanceMatches(instance: NamedInstance, values: Record<string, 
   return Object.entries(instance.coords).every(([tag, n]) => Math.abs((values[tag] ?? 0) - n) < 0.51);
 }
 
-/** True ital/slnt from the file’s fvar — not a catalog hint. */
+/** Roman (upright) axis tuple — zeros ital/slnt so VF preview is not stuck italic. */
+export function previewAxisValues(
+  font: Pick<FontRecord, "weights" | "variable" | "italic" | "axes" | "instances">,
+  stored: Record<string, number> | undefined,
+  weight: number,
+  italicOn: boolean,
+): Record<string, number> {
+  const axes = axesForFont(font);
+  const values: Record<string, number> = {
+    ...defaultAxisValues(axes, instancesForFont(font)),
+    ...(stored ?? {}),
+    wght: weight,
+  };
+  const ital = axes.find((a) => a.tag === "ital");
+  const slnt = axes.find((a) => a.tag === "slnt");
+  if (italicOn) {
+    if (ital) values.ital = 1;
+    else if (slnt) values.slnt = slnt.min < 0 ? slnt.min : slnt.max;
+  } else {
+    if (ital) values.ital = 0;
+    if (slnt && slnt.min <= 0 && slnt.max >= 0) values.slnt = 0;
+    else if (slnt) values.slnt = slnt.def;
+  }
+  return values;
+}
+
 export function realItalicAxes(font: Pick<FontRecord, "axes">) {
   const axes = font.axes ?? [];
   return {

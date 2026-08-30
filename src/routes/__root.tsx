@@ -36,12 +36,14 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Preview, organize, and pair typefaces. A studio for Fontsource and your own files.",
+          "Preview, organize, and pair typefaces. Fontsource, Google Fonts, and your own files.",
       },
       { name: "theme-color", content: "#0c0c0d" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+      { rel: "preconnect", href: "https://fonts.googleapis.com" },
+      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       { rel: "preconnect", href: "https://cdn.jsdelivr.net", crossOrigin: "anonymous" },
       { rel: "stylesheet", href: appCss },
       { rel: "manifest", href: "/__grok/manifest.webmanifest" },

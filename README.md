@@ -1,8 +1,10 @@
-# Font Manager **1.0.98**
+# Font Manager **1.0.99**
 
-**TL;DR.** FontBase-style desktop typeface library. Browse Fontsource families (TTF-first), upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
+**TL;DR.** FontBase-style desktop typeface library. Browse Fontsource and Google Fonts, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.98** sits next to the logo, not in the window title.
+Version **1.0.99** sits next to the logo, not in the window title.
+
+**1.0.99** — Variable roman stays roman (Source Sans 3 and other `ital`/`slnt` faces). Google Fonts CSS2 is the library preview again (`fonts.googleapis.com` / `fonts.gstatic.com` preconnect). Sidebar providers: **Fontsource → Google Fonts → Local Files**. Duplicates page can auto-hide extras (keeps the catalog family, deactivates the upload). Glyphs groups use official Unicode blocks and names Latin / Greek / Cyrillic / punctuation when the file has no PostScript name.
 
 **1.0.98** — Header chips match the sidebar: only licenses, styles, and tags that have fonts. Personal stays hidden until you have personal-use files. Variable / Italic still appear when the catalog has them.
 
@@ -31,14 +33,14 @@ Version **1.0.98** sits next to the logo, not in the window title.
 | --- | --- |
 | Library | Search, sort, grid/list, search chips. Cards virtual-scroll (~280px columns). No “Show more” button. |
 | Activate | Session fonts via `AddFontResourceExW`. Other apps see them until you Deactivate. Close quits. Next launch re-registers **files already in Documents** — it does not download. |
-| Fontsource | Catalog from `api.fontsource.org`. Preview CSS is jsDelivr. Activate scans Documents first: intact TTF/OTF/TTC are registered, **not fetched**. Download Fontsource TTF if missing; Google CSS TTF only if Fontsource has none. |
+| Fontsource | Catalog from `api.fontsource.org` (includes Google-hosted families). Preview tries Google CSS2 first, then Fontsource CSS on jsDelivr. Activate scans Documents first: intact TTF/OTF/TTC are registered, **not fetched**. Download Fontsource TTF if missing; Google CSS TTF only if Fontsource has none. |
+| Google Fonts | Same catalog, filtered to Google-origin families (`type: google`). Playfair Display **is** on Fontsource (`@fontsource/playfair-display`) and in this list. A few Google-only faces (e.g. Google Sans) stay here. |
 | Uploads | Drop files or a folder (TTF, OTF, WOFF, WOFF2, TTC). Parsed on a worker so the grid stays live. Stay in Documents. Deactivate unloads; Delete removes files. |
-
 | Inspector | In-flow right column (not a dimmed overlay). Weight, italic, variable axes, OpenType toggles, license. |
 | OpenType | GSUB/GPOS tags from the TTF. Toggles drive `font-variant-*` + `font-feature-settings`. Demo line: `Office fi fl 1/2 0123`. |
 | Playground | Compare activated faces. |
-| Duplicates | Same size → binary diff. Different names + sizes stay separate. |
-| Glyphs | Character map. Search as you type. Tofu stays (hover **?**). Atlas is cached — first open of a face is the slow parse; switching tabs does not reload. |
+| Duplicates | Same size → binary diff. Different names + sizes stay separate. **Auto-hide duplicates** keeps the catalog family (or the larger file), hides extra uploads, and deactivates them. Files stay on disk. |
+| Glyphs | Character map grouped by Unicode block. Search by character, hex, or name (Latin / Greek / Cyrillic / punctuation, plus the file’s glyph names). Tofu stays (hover **?**). Atlas is cached — first open of a face is the slow parse; switching tabs does not reload. |
 | Collections / Folders | Virtual groups vs watched folders on disk. |
 | License / Style / Tags | Catalog metadata — no Activate required. Google uses official class. Uploads use filename first; junk PANOSE from free-font sites is ignored (`?` tooltips). |
 
@@ -155,7 +157,7 @@ Google downloads sit in `Documents / Font Manager`. They are not listed as a sep
 
 ---
 
-## Next version (not in 1.0.98)
+## Next version (not in 1.0.99)
 
 - Signed installer + auto-update (SmartScreen / Store) — needs a code-signing cert.
 - Native WOFF2 → TTF in Rust — Fontsource TTF already covers install.
@@ -186,7 +188,7 @@ Do not expect a second “desktop-only” preview. If a family is already in Doc
 
 ## Pseudo-subsetting — yes, for this website only
 
-Library preview uses Fontsource CSS on jsDelivr (`index.css` / `latin.css` / `:vf`). It is **not** used for desktop TTF installs. Word and Adobe need the real file.
+Library preview uses **Google CSS2** first (roman-only `ital,wght@0,…` so variable italic stays off), then Fontsource CSS on jsDelivr (`wght.css` / `index.css`). It is **not** used for desktop TTF installs. Word and Adobe need the real file.
 
 | | Website preview | Desktop Activate |
 | --- | --- | --- |
@@ -234,11 +236,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.98",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.99",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.98** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.99** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 

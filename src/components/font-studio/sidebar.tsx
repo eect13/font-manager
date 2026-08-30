@@ -3,6 +3,7 @@ import {
   Briefcase,
   CircleHelp,
   Gift,
+  Globe,
   Heart,
   Library,
   Power,
@@ -140,14 +141,6 @@ export function Sidebar({
               mainProps={{ "aria-label": "Favorites" }}
             />
             <SidebarRow
-              active={scope === "uploaded"}
-              onClick={() => go("uploaded")}
-              icon={<Upload className="size-4 shrink-0" />}
-              label="Uploaded"
-              count={localFonts.length}
-              mainProps={{ "aria-label": "Uploaded" }}
-            />
-            <SidebarRow
               active={scope === "system"}
               onClick={() => go("system")}
               icon={<Monitor className="size-4 shrink-0" />}
@@ -172,6 +165,22 @@ export function Sidebar({
               count={googleFonts.length}
               mainProps={{ "aria-label": "Fontsource" }}
               menu={<GoogleActivateMenuItem />}
+            />
+            <SidebarRow
+              active={scope === "gfonts"}
+              onClick={() => go("gfonts")}
+              icon={<Globe className="size-4 shrink-0" />}
+              label="Google Fonts"
+              count={googleFonts.filter((f) => f.catalog !== "other").length}
+              mainProps={{ "aria-label": "Google Fonts" }}
+            />
+            <SidebarRow
+              active={scope === "uploaded"}
+              onClick={() => go("uploaded")}
+              icon={<Upload className="size-4 shrink-0" />}
+              label="Local Files"
+              count={localFonts.length}
+              mainProps={{ "aria-label": "Local Files" }}
             />
           </section>
 
