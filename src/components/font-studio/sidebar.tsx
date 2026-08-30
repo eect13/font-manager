@@ -21,11 +21,9 @@ import { ALL_TAGS } from "@/lib/fonts/catalog";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
 import { allFonts, tagsFor, useFontStore } from "@/lib/fonts/store";
-import type { FontCategory, FontLicense, LibraryScope } from "@/lib/fonts/types";
-import { CATEGORY_LABEL, LICENSE_LABEL } from "@/lib/fonts/types";
+import type { FontLicense, LibraryScope } from "@/lib/fonts/types";
+import { CATEGORY_LABEL, CATEGORY_ORDER, LICENSE_LABEL, TAG_ORDER } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
-
-const CATEGORIES: FontCategory[] = ["sans", "serif", "display", "handwriting", "mono", "other", "icons"];
 
 const LICENSE_NAV: { id: FontLicense; icon: typeof Library }[] = [
   { id: "free", icon: BadgeCheck },
@@ -33,26 +31,6 @@ const LICENSE_NAV: { id: FontLicense; icon: typeof Library }[] = [
   { id: "personal", icon: User },
   { id: "commercial", icon: Briefcase },
   { id: "unknown", icon: CircleHelp },
-];
-
-const SIDEBAR_TAGS = [
-  "geometric",
-  "humanist",
-  "grotesque",
-  "neo-grotesque",
-  "editorial",
-  "condensed",
-  "slab",
-  "didone",
-  "rounded",
-  "coding",
-  "script",
-  "technical",
-  "accessible",
-  "noto",
-  "emoji",
-  "color",
-  "ligatures",
 ];
 
 const KNOWN_TAGS = new Set(ALL_TAGS);
@@ -114,7 +92,7 @@ export function Sidebar({
       license[fontLicense(font)] += 1;
       category[font.category] += 1;
       for (const tag of tagsFor(font, customTags)) {
-        if (KNOWN_TAGS.has(tag) && SIDEBAR_TAGS.includes(tag)) {
+        if (KNOWN_TAGS.has(tag) && (TAG_ORDER as readonly string[]).includes(tag)) {
           tags.set(tag, (tags.get(tag) ?? 0) + 1);
         }
       }
@@ -222,7 +200,7 @@ export function Sidebar({
               Style
               <SidebarHint label={STYLE_TIP} ariaLabel="About style classification" icon={<CircleHelp className="size-3" />} />
             </p>
-            {CATEGORIES.filter((category) => counts.category[category] > 0).map((category) => (
+            {CATEGORY_ORDER.filter((category) => counts.category[category] > 0).map((category) => (
               <SidebarRow
                 key={category}
                 active={scope === `category:${category}`}
@@ -242,7 +220,7 @@ export function Sidebar({
               <SidebarHint label={TAGS_TIP} ariaLabel="About inferred tags" icon={<CircleHelp className="size-3" />} />
             </p>
             <div className="flex flex-wrap gap-1 px-1.5 pb-8">
-              {SIDEBAR_TAGS.filter((tag) => (counts.tags.get(tag) ?? 0) > 0).map((tag) => (
+              {TAG_ORDER.filter((tag) => (counts.tags.get(tag) ?? 0) > 0).map((tag) => (
                 <button
                   key={tag}
                   type="button"

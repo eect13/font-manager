@@ -94,6 +94,36 @@ export const CATEGORY_LABEL: Record<FontCategory, string> = {
   icons: "Icons",
 };
 
+export const CATEGORY_ORDER: FontCategory[] = [
+  "sans",
+  "serif",
+  "display",
+  "handwriting",
+  "mono",
+  "other",
+  "icons",
+];
+
+export const TAG_ORDER = [
+  "geometric",
+  "humanist",
+  "grotesque",
+  "neo-grotesque",
+  "editorial",
+  "condensed",
+  "slab",
+  "didone",
+  "rounded",
+  "coding",
+  "script",
+  "technical",
+  "accessible",
+  "noto",
+  "emoji",
+  "color",
+  "ligatures",
+] as const;
+
 export const LICENSE_OPTIONS: FontLicense[] = ["free", "freeware", "personal", "commercial", "unknown"];
 
 export const LICENSE_LABEL: Record<FontLicense, string> = {

@@ -1,12 +1,12 @@
-# Font Manager **1.0.97**
+# Font Manager **1.0.98**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse Fontsource families (TTF-first), upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.97** sits next to the logo, not in the window title.
+Version **1.0.98** sits next to the logo, not in the window title.
 
-**1.0.97** — Library preview CSS is Fontsource on jsDelivr (`cdn.jsdelivr.net/fontsource/css/{id}@latest/index.css`). No `fonts.googleapis.com`. Style filter is the 7 Fontsource categories (Sans Serif, Serif, Display, Handwriting, Monospace, Other, Icons).
+**1.0.98** — Header chips match the sidebar: only licenses, styles, and tags that have fonts. Personal stays hidden until you have personal-use files. Variable / Italic still appear when the catalog has them.
 
-**1.0.96** — Fontsource provider. **1.0.95** — fallback cap. **1.0.94** — WM_FONTCHANGE debounce. **1.0.91** — sequential activate.
+**1.0.97** — Fontsource CSS preview, 7 style categories. **1.0.96** — Fontsource provider. **1.0.95** — fallback cap.
 
 **1.0.90** — Scan before download flag. **1.0.89** — session restore + slider persist. **1.0.88** — card/inspector axes share a store. **1.0.86** — Fontsource TTF for WOFF2-only families. **1.0.85** — Deactivate keeps files.
 
@@ -155,7 +155,7 @@ Google downloads sit in `Documents / Font Manager`. They are not listed as a sep
 
 ---
 
-## Next version (not in 1.0.97)
+## Next version (not in 1.0.98)
 
 - Signed installer + auto-update (SmartScreen / Store) — needs a code-signing cert.
 - Native WOFF2 → TTF in Rust — Fontsource TTF already covers install.
@@ -234,11 +234,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.97",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.98",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.97** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.98** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 
