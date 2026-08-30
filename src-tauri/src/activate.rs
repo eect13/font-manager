@@ -96,20 +96,56 @@ fn ttf_magic(bytes: &[u8]) -> bool {
 }
 
 fn ttf_intact(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let len = meta.len();
+    if len < 256 {
+        return false;
+    }
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    {
+        let cache = intact_cache();
+        if let Ok(g) = cache.lock() {
+            if let Some(&(m, l, ok)) = g.get(path) {
+                if m == mtime && l == len {
+                    return ok;
+                }
+            }
+        }
+    }
+    let ok = ttf_intact_read(path);
+    if let Ok(mut g) = intact_cache().lock() {
+        g.insert(path.to_path_buf(), (mtime, len, ok));
+    }
+    ok
+}
+
+fn ttf_intact_read(path: &Path) -> bool {
     let Ok(mut f) = fs::File::open(path) else {
         return false;
     };
-    let Ok(meta) = f.metadata() else {
-        return false;
-    };
-    if meta.len() < 256 {
-        return false;
-    }
     let mut magic = [0u8; 4];
     if f.read_exact(&mut magic).is_err() {
         return false;
     }
     ttf_magic(&magic)
+}
+
+fn intact_cache() -> &'static Mutex<HashMap<PathBuf, (u64, u64, bool)>> {
+    static C: OnceLock<Mutex<HashMap<PathBuf, (u64, u64, bool)>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn intact_forget(path: &Path) {
+    if let Ok(mut g) = intact_cache().lock() {
+        g.remove(path);
+    }
 }
 
 fn dir_has_intact(dir: &Path) -> bool {
@@ -124,6 +160,7 @@ fn scrub_font_dir(dir: &Path) {
     for path in files {
         if !ttf_intact(&path) {
             unregister_path(&path);
+            intact_forget(&path);
             let _ = fs::remove_file(&path);
         }
     }
@@ -160,12 +197,15 @@ mod winfont {
     use std::collections::HashSet;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
     #[link(name = "gdi32")]
     extern "system" {
-        fn AddFontResourceW(lpsz_filename: *const u16) -> i32;
-        fn RemoveFontResourceW(lpsz_filename: *const u16) -> i32;
+        fn AddFontResourceExW(lpsz_filename: *const u16, fl: u32, pdv: *mut core::ffi::c_void) -> i32;
+        fn RemoveFontResourceExW(lpsz_filename: *const u16, fl: u32, pdv: *mut core::ffi::c_void) -> i32;
+        fn GdiFlush() -> i32;
     }
 
     #[link(name = "user32")]
@@ -175,10 +215,22 @@ mod winfont {
 
     const HWND_BROADCAST: isize = 0xffff;
     const WM_FONTCHANGE: u32 = 0x001D;
+    /// Enumerable session font (same as AddFontResourceW). Not FR_PRIVATE — Word/Adobe must see it.
+    const FR_ENUMERABLE: u32 = 0;
 
     fn loaded() -> &'static Mutex<HashSet<PathBuf>> {
         static LOADED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
         LOADED.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn last_notify() -> &'static Mutex<Option<Instant>> {
+        static T: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+        T.get_or_init(|| Mutex::new(None))
+    }
+
+    fn dirty() -> &'static AtomicBool {
+        static D: OnceLock<AtomicBool> = OnceLock::new();
+        D.get_or_init(|| AtomicBool::new(false))
     }
 
     fn wide(path: &Path) -> Vec<u16> {
@@ -192,12 +244,14 @@ mod winfont {
             }
         }
         let w = wide(path);
-        unsafe {
-            AddFontResourceW(w.as_ptr());
+        let n = unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) };
+        if n <= 0 {
+            return;
         }
         if let Ok(mut g) = loaded().lock() {
             g.insert(path.to_path_buf());
         }
+        dirty().store(true, Ordering::SeqCst);
     }
 
     pub fn unregister(path: &Path) {
@@ -207,18 +261,42 @@ mod winfont {
         }
         let w = wide(path);
         unsafe {
-            RemoveFontResourceW(w.as_ptr());
+            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
         }
         if let Ok(mut g) = loaded().lock() {
             g.remove(path);
         }
+        dirty().store(true, Ordering::SeqCst);
     }
 
-    /// Notify other apps without waiting for every top-level window (SendMessage HWND_BROADCAST would).
+    /// Tell GDI + other apps. Windows Font Cache rebuilds on WM_FONTCHANGE — call sparingly.
     pub fn notify() {
         unsafe {
+            GdiFlush();
             SendNotifyMessageW(HWND_BROADCAST, WM_FONTCHANGE, 0, 0);
         }
+        if let Ok(mut t) = last_notify().lock() {
+            *t = Some(Instant::now());
+        }
+        dirty().store(false, Ordering::SeqCst);
+    }
+
+    /// At most once per `gap`. Skips if nothing registered/unregistered since last broadcast.
+    pub fn notify_maybe(gap: Duration) -> bool {
+        if !dirty().load(Ordering::SeqCst) {
+            return false;
+        }
+        let due = last_notify()
+            .lock()
+            .ok()
+            .and_then(|t| *t)
+            .map(|t| t.elapsed() >= gap)
+            .unwrap_or(true);
+        if !due {
+            return false;
+        }
+        notify();
+        true
     }
 
     pub fn flush_cache() {
@@ -247,6 +325,13 @@ fn unregister_path(path: &Path) {
 fn notify_fonts_changed() {
     #[cfg(windows)]
     winfont::notify();
+}
+
+fn notify_fonts_changed_maybe() {
+    #[cfg(windows)]
+    {
+        winfont::notify_maybe(Duration::from_millis(1500));
+    }
 }
 
 fn session_path(app: &AppHandle) -> Option<PathBuf> {
@@ -886,6 +971,7 @@ fn build_disk_index(app: &AppHandle) -> DiskIndex {
                 } else {
                     corrupt += 1;
                     unregister_path(&file);
+                    intact_forget(&file);
                     let _ = fs::remove_file(&file);
                 }
             }
@@ -919,7 +1005,11 @@ fn family_on_disk(app: &AppHandle, index: &DiskIndex, family: &str) -> bool {
     index_has(index, family) || family_has_intact(app, family)
 }
 
-fn split_ready_missing(app: &AppHandle, families: Vec<String>, bust: bool) -> (Vec<String>, Vec<String>) {
+fn split_ready_missing(
+    app: &AppHandle,
+    families: Vec<String>,
+    bust: bool,
+) -> (Vec<String>, Vec<String>, Option<DiskIndex>) {
     if families.len() <= 8 {
         let mut ready = Vec::new();
         let mut missing = Vec::new();
@@ -934,7 +1024,7 @@ fn split_ready_missing(app: &AppHandle, families: Vec<String>, bust: bool) -> (V
                 missing.push(family);
             }
         }
-        return (ready, missing);
+        return (ready, missing, None);
     }
     let index = build_disk_index(app);
     let mut ready = Vec::new();
@@ -950,16 +1040,19 @@ fn split_ready_missing(app: &AppHandle, families: Vec<String>, bust: bool) -> (V
             missing.push(family);
         }
     }
-    (ready, missing)
+    (ready, missing, Some(index))
 }
 
-fn commit_ready_families(app: &AppHandle, ready: &[String]) {
+fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskIndex>) {
     if ready.is_empty() {
         return;
     }
     let mut n = 0usize;
     for family in ready {
-        n += register_intact_family(app, family);
+        n += match index {
+            Some(idx) => register_from_index(app, idx, family),
+            None => register_intact_family(app, family),
+        };
         forget_queued(family);
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.remove(&family.trim().to_lowercase());
@@ -1015,6 +1108,7 @@ fn purge_family_files(app: &AppHandle, family: &str) {
         walk_font_files(&dir, &mut files);
         for path in files {
             unregister_path(&path);
+            intact_forget(&path);
             let _ = fs::remove_file(&path);
         }
     }
@@ -1183,8 +1277,8 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     emit_progress(&app);
 
     let bust = state.bust.load(Ordering::SeqCst);
-    let (ready, missing) = split_ready_missing(&app, families, bust);
-    commit_ready_families(&app, &ready);
+    let (ready, missing, index) = split_ready_missing(&app, families, bust);
+    commit_ready_families(&app, &ready, index.as_ref());
     if let Ok(mut p) = state.progress.lock() {
         p.skipped = ready.len() as u32;
         p.done = ready.len() as u32;
@@ -1210,7 +1304,6 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     };
 
     let queue = Arc::new(Mutex::new(VecDeque::from(missing)));
-    let mut since_notify = 0u32;
     loop {
         if state.cancel.load(Ordering::SeqCst) {
             break;
@@ -1286,12 +1379,9 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
             }
         }
         emit_progress(&app);
-        since_notify += 1;
-        if result.is_ok() && since_notify >= 8 {
-            notify_fonts_changed();
-            since_notify = 0;
+        if result.is_ok() {
+            notify_fonts_changed_maybe();
         }
-        thread::sleep(Duration::from_millis(1));
     }
     notify_fonts_changed();
     if let Ok(mut p) = state.progress.lock() {
