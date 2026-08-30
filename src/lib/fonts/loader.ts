@@ -310,10 +310,8 @@ function cssStamp() {
   return (GOOGLE_CATALOG_META.updated || "latest").replace(/-/g, "");
 }
 
-function googleCssHref(param: string, display: string, subset?: string) {
-  let href = `https://fonts.googleapis.com/css2?${param}&display=${display}&v=${cssStamp()}`;
-  if (subset) href += `&text=${encodeURIComponent(subset.slice(0, 72))}`;
-  return href;
+function googleCssHref(param: string, display: string) {
+  return `https://fonts.googleapis.com/css2?${param}&display=${display}&v=${cssStamp()}`;
 }
 
 function previewFamilyParams(font: FontRecord): string[] {

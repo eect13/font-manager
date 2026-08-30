@@ -91,7 +91,6 @@ export const FontCard = memo(function FontCard({
   const ref = useRef<HTMLElement>(null);
   const [ready, setReady] = useState(false);
   const [italicOn, setItalicOn] = useState(Boolean(preview.italic) && font.italic);
-  const [cardWeight, setCardWeight] = useState(() => defaultWeightForFont(font));
   const [axisHeld, setAxisHeld] = useState(false);
   const vfPrimed = useRef(false);
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
@@ -101,6 +100,9 @@ export const FontCard = memo(function FontCard({
   const toggleActivated = useFontStore((s) => s.toggleActivated);
   const toggleFavorite = useFontStore((s) => s.toggleFavorite);
   const selectFont = useFontStore((s) => s.selectFont);
+  const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
+  const storedAxes = useFontStore((s) => s.previewAxes[font.id]);
+  const cardWeight = storedAxes?.wght ?? defaultWeightForFont(font);
 
   useEffect(() => {
     const el = ref.current;
@@ -128,10 +130,6 @@ export const FontCard = memo(function FontCard({
   }, [preview.italic]);
 
   useEffect(() => {
-    setCardWeight(defaultWeightForFont(font));
-  }, [font.id]);
-
-  useEffect(() => {
     if (!italicOn) return;
     void loadItalicFace(font);
   }, [italicOn, font.id]);
@@ -146,7 +144,12 @@ export const FontCard = memo(function FontCard({
       : "border-paper/10 bg-paper/5";
   const italicCss = italicPreviewStyle(font, italicOn);
   const axisValues = font.variable
-    ? { ...defaultAxisValues(axes), wght: cardWeight, ...(italicOn && axes.some((a) => a.tag === "ital") ? { ital: 1 } : {}) }
+    ? {
+        ...defaultAxisValues(axes),
+        ...storedAxes,
+        wght: cardWeight,
+        ...(italicOn && axes.some((a) => a.tag === "ital") ? { ital: 1 } : {}),
+      }
     : null;
   const vs = axisValues ? variationStyle(axisValues, axes) : null;
   const specimenDir = scriptDir(font.family);
@@ -192,7 +195,7 @@ export const FontCard = memo(function FontCard({
         aria-label={`${font.family} weight`}
         onValueChange={([n]) => {
           if (!Number.isFinite(n)) return;
-          setCardWeight(n);
+          setPreviewAxis(font.id, "wght", n);
           if (font.variable && !vfPrimed.current) {
             vfPrimed.current = true;
             void loadFont(font, "full");

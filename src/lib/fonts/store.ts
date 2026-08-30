@@ -44,6 +44,7 @@ interface FontState extends PersistedSlice {
   selectedId: string | null;
   inspectorOpen: boolean;
   uploadBusy: boolean;
+  previewAxes: Record<string, Record<string, number>>;
   activatedSet: Set<string>;
   pendingActivate: string[];
   pendingSet: Set<string>;
@@ -65,6 +66,7 @@ interface FontState extends PersistedSlice {
   restoreActivation: (liveIds: string[], pendingIds: string[]) => void;
   selectFont: (id: string | null) => void;
   setInspectorOpen: (open: boolean) => void;
+  setPreviewAxis: (id: string, tag: string, value: number) => void;
   addCollection: (name: string, parentId?: string | null) => string;
   setCollectionWatch: (id: string, watchPath: string | undefined, autoActivate?: boolean) => void;
   setCollectionAutoActivate: (id: string, autoActivate: boolean) => void;
@@ -176,6 +178,7 @@ export const useFontStore = create<FontState>()(
       selectedId: null,
       inspectorOpen: false,
       uploadBusy: false,
+      previewAxes: {},
       setHydrated: (value) => set({ hydrated: value }),
       setGoogleFonts: (fonts) =>
         set((s) => {
@@ -335,6 +338,17 @@ export const useFontStore = create<FontState>()(
         set({ selectedId: id, inspectorOpen: Boolean(id) }),
       setInspectorOpen: (open) =>
         set({ inspectorOpen: open, selectedId: open ? get().selectedId : null }),
+      setPreviewAxis: (id, tag, value) =>
+        set((s) => {
+          const prev = s.previewAxes[id];
+          if (prev?.[tag] === value) return s;
+          return {
+            previewAxes: {
+              ...s.previewAxes,
+              [id]: { ...prev, [tag]: value },
+            },
+          };
+        }),
       addCollection: (name, parentId = null) => {
         const id = uid("c");
         set((s) => ({

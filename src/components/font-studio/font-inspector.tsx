@@ -13,7 +13,7 @@ import { synthesisForFont } from "@/lib/fonts/synthesis";
 import { findFont, folderTree, collectionIsWatched, tagsFor, useFontStore } from "@/lib/fonts/store";
 import { fontLicense } from "@/lib/fonts/license";
 import { CATEGORY_LABEL, LICENSE_HINT, LICENSE_LABEL, LICENSE_OPTIONS } from "@/lib/fonts/types";
-import { axesForFont, defaultAxisValues, defaultWeightForFont, instancesForFont, realItalicAxes, resolvedAxisValues, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultWeightForFont, instancesForFont, realItalicAxes, resolvedAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { AxisSliders } from "./axis-sliders";
 import { HelpTip } from "./help-tip";
 import { LicenseBadge } from "./license-badge";
@@ -46,12 +46,12 @@ export function FontInspector() {
   const isOn = useFontStore((s) => (selectedId ? s.activatedSet.has(selectedId) : false));
   const isFav = useFontStore((s) => (selectedId ? s.favorites.includes(selectedId) : false));
   const preview = useFontStore((s) => s.preview);
+  const storedAxes = useFontStore((s) => (selectedId ? s.previewAxes[selectedId] : undefined));
+  const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
 
   const font = selectedId ? findFont(selectedId, localFonts, googleFonts) : undefined;
   const [tagDraft, setTagDraft] = useState("");
   const [features, setFeatures] = useState<Record<string, boolean>>({});
-  const [weight, setWeight] = useState(400);
-  const [axisValues, setAxisValues] = useState<Record<string, number>>({});
 
   const [italicOn, setItalicOn] = useState(false);
   const [parsedTags, setParsedTags] = useState<string[] | undefined>();
@@ -59,8 +59,6 @@ export function FontInspector() {
   useEffect(() => {
     if (!font) return;
     void loadFont(font, "full");
-    setWeight(defaultWeightForFont(font));
-    setAxisValues(defaultAxisValues(axesForFont(font), instancesForFont(font)));
     setItalicOn(Boolean(preview.italic) && (font.italic || Boolean(realItalicAxes(font).ital || realItalicAxes(font).slnt)));
     setFeatures({});
     setTagDraft("");
@@ -114,7 +112,8 @@ export function FontInspector() {
 
   const stack = cssFamilyStack(font);
   const axes = axesForFont(font);
-  const liveAxes = resolvedAxisValues(axes, axisValues, instancesForFont(font));
+  const liveAxes = resolvedAxisValues(axes, storedAxes ?? {}, instancesForFont(font));
+  const weight = liveAxes.wght ?? defaultWeightForFont(font);
   const { ital: italAxis, slnt: slntAxis } = realItalicAxes(font);
   const hasItalAxis = Boolean(italAxis || slntAxis);
   const axisStyle = variationStyle(
@@ -263,9 +262,8 @@ export function FontInspector() {
                   values={liveAxes}
                   instances={instancesForFont(font)}
                   onChange={(tag, value) => {
-                    setAxisValues((prev) => ({ ...prev, [tag]: value }));
+                    setPreviewAxis(font.id, tag, value);
                     if (tag === "wght") {
-                      setWeight(Math.round(value));
                       void loadFontWeight(font, Math.round(value), italicOn);
                     }
                     if (tag === "ital") setItalicOn(value >= 0.5);
@@ -281,7 +279,7 @@ export function FontInspector() {
                     key={w}
                     type="button"
                     onClick={() => {
-                      setWeight(w);
+                      setPreviewAxis(font.id, "wght", w);
                       void loadFontWeight(font, w, italicOn);
                     }}
                     className={cn(
