@@ -68,13 +68,12 @@ export function LibraryGrid() {
   const collections = useFontStore((s) =>
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
   );
-  const diskFamilies = useFontStore((s) => (s.scope === "disk" ? s.diskFamilies : EMPTY_IDS));
   const systemFonts = useFontStore((s) => (s.scope === "system" ? s.systemFonts : EMPTY_FONTS));
   const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const list = preview.view === "list";
   const sortMode =
-    (scope === "disk" || scope === "system") && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
+    scope === "system" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
 
   const fonts = useMemo(
     () =>
@@ -87,11 +86,10 @@ export function LibraryGrid() {
           activated,
           collections,
           customTags,
-          diskFamilies,
         ),
         sortMode,
       ),
-    [localFonts, googleFonts, systemFonts, scope, query, favorites, activated, collections, customTags, diskFamilies, sortMode],
+    [localFonts, googleFonts, systemFonts, scope, query, favorites, activated, collections, customTags, sortMode],
   );
 
   const inner = Math.max(280, box.width - 24);
@@ -151,16 +149,8 @@ export function LibraryGrid() {
       </div>
     ) : null;
 
-  const diskBar =
-    scope === "disk" ? (
-      <div className="border-b border-border px-3 py-2 md:px-4">
-        <p className="text-sm text-muted-foreground">
-          {diskFamilies.length
-            ? `${diskFamilies.length.toLocaleString()} Google ${diskFamilies.length === 1 ? "family" : "families"} in Documents / Font Manager. These are downloads, not Windows system fonts. Deactivate unloads them; Delete files in the inspector removes the folder.`
-            : "Nothing downloaded yet. Activate a Google family to save TTF files here."}
-        </p>
-      </div>
-    ) : scope === "system" ? (
+  const systemBar =
+    scope === "system" ? (
       <div className="border-b border-border px-3 py-2 md:px-4">
         <p className="text-sm text-muted-foreground">
           Fonts already in Windows (Arial, Calibri, Segoe, …). View and favorite them here. Font Manager will not uninstall or deactivate them.
@@ -172,7 +162,7 @@ export function LibraryGrid() {
     return (
       <div ref={boxRef} className="flex flex-1 flex-col">
         {uploadedBar}
-        {diskBar}
+        {systemBar}
         <div className="flex flex-1 flex-col items-center justify-center px-6 py-20 text-center">
           <p className="font-heading text-3xl">Nothing in this drawer</p>
           <p className="mt-2 max-w-sm text-sm text-muted-foreground">
@@ -180,8 +170,6 @@ export function LibraryGrid() {
               ? "Drop a folder of TTF, OTF, or WOFF files here, or use Files / Folder in the header."
               : scope === "system"
                 ? "Open the desktop app to list Arial, Calibri, and the rest of C:\\Windows\\Fonts. This website cannot read that folder."
-              : scope === "disk"
-                ? "Activate a Google family to download TTF files into Documents. This is not the Windows fonts folder."
               : scopeNeedsActivated(scope)
                 ? "This filter only lists activated typefaces. Open All typefaces, or click Activated."
                 : "Try another filter, or use Folder to add a whole directory of TTF, OTF, or WOFF files."}
@@ -195,7 +183,7 @@ export function LibraryGrid() {
   return (
     <div ref={boxRef} className="flex flex-col">
       {uploadedBar}
-      {diskBar}
+      {systemBar}
       <div className="relative w-full" style={{ height: totalH }}>
         <div
           className={list ? "flex flex-col gap-2 p-2.5 md:p-3" : "grid gap-2 p-2.5 md:p-3"}

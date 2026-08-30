@@ -1016,7 +1016,6 @@ export function filterLibrary(
   activated: string[],
   collections: Collection[],
   customTags: Record<string, string[]>,
-  diskFamilies: string[] = [],
 ): FontRecord[] {
   let list = fonts;
   if (scope === "activated") {
@@ -1027,10 +1026,7 @@ export function filterLibrary(
     list = list.filter((f) => fav.has(f.id));
   } else if (scope === "uploaded") list = list.filter((f) => f.source === "local");
   else if (scope === "google") list = list.filter((f) => f.source === "google");
-  else if (scope === "disk") {
-    const onDisk = new Set(diskFamilies.map((n) => n.trim().toLowerCase()));
-    list = list.filter((f) => f.source === "google" && onDisk.has(f.family.toLowerCase()));
-  } else if (scope === "system") {
+  else if (scope === "system") {
     list = list.filter((f) => f.source === "system");
   }
   else if (scope.startsWith("collection:")) {

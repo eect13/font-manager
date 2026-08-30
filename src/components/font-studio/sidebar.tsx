@@ -10,7 +10,6 @@ import {
   Type,
   Upload,
   User,
-  HardDrive,
   Monitor,
 } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
@@ -105,7 +104,6 @@ export function Sidebar({
   const customTags = useFontStore((s) => s.customTags);
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
-  const diskCount = useFontStore((s) => s.diskFamilies.length);
   const systemCount = useFontStore((s) => s.systemFonts.length);
   const counts = useMemo(() => {
     const list = allFonts(localFonts, googleFonts);
@@ -170,17 +168,6 @@ export function Sidebar({
               label="Uploaded"
               count={localFonts.length}
               mainProps={{ "aria-label": "Uploaded" }}
-            />
-            <SidebarRow
-              active={scope === "disk"}
-              onClick={() => go("disk")}
-              icon={<HardDrive className="size-4 shrink-0" />}
-              label="On disk"
-              count={diskCount}
-              mainProps={{
-                "aria-label": "On disk",
-                title: "Google families already downloaded into Documents / Font Manager. Not Windows system fonts (Arial, Calibri).",
-              }}
             />
             <SidebarRow
               active={scope === "system"}

@@ -108,8 +108,9 @@ export function useHydrateFonts() {
       const { localFonts, setHydrated, googleFonts, collections, scope } = useFontStore.getState();
       if (
         typeof scope === "string" &&
-        scope.startsWith("collection:") &&
-        !collections.some((c) => c.id === scope.slice("collection:".length))
+        ((scope as string) === "disk" ||
+          (scope.startsWith("collection:") &&
+            !collections.some((c) => c.id === scope.slice("collection:".length))))
       ) {
         useFontStore.getState().setScope("all");
       }
