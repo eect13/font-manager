@@ -1,12 +1,12 @@
-# Font Manager **1.0.90**
+# Font Manager **1.0.91**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse ~1,968 Google Font families, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.90** sits next to the logo, not in the window title.
+Version **1.0.91** sits next to the logo, not in the window title.
 
-**1.0.90** — Activate scans Documents **before** any download flag. Intact Google families register immediately. The progress bar only covers missing/corrupt files. A second click while queued no longer cancels the scan.
+**1.0.91** — Activate no longer freezes the window. Scan and register run in the background. Missing files download **one family at a time**. **On disk** sits under Library (downloaded Google families in Documents — not Windows Arial/Calibri). Deactivate still keeps files. Settings still persist on exit.
 
-**1.0.89** — Exit restores the last session even if the UI persist lagged. Slider positions are saved. Provider list has **On disk** (downloaded Google families). Activate still scans first; Deactivate still keeps files.
+**1.0.90** — Scan before download flag. **1.0.89** — session restore + slider persist. **1.0.88** — card/inspector axes share a store. **1.0.86** — Fontsource TTF for WOFF2-only families. **1.0.85** — Deactivate keeps files.
 
 **1.0.88** — Library card weight slider and inspector axes share one store. Drag either; both update. Google CSS preview is never `&text=`-subsetted. Activated files on disk stay the install cache (Word/Adobe); the grid still paints through CSS so this website and the desktop window match.
 
@@ -142,11 +142,27 @@ Deactivate unloads and **keeps files**. Activate again does **not** download. De
 
 ## Google download
 
-1. Scan Documents **on the Activate click**, before any download worker starts. Intact TTF/OTF/TTC → register, skip fetch. The family turns on immediately.
-2. Missing or broken (empty, truncated, WOFF2) → download TTF. Google CSS first; if it only has WOFF2, Fontsource TTF for that script (khmer, lao, lycian, …).
-3. Three workers. Retry replaces files. Pause / Stop still work.
+1. Click Activate. The UI returns immediately. A background thread scans `Documents / Font Manager`.
+2. Intact TTF/OTF/TTC → register, skip fetch. The family turns on as soon as the scan hits it.
+3. Missing or broken (empty, truncated, WOFF2) → download **one family at a time**. Google CSS first; if it only has WOFF2, Fontsource TTF for that script (khmer, lao, lycian, …).
+4. Windows is notified in batches so Word/Adobe do not stall. Retry replaces files. Pause / Stop still work.
 
-Deactivate → Activate is register-only. Preview stays CSS in this window.
+Deactivate unloads and **keeps files**. Activate again is register-only. Preview stays CSS in this window.
+
+**On disk** (Library) is that Documents cache — Google families you already downloaded. It is **not** `C:\Windows\Fonts`. You can view them, deactivate them, or Delete files in the inspector. Arial and Calibri are not listed.
+
+---
+
+## Next version (not in 1.0.91)
+
+- Windows system fonts as a read-only drawer (Arial, Calibri, Segoe — view, never uninstall).
+- Signed installer + auto-update (SmartScreen / Store).
+- Native WOFF2 → TTF in the app so Fontsource is a fallback, not the only path.
+- COLRv1 / emoji preview quality.
+- Search chips (`license:personal` without typing).
+- Watched folders that stay in sync.
+- Extra TTC faces, color-font install notes.
+- More providers (Fontshare, Bunny, GitHub releases) behind the same scan-then-download rules.
 
 ---
 
@@ -219,11 +235,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.90",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.91",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.90** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.91** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 

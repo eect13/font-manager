@@ -169,6 +169,17 @@ export function Sidebar({
               count={localFonts.length}
               mainProps={{ "aria-label": "Uploaded" }}
             />
+            <SidebarRow
+              active={scope === "disk"}
+              onClick={() => go("disk")}
+              icon={<HardDrive className="size-4 shrink-0" />}
+              label="On disk"
+              count={diskCount}
+              mainProps={{
+                "aria-label": "On disk",
+                title: "Google families already downloaded into Documents / Font Manager. Not Windows system fonts (Arial, Calibri).",
+              }}
+            />
           </section>
 
           <section>
@@ -183,14 +194,6 @@ export function Sidebar({
               count={googleFonts.length}
               mainProps={{ "aria-label": "Google Fonts" }}
               menu={<GoogleActivateMenuItem />}
-            />
-            <SidebarRow
-              active={scope === "disk"}
-              onClick={() => go("disk")}
-              icon={<HardDrive className="size-4 shrink-0" />}
-              label="On disk"
-              count={diskCount}
-              mainProps={{ "aria-label": "On disk" }}
             />
           </section>
 

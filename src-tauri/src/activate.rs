@@ -920,6 +920,22 @@ fn family_on_disk(app: &AppHandle, index: &DiskIndex, family: &str) -> bool {
 }
 
 fn split_ready_missing(app: &AppHandle, families: Vec<String>, bust: bool) -> (Vec<String>, Vec<String>) {
+    if families.len() <= 8 {
+        let mut ready = Vec::new();
+        let mut missing = Vec::new();
+        for family in families {
+            let t = family.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if !bust && family_has_intact(app, t) {
+                ready.push(family);
+            } else {
+                missing.push(family);
+            }
+        }
+        return (ready, missing);
+    }
     let index = build_disk_index(app);
     let mut ready = Vec::new();
     let mut missing = Vec::new();
@@ -941,14 +957,9 @@ fn commit_ready_families(app: &AppHandle, ready: &[String]) {
     if ready.is_empty() {
         return;
     }
-    let index = build_disk_index(app);
     let mut n = 0usize;
     for family in ready {
-        let mut added = register_from_index(app, &index, family);
-        if added == 0 {
-            added = register_intact_family(app, family);
-        }
-        n += added;
+        n += register_intact_family(app, family);
         forget_queued(family);
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.remove(&family.trim().to_lowercase());
@@ -1160,27 +1171,26 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
         return Err("no installable TTF/OTF (Google CSS is WOFF2-only; Fontsource had no TTF)".into());
     }
     mark_family_complete(&root);
-    notify_fonts_changed();
     Ok(total)
 }
 
 fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     let state = bulk();
-    let bust = state.bust.load(Ordering::SeqCst);
-    let (_ready, missing) = split_ready_missing(&app, families, bust);
-    commit_ready_families(&app, &_ready);
-
-    if missing.is_empty() {
-        notify_fonts_changed();
-        if let Ok(mut p) = state.progress.lock() {
-            p.running = false;
-            p.current.clear();
-        }
-        state.running.store(false, Ordering::SeqCst);
-        state.bust.store(false, Ordering::SeqCst);
-        emit_progress(&app);
-        return;
+    if let Ok(mut p) = state.progress.lock() {
+        p.current = "Scanning Documents…".into();
+        p.running = true;
     }
+    emit_progress(&app);
+
+    let bust = state.bust.load(Ordering::SeqCst);
+    let (ready, missing) = split_ready_missing(&app, families, bust);
+    commit_ready_families(&app, &ready);
+    if let Ok(mut p) = state.progress.lock() {
+        p.skipped = ready.len() as u32;
+        p.done = ready.len() as u32;
+        p.total = (ready.len() + missing.len()) as u32;
+    }
+    emit_progress(&app);
 
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -1200,94 +1210,89 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     };
 
     let queue = Arc::new(Mutex::new(VecDeque::from(missing)));
-    let workers = 3usize;
-    thread::scope(|scope| {
-        for _ in 0..workers {
-            let app = app.clone();
-            let client = client.clone();
-            let queue = queue.clone();
-            scope.spawn(move || {
-                loop {
-                    let state = bulk();
-                    if state.cancel.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    if state.pause.load(Ordering::SeqCst) {
-                        if let Ok(mut p) = state.progress.lock() {
-                            p.paused = true;
-                            p.running = true;
-                        }
-                        emit_progress(&app);
-                        thread::sleep(Duration::from_millis(200));
-                        continue;
-                    }
-                    if let Ok(mut p) = state.progress.lock() {
-                        p.paused = false;
-                    }
-                    if let Ok(mut extra) = state.pending.lock() {
-                        if let Ok(mut q) = queue.lock() {
-                            while let Some(item) = extra.pop_front() {
-                                q.push_back(item);
-                            }
-                        }
-                    }
-                    let Some(family) = queue.lock().ok().and_then(|mut q| q.pop_front()) else {
-                        break;
-                    };
-                    let denied = state
-                        .denied
-                        .lock()
-                        .map(|d| d.contains(&family.trim().to_lowercase()))
-                        .unwrap_or(false);
-                    if denied {
-                        if let Ok(mut p) = state.progress.lock() {
-                            p.done += 1;
-                        }
-                        emit_progress(&app);
-                        continue;
-                    }
-                    {
-                        let mut p = state.progress.lock().unwrap();
-                        p.current = family.clone();
-                        p.running = true;
-                    }
-                    emit_progress(&app);
-                    let already = register_intact_family(&app, &family) > 0
-                        && !bulk().bust.load(Ordering::SeqCst);
-                    let result = if already {
-                        Ok(1usize)
-                    } else {
-                        download_family(&app, &client, &family)
-                    };
-                    match &result {
-                        Err(reason) => {
-                            forget_queued(&family);
-                            remember_failed(&family, reason);
-                        }
-                        Ok(_) => {
-                            session_add(&app, &[family.clone()]);
-                            if let Ok(mut p) = bulk().progress.lock() {
-                                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
-                                    p.ready_names.push(family.clone());
-                                }
-                                if already {
-                                    p.skipped += 1;
-                                }
-                            }
-                        }
-                    }
-                    {
-                        let mut p = state.progress.lock().unwrap();
-                        p.done += 1;
-                        if result.is_err() {
-                            p.failed += 1;
-                        }
-                    }
-                    emit_progress(&app);
-                }
-            });
+    let mut since_notify = 0u32;
+    loop {
+        if state.cancel.load(Ordering::SeqCst) {
+            break;
         }
-    });
+        if state.pause.load(Ordering::SeqCst) {
+            if let Ok(mut p) = state.progress.lock() {
+                p.paused = true;
+                p.running = true;
+            }
+            emit_progress(&app);
+            thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+        if let Ok(mut p) = state.progress.lock() {
+            p.paused = false;
+        }
+        if let Ok(mut extra) = state.pending.lock() {
+            if let Ok(mut q) = queue.lock() {
+                while let Some(item) = extra.pop_front() {
+                    q.push_back(item);
+                }
+            }
+        }
+        let Some(family) = queue.lock().ok().and_then(|mut q| q.pop_front()) else {
+            break;
+        };
+        let denied = state
+            .denied
+            .lock()
+            .map(|d| d.contains(&family.trim().to_lowercase()))
+            .unwrap_or(false);
+        if denied {
+            if let Ok(mut p) = state.progress.lock() {
+                p.done += 1;
+            }
+            emit_progress(&app);
+            continue;
+        }
+        {
+            let mut p = state.progress.lock().unwrap();
+            p.current = family.clone();
+            p.running = true;
+        }
+        emit_progress(&app);
+        let already = register_intact_family(&app, &family) > 0 && !state.bust.load(Ordering::SeqCst);
+        let result = if already {
+            Ok(1usize)
+        } else {
+            download_family(&app, &client, &family)
+        };
+        match &result {
+            Err(reason) => {
+                forget_queued(&family);
+                remember_failed(&family, reason);
+            }
+            Ok(_) => {
+                session_add(&app, &[family.clone()]);
+                if let Ok(mut p) = state.progress.lock() {
+                    if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                        p.ready_names.push(family.clone());
+                    }
+                    if already {
+                        p.skipped += 1;
+                    }
+                }
+            }
+        }
+        {
+            let mut p = state.progress.lock().unwrap();
+            p.done += 1;
+            if result.is_err() {
+                p.failed += 1;
+            }
+        }
+        emit_progress(&app);
+        since_notify += 1;
+        if result.is_ok() && since_notify >= 8 {
+            notify_fonts_changed();
+            since_notify = 0;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
     notify_fonts_changed();
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
@@ -1448,12 +1453,21 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     if families.is_empty() {
         return Ok(Vec::new());
     }
-    let index = build_disk_index(&app);
     let mut ready = Vec::new();
-    for family in families {
-        if family_on_disk(&app, &index, &family) {
-            let _ = register_from_index(&app, &index, &family);
-            ready.push(family);
+    if families.len() <= 8 {
+        for family in families {
+            if family_has_intact(&app, &family) {
+                let _ = register_intact_family(&app, &family);
+                ready.push(family);
+            }
+        }
+    } else {
+        let index = build_disk_index(&app);
+        for family in families {
+            if family_on_disk(&app, &index, &family) {
+                let _ = register_from_index(&app, &index, &family);
+                ready.push(family);
+            }
         }
     }
     if !ready.is_empty() {
@@ -1624,19 +1638,8 @@ pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
     if families.is_empty() {
         return Ok(0);
     }
-    let bust = bulk().bust.load(Ordering::SeqCst);
-    let (ready, missing) = split_ready_missing(&app, families, bust);
-    commit_ready_families(&app, &ready);
-
-    let fresh = accept_new_families(missing);
+    let fresh = accept_new_families(families);
     if fresh.is_empty() {
-        if !bulk().running.load(Ordering::SeqCst) {
-            if let Ok(mut p) = bulk().progress.lock() {
-                p.running = false;
-                p.current.clear();
-            }
-            emit_progress(&app);
-        }
         return Ok(0);
     }
     let added = fresh.len();
@@ -1644,15 +1647,16 @@ pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
     {
         let mut p = state.progress.lock().map_err(|e| e.to_string())?;
         p.running = true;
+        p.current = "Scanning Documents…".into();
         if !state.running.load(Ordering::SeqCst) {
+            p.done = 0;
             p.failed = 0;
-            p.skipped = ready.len() as u32;
-            p.done = ready.len() as u32;
-            p.total = (ready.len() + added) as u32;
-            p.current = fresh.first().cloned().unwrap_or_default();
+            p.skipped = 0;
+            p.total = added as u32;
             p.failed_names.clear();
             p.failed_details.clear();
             p.paused = false;
+            p.ready_names.clear();
             reset_circuits();
         } else {
             p.total += added as u32;

@@ -71,6 +71,8 @@ export function LibraryGrid() {
   const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const list = preview.view === "list";
+  const sortMode =
+    scope === "disk" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
 
   const fonts = useMemo(
     () =>
@@ -85,9 +87,9 @@ export function LibraryGrid() {
           customTags,
           diskFamilies,
         ),
-        preview.sort ?? "name-asc",
+        sortMode,
       ),
-    [localFonts, googleFonts, scope, query, favorites, activated, collections, customTags, diskFamilies, preview.sort],
+    [localFonts, googleFonts, scope, query, favorites, activated, collections, customTags, diskFamilies, sortMode],
   );
 
   const inner = Math.max(280, box.width - 24);
@@ -147,15 +149,29 @@ export function LibraryGrid() {
       </div>
     ) : null;
 
+  const diskBar =
+    scope === "disk" ? (
+      <div className="border-b border-border px-3 py-2 md:px-4">
+        <p className="text-sm text-muted-foreground">
+          {diskFamilies.length
+            ? `${diskFamilies.length.toLocaleString()} Google ${diskFamilies.length === 1 ? "family" : "families"} in Documents / Font Manager. These are downloads, not Windows system fonts. Deactivate unloads them; Delete files in the inspector removes the folder.`
+            : "Nothing downloaded yet. Activate a Google family to save TTF files here."}
+        </p>
+      </div>
+    ) : null;
+
   if (fonts.length === 0) {
     return (
       <div ref={boxRef} className="flex flex-1 flex-col">
         {uploadedBar}
+        {diskBar}
         <div className="flex flex-1 flex-col items-center justify-center px-6 py-20 text-center">
           <p className="font-heading text-3xl">Nothing in this drawer</p>
           <p className="mt-2 max-w-sm text-sm text-muted-foreground">
             {scope === "uploaded"
               ? "Drop a folder of TTF, OTF, or WOFF files here, or use Files / Folder in the header."
+              : scope === "disk"
+                ? "Activate a Google family to download TTF files into Documents. This is not the Windows fonts folder."
               : scopeNeedsActivated(scope)
                 ? "This filter only lists activated typefaces. Open All typefaces, or click Activated."
                 : "Try another filter, or use Folder to add a whole directory of TTF, OTF, or WOFF files."}
@@ -169,6 +185,7 @@ export function LibraryGrid() {
   return (
     <div ref={boxRef} className="flex flex-col">
       {uploadedBar}
+      {diskBar}
       <div className="relative w-full" style={{ height: totalH }}>
         <div
           className={list ? "flex flex-col gap-2 p-2.5 md:p-3" : "grid gap-2 p-2.5 md:p-3"}

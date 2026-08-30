@@ -672,34 +672,26 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     return true;
   }
   if (font.source === "google") {
-    const plan = await tauriInvoke<{ ready: string[]; missing: string[] }>("plan_google_activation", {
-      families: [font.family],
-    }).catch(() => null);
-    if (plan?.ready.length) {
-      const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
-        families: plan.ready,
-      }).catch(() => plan.ready);
-      if (ready?.length) {
-        installedCache.add(font.family.toLowerCase());
-        await markPreviewLive([font.id]);
-        return true;
-      }
-    }
-    const added = await tauriInvoke<number>("start_google_downloads", {
-      families: [font.family],
-    }).catch(() => 0);
-    if (added) {
-      startGooglePoll();
-      return true;
-    }
     const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
       families: [font.family],
     }).catch(() => [] as string[]);
     if (ready.length) {
       installedCache.add(font.family.toLowerCase());
       await markPreviewLive([font.id]);
-    } else {
-      startGooglePoll();
+      return true;
+    }
+    const added = await tauriInvoke<number>("start_google_downloads", {
+      families: [font.family],
+    }).catch(() => 0);
+    startGooglePoll();
+    if (!added) {
+      const again = await tauriInvoke<string[]>("activate_families_on_disk", {
+        families: [font.family],
+      }).catch(() => [] as string[]);
+      if (again.length) {
+        installedCache.add(font.family.toLowerCase());
+        await markPreviewLive([font.id]);
+      }
     }
     return true;
   }
@@ -803,29 +795,21 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   if (google.length) {
     const names = google.map((font) => font.family);
     toast.message("Scanning Documents first", {
-      description: `${names.length.toLocaleString()} families. Intact files are registered, not re-downloaded.`,
+      description: `${names.length.toLocaleString()} families. Intact files register in the background; only missing files download, one at a time.`,
     });
-    const plan = await tauriInvoke<{ ready: string[]; missing: string[] }>("plan_google_activation", {
-      families: names,
-    }).catch(() => null);
-    const onDisk = plan?.ready ?? [];
-    const missing = plan?.missing ?? names;
-    if (onDisk.length) {
-      const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: onDisk }).catch(
-        () => onDisk,
+    const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
+    startGooglePoll();
+    if (!added) {
+      const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
+        () => [] as string[],
       );
       if (ready.length) {
         for (const name of ready) installedCache.add(name.toLowerCase());
         applyReadyFamilies(ready);
+        toast.message("Already on disk", {
+          description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
+        });
       }
-    }
-    if (missing.length) {
-      const added = await tauriInvoke<number>("start_google_downloads", { families: missing }).catch(() => 0);
-      if (added) startGooglePoll();
-    } else {
-      toast.message("Already on disk", {
-        description: `${onDisk.length.toLocaleString()} intact ${onDisk.length === 1 ? "family" : "families"} — registered, not fetched again.`,
-      });
     }
   }
   if (local.length) {
