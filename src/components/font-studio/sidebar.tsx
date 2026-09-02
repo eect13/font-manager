@@ -291,15 +291,6 @@ export function Sidebar({
               <ProviderRefresh />
             </p>
             <SidebarRow
-              active={scope === "google"}
-              onClick={() => go("google")}
-              icon={<Type className="size-4 shrink-0" />}
-              label="Fontsource"
-              count={counts.fontsource}
-              mainProps={{ "aria-label": "Fontsource" }}
-              menu={<GoogleActivateMenuItem />}
-            />
-            <SidebarRow
               active={scope === "gfonts"}
               onClick={() => go("gfonts")}
               icon={<Globe className="size-4 shrink-0" />}
@@ -307,6 +298,15 @@ export function Sidebar({
               count={counts.gfonts}
               mainProps={{ "aria-label": "Google Fonts" }}
               menu={<GfontsActivateMenuItem />}
+            />
+            <SidebarRow
+              active={scope === "google"}
+              onClick={() => go("google")}
+              icon={<Type className="size-4 shrink-0" />}
+              label="Fontsource"
+              count={counts.fontsource}
+              mainProps={{ "aria-label": "Fontsource" }}
+              menu={<GoogleActivateMenuItem />}
             />
             <SidebarRow
               active={scope === "uploaded"}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type UIEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, type UIEvent } from "react";
 import { ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +33,7 @@ export function FontPicker({
   const customTags = useFontStore((s) => s.customTags);
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const deferredQ = useDeferredValue(q);
   const [shown, setShown] = useState(pageSize || Number.POSITIVE_INFINITY);
 
   const fonts = useMemo(
@@ -42,7 +43,7 @@ export function FontPicker({
   const selected = findFont(value, localFonts, googleFonts);
 
   const filtered = useMemo(() => {
-    const query = q.trim().toLowerCase();
+    const query = deferredQ.trim().toLowerCase();
     const match = (f: FontRecord) => {
       if (f.source !== "system" && !activatedSet.has(f.id)) return false;
       if (!query) return true;
@@ -55,7 +56,7 @@ export function FontPicker({
     const hits = fonts.filter(match);
     hits.sort((a, b) => (a.fullName || a.family).localeCompare(b.fullName || b.family));
     return hits;
-  }, [fonts, q, activatedSet, customTags]);
+  }, [fonts, deferredQ, activatedSet, customTags]);
 
   const visible = useMemo(() => {
     const cap = pageSize > 0 ? shown : filtered.length;
@@ -72,10 +73,10 @@ export function FontPicker({
     const fontsource = visible.filter(isFontsourceOnly);
     const gfonts = visible.filter(isGoogleCatalog);
     return [
-      { label: "System", items: windows },
-      { label: "Fontsource", items: fontsource },
       { label: "Google Fonts", items: gfonts },
-      { label: "Uploaded", items: uploaded },
+      { label: "Fontsource", items: fontsource },
+      { label: "Local Files", items: uploaded },
+      { label: "System", items: windows },
     ].filter((g) => g.items.length);
   }, [visible]);
 

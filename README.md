@@ -1,8 +1,10 @@
-# Font Manager **1.0.128**
+# Font Manager **1.0.129**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse Fontsource and Google Fonts, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. **100% temporary session activation. Zero registry bloat. Fonts unload on close.** Files live in `Documents / Font Manager`. Nothing is copied to `C:\Windows\Fonts`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.128** sits next to the logo, not in the window title.
+Version **1.0.129** sits next to the logo, not in the window title.
+
+**1.0.129** — Glyph search matches the library field (icon + deferred filter on the parsed cmap; no TTF parse per keystroke). Provider list is **Google Fonts → Fontsource → Local**. Playground / Glyphs pickers use the same order and deferred search.
 
 **1.0.128** — Google drawer is the official fonts.google.com list (**1,946**), not Fontsource `type: "google"` (**1,980**). Extra Fontsource rows stay in Fontsource. Refresh fetches both catalogs and classifies by intersection. Preview still falls back to Fontsource CSS if Google has no TTF.
 

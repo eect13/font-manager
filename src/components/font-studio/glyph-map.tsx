@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { CircleHelp, Copy, Delete, Plus } from "lucide-react";
+import { CircleHelp, Copy, Delete, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -193,12 +193,16 @@ export function GlyphMap() {
         </div>
         <div className="min-w-48 flex-1">
           <Label className="mb-1.5 block">Search</Label>
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Character, name, or U+0041"
-            className="h-11"
-          />
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Name, character, or U+0041"
+              className="h-11 bg-card pl-8"
+              aria-label="Search glyphs"
+            />
+          </div>
         </div>
         <div className="flex flex-col gap-1 pb-0.5">
           <Label>View</Label>
