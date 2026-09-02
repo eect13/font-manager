@@ -1,8 +1,66 @@
-# Font Manager **1.0.99**
+# Font Manager **1.0.128**
 
-**TL;DR.** FontBase-style desktop typeface library. Browse Fontsource and Google Fonts, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. Files live in `Documents / Font Manager`. This website is the same UI — a dress rehearsal before `deploy.bat`.
+**TL;DR.** FontBase-style desktop typeface library. Browse Fontsource and Google Fonts, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. **100% temporary session activation. Zero registry bloat. Fonts unload on close.** Files live in `Documents / Font Manager`. Nothing is copied to `C:\Windows\Fonts`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.99** sits next to the logo, not in the window title.
+Version **1.0.128** sits next to the logo, not in the window title.
+
+**1.0.128** — Google drawer is the official fonts.google.com list (**1,946**), not Fontsource `type: "google"` (**1,980**). Extra Fontsource rows stay in Fontsource. Refresh fetches both catalogs and classifies by intersection. Preview still falls back to Fontsource CSS if Google has no TTF.
+
+**1.0.127** — Boot loads the live Fontsource cache before restoring Activated, so ~2,100 catalog faces are not clipped to the bundled **2,062**. Watch folders have no file-count cap (still refuse Windows\\Fonts and Documents\\Font Manager).
+
+**1.0.126** — Watch folder lists + fingerprints (`mtime`/`size`) instead of re-reading every TTF on a 2.5s timer. Native `watch` when the installer has it; otherwise an 8s poll. Refuses `C:\\Windows\\Fonts` and `Documents\\Font Manager`. First tick waits until boot is done.
+
+**1.0.125** — System is **view-only** (Library, Playground, Glyphs, Duplicates). Never `Add`/`Remove` `C:\\Windows\\Fonts`. Deactivate no longer walks every family folder (that freeze). Progress bar hidden when the queue is empty — no more “Registering 0 already on disk.”
+
+**1.0.124** — System names are OpenType **name ID 16/1** (Fonts CPL), not `arial.ttf`. Cards do not inject FontFace from `C:\\Windows\\Fonts` (that hid the real OS specimen). System ··· / inspector **Open Fonts folder**. Watched local files preview from their disk path.
+
+**1.0.123** — System drawer is a **one-time snapshot of `C:\Windows\Fonts`**, not GDI `EnumFontFamilies`. Session fonts (flag 0) were showing up as System and the list jumped on every `WM_FONTCHANGE`. Activate never `Add`s files from Windows\Fonts. Bulk download broadcasts **once** at the end, not every family. Quit still hides, `Remove`s session paths (flag 0), one flush, one broadcast. Crash recovery still uses `.session-paths.txt`.
+
+**1.0.122** — Windows build: dropped unused `DiskIndex.corrupt`, `index_has`, and `family_on_disk` (left over after targeted Activate).
+
+**1.0.121** — Startup, Activate, and Quit no longer freeze the window. Boot registers only the families from last session (full-folder scan runs after). Activate / Deactivate return immediately; GDI Add/Remove run on a worker. One `WM_FONTCHANGE` at the end of a batch, not per file. Quit flushes GDI once. Full TTF/OTF files — no subsetting.
+
+**1.0.120** — License, Style, and Tags work on **All typefaces** (and every other drawer), not only Activated / Favorites.
+
+**1.0.119** — Specimen first. Toolbar is sample, size, italic, theme; line-height / align / sort sit in **···**. Cards show the name, not “1 wts · SANS · OPEN”. If you already had faces on, launch opens **Activated**. This website cannot register fonts for Word — the Activate control says so. Quit unload and disk-vs-catalog scan were already the 1.0 gate.
+
+**1.0.118** — Drawer label is **System**. Static catalog families were locked italic because `italic: true` means “has an italic cut”, not “this file is italic-only”. Header and card I now toggle roman/italic on non-variable faces; only uploaded `*Italic.ttf` files stay locked.
+
+**1.0.117** — **System fonts** drawer is back (always listed; this website stays at 0). Playground / Glyphs pickers list them first. Duplicates keep **system > Fontsource / Google Fonts > uploads**. Header italic actually slants catalog cards (snapshot VF has no fvar; synthesis is the preview until the italic face loads). Grid specimen pane uses `flex: 1 1 auto` again so fit-to-size does not collapse. OS/2 still supplies weight, italic bit, and PANOSE — it is not a license database.
+
+**1.0.116** — Windows drawer is hidden on this website (no OS folder here). Quit **joins** the unload thread; 45s is only the hung-GDI cap. PANOSE from the OS/2 table already tags uploads — dummy Dafont templates are ignored; file name still wins. Dead disk-list helpers removed.
+
+**1.0.115** — Unload no longer walks every Documents folder (that was thousands of no-op `Remove`s plus Defender on Quit). Paths this process added are snapshotted to `.session-paths.txt`; Quit gates `Add` off, waits in-flight GDI, Removes those paths in chunks of 64 with a local `GdiFlush`, then one `WM_FONTCHANGE`. A killed quit is healed on the next launch from that list, before any file delete. `AddFontResourceExW` is a session font-table entry, not an `HFONT` — the 10k GDI-handle quota is pens/DCs/fonts created in-process; broadcasting font-change after every file is what blows Explorer/Word.
+
+**1.0.114** — X / Quit hides the window, then **finishes** `RemoveFontResourceExW` (flag 0, same as Add) for every session file **and** leftover TTF under Documents. Enumerable GDI fonts do not vanish when the process dies — a short watchdog was killing unload at 8s and leaving ~2,000 faces in Word/Adobe. Watchdog is 45s and only if unload never returns. Active paths live in a Rust `HashSet` (`loaded`) plus `.session-active.json` family names. Documents folder count is not the catalog: renamed/delisted leftovers are removed on launch (uploads + current catalog + this session are kept). The app never writes to `Windows\Fonts` or the registry.
+
+**1.0.113** — Activate no longer pretends to download while it checks Documents. Progress is **Scanning** → **Registering** (intact files) → **Downloading** (missing only, 3 at a time). Intact lookup is per-family paths, not a walk of 2,000 folders. Injected preview CSS uses `font-display: swap` so cards do not flash blank. Glyphs/Playground read Windows fonts from their OS path. Duplicates stay catalog vs uploads — not Windows.
+
+**1.0.112** — Documents is **not** the catalog. The library is ~2,100 names (Google Fonts + Fontsource). Explorer’s item count is every family you ever Activated (Deactivate keeps files) plus `.session-active.json`. Scan disk now reports disk vs catalog and can remove folders that are not in the catalog or uploads. Boot walks Documents **once** (junk + empty + index) instead of three to five times; Activate All no longer re-sweeps 2,000 folders first.
+
+**1.0.111** — On launch, **before** any `AddFontResourceExW`, Rust drops truncated/non-SFNT files, then wipes family folders that have **no intact TTF/OTF/TTC** (empty, sidecar-only, aborted). A missing sidecar on an intact file is still not a wipe. Scan disk stays read-only. The 2,100-family catalog does **not** cross Tauri IPC — it is the shipped snapshot plus IndexedDB; Rust only gets family names and file paths. Search typing stays live; the grid and sidebar counts use a deferred query so the virtual list does not recompute on every key.
+
+**1.0.110** — Scan disk is **read-only** (integrity counts). Delete is a separate pass: startup, before any `AddFontResourceExW`, drops only files that fail the TTF header check. A missing `.fontsource-version` sidecar is **not** a wipe (uploads and last-session files have none). Retry still unregisters, local `GdiFlush`, then file-by-file delete. We do **not** touch `FNTCACHE.DAT` or the Font Cache service.
+
+**1.0.109** — Retry / Delete / overwrite **unregisters first** (`RemoveFontResourceExW` even if this process did not Add, then a local `GdiFlush`, then delete with a short lock retry). A locked face returns “close Word or Adobe, then Retry” — the worker does **not** skip the download. File-by-file, not `remove_dir_all`. Activate still skips intact files. Catalog Refresh still does **not** download or wipe TTF.
+
+**1.0.108** — Catalogs boot from the shipped Fontsource / Google snapshot (instant). The **Provider** header has a refresh control: one Fontsource API fetch, split by `type` into Fontsource vs Google Fonts. The live list is cached in IndexedDB so the next launch still starts instantly. A quiet check runs once a day after idle and toasts only when families were added. This is not a boot-blocking fetch, not a Rust `catalog.json` write, and not an auto-update of TTF files.
+
+**1.0.107** — Library preview stays CSS (Google CSS2 / Fontsource `index.css` on jsDelivr) for visible cards. Activate still does **not** fetch TTF until you click it: Rust scans Documents, registers intact files, and only then downloads Fontsource TTF (API version pinned on jsDelivr, latin 400/700, max 4 files) in a **3-worker** background queue. Activate again is register-only — a newer Fontsource release is **not** pulled until you Retry. HTTP stays 4s connect / 10s total (5s drops large families). Session activation: enumerable `AddFontResourceExW`, files only in `Documents / Font Manager`, no registry, matching `RemoveFontResourceExW` on X. Failed downloads stay pending with Retry (the toggle is not silently flipped off).
+
+**1.0.106** — Activate is still a session register (`AddFontResourceExW` with enumerable flags, files only in `Documents / Font Manager`, no `C:\\Windows\\Fonts` copy, no registry). X waits for matching `RemoveFontResourceExW` (same flags) then one `WM_FONTCHANGE` without `GdiFlush`, then exits. An 800ms watchdog was killing the process mid-unload and leaving faces registered; it is now 8s. Launch heals a crash leftover (Remove then Add once per path). The unused `unload_all` warning is gone. Local cards paint the file’s weight and italic (Name ID 4 truncated on the card). Playground / Glyphs can pick Windows fonts (already on the machine). Duplicates still ignores OS fonts. This website’s Windows drawer stays at 0.
+
+**1.0.105** — X / Quit hides the window immediately, unloads session fonts without broadcasting `WM_FONTCHANGE`, then kills the process (Tauri `exit` from a worker used to deadlock with the close handler). The Windows drawer lists installed families through GDI (`EnumFontFamiliesExW` — Arial, Calibri, Segoe, …) instead of walking `C:\Windows\Fonts` file-by-file. `list_system_fonts` is allowed in the desktop capability. Desktop detection does not cache a false “website” state, so the empty copy no longer claims “this website has no Windows folder” inside the installed app. This website still shows **0** — there is no Windows folder here.
+
+**1.0.104** — Card weight slider keeps its fitted size while you drag (heavier no longer jumps the point size). Variable CSS no longer pins Regular via `font-named-instance`, and Fontsource VF family names (`InterVariable`) are rewritten to the card’s family so `font-weight` actually interpolates. Inspector axes follow the same live store as the card (weight no longer snaps back to Regular). License / Style / Tags recount when you change drawer (Fontsource, Activated, …) instead of keeping All’s Sans/Open facet. Catalog refresh no longer relabels Fontsource as Google Fonts when `type` is missing — Activate notes stay on the right host. First Activate on this website no longer waits on a desktop import.
+
+**1.0.103** — Card weight slider paints CSS immediately and does not persist on every pixel (axes flush after 400ms / when the tab hides). Activate / Deactivate updates the store first so the grid does not wait on storage APIs; this website no longer kicks off extra font downloads on Activate. Toasts name the right host: Fontsource → jsDelivr, Google Fonts → Google. License / Style / Tags counts follow the current drawer **and** the active facet (Fontsource + Sans → Open is the sans count, not the whole provider). Pending activations count as on so the Activated drawer updates before the desktop download finishes.
+
+**1.0.102** — Duplicate license/style/tag chips above the grid are gone. Variable / Italic live in the sidebar (counted inside the current drawer); the row above the grid is only **active** filters. License / Style / Tags count and filter inside the current drawer (Activated → those counts, not the whole catalog). Weight slider paints `font-weight` + `font-variation-settings` on the specimen immediately (fit-to-size no longer re-runs on every tick). Persist writes are debounced so dragging an axis does not hammer storage. The grid already virtual-scrolls — Windows 0 on this website is correct (no `C:\\Windows\\Fonts` here).
+
+**1.0.101** — Fontsource and Google Fonts are **disjoint providers**. Fontsource is `type: other` (~120 families). Google Fonts is Google-origin. Activate remaining / Deactivate all on one cannot turn the other on. They are not two copies of Inter, so Duplicates does not list them as a pair. License / style / tags use one vocabulary (Open/Freeware/Personal/Commercial/Unknown, the seven style categories, TAG_ORDER plus symbols). Unlicense maps to Open.
+
+**1.0.100** — Google Fonts row has the same Activate remaining / Deactivate all / Scan disk menu as Fontsource. One family name is one registration: activating a catalog face unloads a local of that name, and the other way around.
 
 **1.0.99** — Variable roman stays roman (Source Sans 3 and other `ital`/`slnt` faces). Google Fonts CSS2 is the library preview again (`fonts.googleapis.com` / `fonts.gstatic.com` preconnect). Sidebar providers: **Fontsource → Google Fonts → Local Files**. Duplicates page can auto-hide extras (keeps the catalog family, deactivates the upload). Glyphs groups use official Unicode blocks and names Latin / Greek / Cyrillic / punctuation when the file has no PostScript name.
 
@@ -31,18 +89,19 @@ Version **1.0.99** sits next to the logo, not in the window title.
 
 | Area | What it does |
 | --- | --- |
-| Library | Search, sort, grid/list, search chips. Cards virtual-scroll (~280px columns). No “Show more” button. |
+| Library | Search, sort, grid/list. Variable / Italic in the sidebar; active-filter chips above the grid. Cards virtual-scroll (~280px columns). No “Show more” button. |
 | Activate | Session fonts via `AddFontResourceExW`. Other apps see them until you Deactivate. Close quits. Next launch re-registers **files already in Documents** — it does not download. |
-| Fontsource | Catalog from `api.fontsource.org` (includes Google-hosted families). Preview tries Google CSS2 first, then Fontsource CSS on jsDelivr. Activate scans Documents first: intact TTF/OTF/TTC are registered, **not fetched**. Download Fontsource TTF if missing; Google CSS TTF only if Fontsource has none. |
-| Google Fonts | Same catalog, filtered to Google-origin families (`type: google`). Playfair Display **is** on Fontsource (`@fontsource/playfair-display`) and in this list. A few Google-only faces (e.g. Google Sans) stay here. |
+| Fontsource | Fontsource-exclusive families (`type: other`, ~120). Overflow menu: Activate remaining / Deactivate all / Scan disk. Does **not** include Inter, Roboto, or other Google-hosted faces. Preview tries Google CSS2 first, then Fontsource CSS. Activate scans Documents first; download Fontsource TTF if missing. |
+| Google Fonts | Google-origin families (`type: google`). Same overflow menu. Activate remaining here cannot queue Fontsource-only faces, and the other way around. Activate still scans Documents, then Fontsource TTF, then Google CSS TTF. |
 | Uploads | Drop files or a folder (TTF, OTF, WOFF, WOFF2, TTC). Parsed on a worker so the grid stays live. Stay in Documents. Deactivate unloads; Delete removes files. |
 | Inspector | In-flow right column (not a dimmed overlay). Weight, italic, variable axes, OpenType toggles, license. |
 | OpenType | GSUB/GPOS tags from the TTF. Toggles drive `font-variant-*` + `font-feature-settings`. Demo line: `Office fi fl 1/2 0123`. |
 | Playground | Compare activated faces. |
-| Duplicates | Same size → binary diff. Different names + sizes stay separate. **Auto-hide duplicates** keeps the catalog family (or the larger file), hides extra uploads, and deactivates them. Files stay on disk. |
+| Duplicates | Same size → binary diff. Catalog vs upload of the same family is listed. **Auto-hide** keeps the catalog family. Activate never registers both a catalog face and a local of that name. Fontsource / Google Fonts do **not** appear as a pair — they do not share families. |
 | Glyphs | Character map grouped by Unicode block. Search by character, hex, or name (Latin / Greek / Cyrillic / punctuation, plus the file’s glyph names). Tofu stays (hover **?**). Atlas is cached — first open of a face is the slow parse; switching tabs does not reload. |
+| Windows | Desktop app lists families GDI already has (Arial, Calibri, Segoe, …). View and favorite only — Font Manager will not uninstall them. This website has none. |
 | Collections / Folders | Virtual groups vs watched folders on disk. |
-| License / Style / Tags | Catalog metadata — no Activate required. Google uses official class. Uploads use filename first; junk PANOSE from free-font sites is ignored (`?` tooltips). |
+| License / Style / Tags | Counted inside the current drawer (All, Activated, Fontsource, …). Clicking Sans Serif while on Activated lists activated sans, not the whole catalog. One vocabulary: Open / Freeware / Personal / Commercial / Unknown; seven style categories; TAG_ORDER tags. Dummy PANOSE from free-font sites is ignored. |
 
 ---
 
@@ -51,6 +110,7 @@ Version **1.0.99** sits next to the logo, not in the window title.
 | | |
 | --- | --- |
 | Library | ![Library](screenshots/app-builder-preview.png) |
+| Windows (this website) | ![Windows](screenshots/windows-web.png) |
 | Playground | ![Playground](screenshots/playground.png) |
 | Glyphs | ![Glyphs](screenshots/glyphs.png) |
 | Duplicates | ![Duplicates](screenshots/duplicates.png) |
@@ -122,7 +182,7 @@ You never opened an IDE first. You talked to **Grok Build**, watched the live pr
 ## Stack (what actually runs)
 
 - **UI:** Vite, React, Zustand persist (favorites, activated, collections, tags, uploads, preview, slider axes, scope — not the download queue).
-- **Desktop:** Tauri 2, Rust `reqwest` downloads, `AddFontResourceExW` + debounced `SendNotifyMessageW(WM_FONTCHANGE)`.
+- **Desktop:** Tauri 2, Rust `reqwest` downloads, `AddFontResourceExW` + debounced `SendNotifyMessageW(WM_FONTCHANGE)`. Quit hides the window, unloads with matching `RemoveFontResourceExW`, posts one `WM_FONTCHANGE` (no `GdiFlush`), then `process::exit`. Windows drawer uses `EnumFontFamiliesExW`.
 - **Parse:** Fast table reader for TTF/OTF/WOFF1/TTC (name, OS/2, fvar, GSUB tags). `opentype.js` is the fallback. Desktop also has Rust `ttf-parser` for cmap / axes on files in Documents. WOFF2 previews in the browser; Windows install still wants TTF/OTF.
 - **Preview:** Chromium `FontFace` + Google CSS2 (same on this website and in the desktop WebView). Word/Adobe use DirectWrite/GDI after Activate.
 
@@ -132,24 +192,26 @@ Not wired in on purpose: **skrifa**, **DirectWrite in the WebView**, auto-update
 
 ## Activation after close
 
-Activate is a **session** register (`AddFontResourceExW`). Files stay in `Documents / Font Manager`. Closing the window **quits** the app (fonts unload with the process).
+Activate is a **session** register (`AddFontResourceExW`, enumerable flags). Files stay in `Documents / Font Manager` — never copied to `C:\Windows\Fonts`, never written to the font registry. Closing the window **quits**: hide, matching `RemoveFontResourceExW`, one `WM_FONTCHANGE`, then the process exits. Other apps drop those families. A crash leftover is healed on the next launch (Remove then Add once). **100% temporary** — zero registry bloat; session fonts unload on close.
 
 Next launch:
 
-1. One walk of Documents. Intact last-session files are registered so Word/Adobe see them again.
-2. The UI marks those families Activate. Missing names are **not** queued.
-3. Nothing is downloaded until you click Activate. If the family is already in Documents and intact, it is only registered.
+1. Before any GDI Add: drop files that fail the TTF header check. Then wipe family folders with **no intact TTF/OTF/TTC** (empty, sidecar-only, aborted). Intact files stay. A missing sidecar on an intact file is not a wipe. `FNTCACHE.DAT` is not touched.
+2. One walk of Documents (read-only). Intact last-session files are registered so Word/Adobe see them again. One `WM_FONTCHANGE` after the batch.
+3. The UI marks those families Activate. Missing names are **not** queued.
+4. Nothing is downloaded until you click Activate. If the family is already in Documents and intact, it is only registered.
 
-Deactivate unloads and **keeps files**. Activate again does **not** download. Delete removes the folder.
+Deactivate unloads and **keeps files**. Activate again does **not** download. Delete removes the folder. Scan disk can remove folders that are no longer in the catalog (uploads are kept).
 
 ---
 
 ## Google download
 
 1. Click Activate. The UI returns immediately. A background thread scans `Documents / Font Manager`.
-2. Intact TTF/OTF/TTC → register, skip fetch. The family turns on as soon as the scan hits it.
-3. Missing or broken → download **one family at a time**. **Fontsource TTF first** (latin 400/700, max 4 files). Google CSS TTF only if Fontsource had nothing.
-4. HTTP: 4s connect, 10s total. `WM_FONTCHANGE` at most every 1.5s. Stop kills the queue. Deactivate unregisters from the in-memory session map and returns immediately when many families are selected.
+2. Intact TTF/OTF/TTC → register, skip fetch. Progress says **Registering**, not Downloading. The family turns on as soon as its folder is intact.
+3. Missing or broken → download **up to three families at a time**. **Fontsource TTF first** (API version on jsDelivr, latin 400/700, max 4 files). Google CSS TTF only if Fontsource had nothing. A `.fontsource-version` sidecar is written; it is not used to auto-update on the next Activate.
+4. **Retry** unregisters (`RemoveFontResourceExW`, even for a crash leftover), local `GdiFlush`, then deletes file-by-file (lock retry). Not `remove_dir_all`. If Word still has the file, the family fails with Retry — the queue continues.
+5. HTTP: 4s connect, 10s total. `WM_FONTCHANGE` at most every 1.5s. Stop kills the queue. Deactivate unregisters from the in-memory session map and returns immediately when many families are selected.
 
 Deactivate unloads and **keeps files**. Activate again is register-only. Preview stays CSS in this window.
 
@@ -157,7 +219,7 @@ Google downloads sit in `Documents / Font Manager`. They are not listed as a sep
 
 ---
 
-## Next version (not in 1.0.99)
+## Next version (not in 1.0.102)
 
 - Signed installer + auto-update (SmartScreen / Store) — needs a code-signing cert.
 - Native WOFF2 → TTF in Rust — Fontsource TTF already covers install.
@@ -169,7 +231,7 @@ Google downloads sit in `Documents / Font Manager`. They are not listed as a sep
 
 ## Variable weight slider
 
-Hover a variable card to pop a weight slider. That value lives in one Zustand map (`previewAxes`) shared with the inspector, so the selected card and the inspector scrub together. Other axes (width, italic, …) written in the inspector also apply on the card specimen. Preview CSS has no `&text=` subset. Activated TTFs in Documents are the install cache for Word/Adobe — not a second preview pipeline.
+Hover a variable card to pop a weight slider. That value lives in one Zustand map (`previewAxes`) shared with the inspector, so the selected card and the inspector scrub together. Specimen size is not re-fit on every tick (that used to cancel the weight change). Persist of the slider is debounced; CSS is not.
 
 ---
 
@@ -177,12 +239,23 @@ Hover a variable card to pop a weight slider. That value lives in one Zustand ma
 
 | | This website | Desktop window |
 | --- | --- | --- |
-| Library cards | Google CSS2 + FontFace | **Same CSS2 + FontFace** |
+| Library cards | Google CSS2 + FontFace for Google-origin; Fontsource CSS for `type: other` | **Same** |
 | Activate | Preview only (no GDI) | `AddFontResourceExW` so Word/Adobe see the TTF |
 | Documents folder | Not used | Scan first; skip intact; download missing on Activate |
 
 Do not expect a second “desktop-only” preview. If a family is already in Documents, Activate still registers that file; the card still paints through CSS so it matches Grok.
 
+---
+
+## Catalog refresh
+
+Boot uses the **shipped** Fontsource + Google snapshot (~2,060 families). It does not wait on the network.
+
+The refresh control next to **Provider** fetches `https://api.fontsource.org/v1/fonts` in the browser (this website and the desktop WebView). One list, split by `type`: `other` → Fontsource drawer, `google` → Google Fonts. The merged list is cached in IndexedDB. Next launch reads that cache locally.
+
+A quiet check runs once a day after the window is idle and only toasts when families were added. Refresh does **not** re-download or wipe TTF files. Retry is the TTF replace. Activate is still scan-then-download.
+
+Not a Tauri `catalog.json` in AppData — the website cannot invoke Rust, and the Fontsource API already allows this fetch. `path_resolver()` is Tauri 1.
 
 ---
 
@@ -236,11 +309,11 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Symptom | What to do |
 | --- | --- |
 | First Activate is slow | That family is downloading. Next launch registers the file on disk — no fetch. |
-| `tauri.conf.json` parse error | Version must be `"1.0.99",` — **one** comma. |
+| `tauri.conf.json` parse error | Version must be `"1.0.102",` — **one** comma. |
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.99** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.102** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 

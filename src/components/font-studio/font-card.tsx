@@ -1,17 +1,15 @@
-import { memo, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import { GripVertical, Heart, Italic, Power } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
-import { LicenseBadge } from "./license-badge";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
-import { axesForFont, defaultWeightForFont, hasRealItalic, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
+import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
+import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
-import { colorKindLabel } from "@/lib/fonts/color-font";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
-import { fontLicense } from "@/lib/fonts/license";
 import { useFontStore } from "@/lib/fonts/store";
+import { useLiveAxes } from "@/lib/fonts/live-axes";
 import type { FontRecord, PreviewSettings } from "@/lib/fonts/types";
-import { CATEGORY_LABEL } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
 
 const ALIGN: Record<NonNullable<PreviewSettings["align"]>, string> = {
@@ -31,53 +29,80 @@ function isolate(e: MouseEvent | PointerEvent) {
   e.stopPropagation();
 }
 
-function FitSpecimen({
+function paintWeight(el: HTMLElement, weight: number, fvs?: string) {
+  const w = String(Math.round(weight));
+  el.style.fontWeight = w;
+  if (fvs && fvs !== "normal") el.style.fontVariationSettings = fvs;
+  else el.style.removeProperty("font-variation-settings");
+  el.dataset.wght = w;
+}
+
+/** Shrink-to-fit listens to size/family/copy — never to weight, or heavier glyphs get smaller and cancel the axis. */
+const FitSpecimen = memo(function FitSpecimen({
   ready,
   className,
   style,
   dir,
   lang,
+  weight,
+  fvs,
   children,
+  specRef,
 }: {
   ready: boolean;
   className?: string;
   style: CSSProperties;
   dir?: string;
   lang?: string;
+  weight?: number;
+  fvs?: string;
   children: string;
+  specRef: RefObject<HTMLParagraphElement | null>;
 }) {
-  const ref = useRef<HTMLParagraphElement>(null);
   const maxSize = typeof style.fontSize === "number" ? style.fontSize : Number.parseFloat(String(style.fontSize ?? 36));
+  const fittedPx = useRef(0);
 
-  useEffect(() => {
-    const el = ref.current;
+  useLayoutEffect(() => {
+    const el = specRef.current;
+    if (!el || weight == null) return;
+    paintWeight(el, weight, fvs || undefined);
+    if (fittedPx.current > 0) el.style.fontSize = `${fittedPx.current}px`;
+  }, [specRef, weight, fvs]);
+
+  useLayoutEffect(() => {
+    const el = specRef.current;
     if (!el || !ready) return;
+    let size = Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 36;
+    el.style.fontSize = `${size}px`;
     const pane = el.parentElement;
-    const fit = () => {
-      let size = Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 36;
+    let budget = el.clientHeight;
+    if (pane) {
+      const cs = getComputedStyle(pane);
+      budget =
+        pane.clientHeight - (Number.parseFloat(cs.paddingTop) || 0) - (Number.parseFloat(cs.paddingBottom) || 0);
+    }
+    let guard = 0;
+    while (el.scrollHeight > budget + 1 && size > 13 && guard < 14) {
+      size *= 0.86;
       el.style.fontSize = `${size}px`;
-      let budget = el.clientHeight;
-      if (pane) {
-        const cs = getComputedStyle(pane);
-        budget =
-          pane.clientHeight - (Number.parseFloat(cs.paddingTop) || 0) - (Number.parseFloat(cs.paddingBottom) || 0);
-      }
-      let guard = 0;
-      while (el.scrollHeight > budget + 1 && size > 13 && guard < 14) {
-        size *= 0.86;
-        el.style.fontSize = `${size}px`;
-        guard += 1;
-      }
-    };
-    fit();
-  }, [ready, children, maxSize, style.fontFamily, style.fontWeight, style.fontVariationSettings, style.fontStyle]);
+      guard += 1;
+    }
+    fittedPx.current = size;
+  }, [ready, children, maxSize, style.fontFamily, style.fontStyle, specRef]);
 
   return (
-    <p ref={ref} className={className} dir={dir} lang={lang} style={style}>
+    <p
+      ref={specRef}
+      className={className}
+      dir={dir}
+      lang={lang}
+      data-wght={weight != null ? String(Math.round(weight)) : undefined}
+      style={style}
+    >
       {children}
     </p>
   );
-}
+});
 
 export const FontCard = memo(function FontCard({
   font,
@@ -89,8 +114,9 @@ export const FontCard = memo(function FontCard({
   layout: "grid" | "list";
 }) {
   const ref = useRef<HTMLElement>(null);
+  const specRef = useRef<HTMLParagraphElement>(null);
   const [ready, setReady] = useState(false);
-  const [italicOn, setItalicOn] = useState(Boolean(preview.italic) && font.italic);
+  const [italicOn, setItalicOn] = useState(isItalicOnlyFace(font) || Boolean(preview.italic));
   const [axisHeld, setAxisHeld] = useState(false);
   const vfPrimed = useRef(false);
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
@@ -101,7 +127,7 @@ export const FontCard = memo(function FontCard({
   const toggleFavorite = useFontStore((s) => s.toggleFavorite);
   const selectFont = useFontStore((s) => s.selectFont);
   const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
-  const storedAxes = useFontStore((s) => s.previewAxes[font.id]);
+  const storedAxes = useLiveAxes(font.id);
   const cardWeight = storedAxes?.wght ?? defaultWeightForFont(font);
 
   useEffect(() => {
@@ -112,7 +138,12 @@ export const FontCard = memo(function FontCard({
     const io = new IntersectionObserver(
       ([entry]) => {
         if (!entry?.isIntersecting) return;
-        void loadFont(font).finally(() => setReady(true));
+        if (font.source === "system") {
+          setReady(true);
+          io.disconnect();
+          return;
+        }
+        void loadFont(font, font.variable ? "full" : "preview").finally(() => setReady(true));
         timeout = window.setTimeout(() => setReady(true), 240);
         io.disconnect();
       },
@@ -126,8 +157,12 @@ export const FontCard = memo(function FontCard({
   }, [font.id]);
 
   useEffect(() => {
-    setItalicOn(Boolean(preview.italic) && hasRealItalic(font));
-  }, [preview.italic]);
+    if (isItalicOnlyFace(font)) {
+      setItalicOn(true);
+      return;
+    }
+    setItalicOn(Boolean(preview.italic));
+  }, [preview.italic, font.id, font.italic, font.variable, font.source, font.fileName, font.fullName]);
 
   useEffect(() => {
     if (!italicOn) return;
@@ -147,20 +182,39 @@ export const FontCard = memo(function FontCard({
   const vs = axisValues ? variationStyle(axisValues, axes) : null;
   const specimenDir = scriptDir(font.family);
   const specimenLang = scriptLang(font.family);
+  const paintFvs = vs?.fontVariationSettings ?? italicCss.fontVariationSettings;
+  const paintWeightN = vs?.fontWeight ?? (font.variable ? cardWeight : defaultWeightForFont(font));
   const specimenStyle: CSSProperties = {
     fontFamily: stack,
     fontSize: layout === "list" ? Math.min(preview.fontSize, 48) : preview.fontSize,
     lineHeight: preview.lineHeight,
     letterSpacing: `${preview.letterSpacing}em`,
     fontStyle: italicCss.fontStyle ?? vs?.fontStyle,
-    fontWeight: vs?.fontWeight ?? (font.variable ? cardWeight : undefined),
-    fontVariationSettings: vs?.fontVariationSettings ?? italicCss.fontVariationSettings,
+    fontWeight: paintWeightN,
+    fontVariationSettings: paintFvs,
     fontStretch: vs?.fontStretch,
     fontSynthesis: italicCss.fontSynthesis,
+    fontOpticalSizing: font.variable ? "auto" : undefined,
     ...(font.colorKind && font.colorKind !== "none"
       ? { fontPalette: "normal", fontVariantEmoji: "emoji" as const }
       : {}),
   };
+
+  function applyAxis(tag: string, n: number) {
+    if (!Number.isFinite(n)) return;
+    if (tag === "wght") {
+      const el = specRef.current;
+      if (el) {
+        const next = { ...(axisValues ?? { wght: n }), wght: n };
+        paintWeight(el, n, variationStyle(next, axes).fontVariationSettings);
+      }
+    }
+    setPreviewAxis(font.id, tag, n);
+    if (font.variable && !vfPrimed.current) {
+      vfPrimed.current = true;
+      void loadFont(font, "full");
+    }
+  }
 
   const axisPop = wghtAxis ? (
     <div
@@ -189,19 +243,22 @@ export const FontCard = memo(function FontCard({
         step={1}
         value={[cardWeight]}
         aria-label={`${font.family} weight`}
-        onValueChange={([n]) => {
-          if (!Number.isFinite(n)) return;
-          setPreviewAxis(font.id, "wght", n);
-          if (font.variable && !vfPrimed.current) {
-            vfPrimed.current = true;
-            void loadFont(font, "full");
-          }
-        }}
+        onValueChange={([n]) => applyAxis("wght", n)}
       />
     </div>
   ) : null;
 
-  const italicBtn = hasRealItalic(font) ? (
+  const italicBtn = isItalicOnlyFace(font) ? (
+    <button
+      type="button"
+      title="Italic file"
+      aria-label="Italic file"
+      aria-pressed
+      className="relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded border border-current bg-current/15"
+    >
+      <Italic className="size-3" />
+    </button>
+  ) : (
     <button
       type="button"
       title={italicOn ? "Preview roman" : "Preview italic"}
@@ -214,10 +271,9 @@ export const FontCard = memo(function FontCard({
         setItalicOn(next);
         const ital = axes.find((a) => a.tag === "ital");
         const slnt = axes.find((a) => a.tag === "slnt");
-        if (ital) setPreviewAxis(font.id, "ital", next ? 1 : 0);
+        if (ital) applyAxis("ital", next ? 1 : 0);
         if (slnt) {
-          setPreviewAxis(
-            font.id,
+          applyAxis(
             "slnt",
             next ? (slnt.min < 0 ? slnt.min : slnt.max) : slnt.min <= 0 && slnt.max >= 0 ? 0 : slnt.def,
           );
@@ -230,17 +286,21 @@ export const FontCard = memo(function FontCard({
     >
       <Italic className="size-3" />
     </button>
-  ) : null;
-
-  const colorNote = font.colorKind && font.colorKind !== "none" ? colorKindLabel(font.colorKind) : "";
+  );
 
   const specimen = (
     <FitSpecimen
       ready={ready}
+      specRef={specRef}
+      weight={paintWeightN}
+      fvs={typeof paintFvs === "string" ? paintFvs : undefined}
       className={cn(
         "fm-spec fm-spec-fit w-full transition-opacity duration-200",
         italicOn ? "fm-spec-italic" : "fm-spec-roman",
         font.variable ? "fm-spec-variable" : "fm-spec-static",
+        italicOn && hasRealItalic(font) && Boolean(font.axes?.some((a) => a.tag === "ital" || a.tag === "slnt"))
+          ? "fm-spec-real"
+          : null,
         align,
         ready ? "opacity-100" : "opacity-0",
       )}
@@ -300,20 +360,9 @@ export const FontCard = memo(function FontCard({
       {layout === "list" ? (
         <>
           <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
-            <span className="min-w-0 truncate text-sm font-medium">{font.family}</span>
-            {wghtAxis ? (
-              <span className="hidden font-mono text-[10px] tabular-nums opacity-55 sm:inline">{Math.round(cardWeight)}</span>
-            ) : null}
-            <span className="hidden text-xs uppercase tracking-wide opacity-70 sm:inline">
-              {CATEGORY_LABEL[font.category]}
-            </span>
-            <span className="hidden truncate text-xs opacity-70 md:inline">
-              {font.variable ? "Variable" : `${font.weights.length} wts`}
-              {font.italic ? " · Italic" : ""}
-            </span>
+            <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
-            <LicenseBadge license={fontLicense(font)} licenseName={font.licenseName} className="ml-auto opacity-100" />
-            {font.source === "local" && <Badge variant="outline">Local</Badge>}
+            {font.source === "local" && <Badge variant="outline" className="ml-auto">Local</Badge>}
           </div>
           {specimenPane}
         </>
@@ -321,25 +370,14 @@ export const FontCard = memo(function FontCard({
         <>
           {specimenPane}
           <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-t px-3", metaTone)}>
-            <span className="min-w-0 truncate text-sm font-medium">{font.family}</span>
-            {wghtAxis ? (
-              <span className="font-mono text-[10px] tabular-nums opacity-55">{Math.round(cardWeight)}</span>
-            ) : null}
+            <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             <span className="ml-auto flex min-w-0 items-center gap-1.5">
-              <span className="hidden truncate text-xs uppercase tracking-wide opacity-70 sm:inline">
-                {CATEGORY_LABEL[font.category]}
-              </span>
-              <span className="hidden truncate text-xs opacity-70 sm:inline">
-                {font.variable ? "Variable" : `${font.weights.length} wts`}
-                {font.italic ? " · Italic" : ""}
-              </span>
-              {colorNote ? (
-                <span className="hidden truncate text-[10px] uppercase tracking-wide opacity-70 md:inline" title={colorNote}>
-                  Color
+              {wghtAxis ? (
+                <span className="font-mono text-[10px] tabular-nums opacity-0 transition-opacity group-hover:opacity-55">
+                  {Math.round(cardWeight)}
                 </span>
               ) : null}
-              <LicenseBadge license={fontLicense(font)} licenseName={font.licenseName} className="opacity-100" />
               {font.source === "local" && <Badge variant="outline">Local</Badge>}
             </span>
           </div>
@@ -365,7 +403,7 @@ export const FontCard = memo(function FontCard({
         </button>
         {font.source === "system" ? (
           <span
-            title="Windows font — already installed. Read-only."
+            title="System font — already installed. Read-only."
             className="flex size-8 items-center justify-center rounded-full bg-background/80 text-[10px] font-medium uppercase tracking-wide text-muted-foreground backdrop-blur-sm"
           >
             OS
@@ -373,7 +411,15 @@ export const FontCard = memo(function FontCard({
         ) : (
         <button
           type="button"
-          title={activated ? "Deactivate — hide from other apps, keep files" : pending ? "Queued" : "Activate"}
+          title={
+            activated
+              ? "Deactivate — hide from other apps, keep files"
+              : pending
+                ? "Queued"
+                : isDesktopShellSync()
+                  ? "Activate"
+                  : "Mark on. Word and Adobe only see session fonts in the desktop app."
+          }
           aria-label={activated ? "Deactivate" : pending ? "Queued" : "Activate"}
           onPointerDown={isolate}
           onClick={(e) => {

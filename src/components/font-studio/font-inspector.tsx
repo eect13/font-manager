@@ -11,9 +11,10 @@ import { formatBytes } from "@/lib/fonts/hash";
 import { cssFamilyStack, loadFont, loadFontWeight, loadItalicFace } from "@/lib/fonts/loader";
 import { synthesisForFont } from "@/lib/fonts/synthesis";
 import { findFont, folderTree, collectionIsWatched, tagsFor, useFontStore } from "@/lib/fonts/store";
+import { useLiveAxes } from "@/lib/fonts/live-axes";
 import { fontLicense } from "@/lib/fonts/license";
 import { CATEGORY_LABEL, LICENSE_HINT, LICENSE_LABEL, LICENSE_OPTIONS } from "@/lib/fonts/types";
-import { axesForFont, defaultWeightForFont, instancesForFont, previewAxisValues, realItalicAxes, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultWeightForFont, instancesForFont, isItalicOnlyFace, previewAxisValues, realItalicAxes, variationStyle } from "@/lib/fonts/axes";
 import { AxisSliders } from "./axis-sliders";
 import { HelpTip } from "./help-tip";
 import { LicenseBadge } from "./license-badge";
@@ -23,6 +24,7 @@ import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
 import { colorKindLabel, colorKindOf, windowsColorNote } from "@/lib/fonts/color-font";
 import { DEFAULT_ON, FEATURE_DEMO, featureStyle, labelForFeature, togglesFor } from "@/lib/fonts/ot-features";
 import { openActivatedFolder, deleteFontFiles } from "@/lib/fonts/os-activate";
+import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
 import { idbGet, previewCacheId } from "@/lib/fonts/idb";
 
 const GLYPHS =
@@ -43,10 +45,12 @@ export function FontInspector() {
   const removeTag = useFontStore((s) => s.removeTag);
   const removeLocalFont = useFontStore((s) => s.removeLocalFont);
   const customTags = useFontStore((s) => s.customTags);
-  const isOn = useFontStore((s) => (selectedId ? s.activatedSet.has(selectedId) : false));
+  const isOn = useFontStore((s) =>
+    selectedId ? s.activatedSet.has(selectedId) || s.pendingSet.has(selectedId) : false,
+  );
   const isFav = useFontStore((s) => (selectedId ? s.favorites.includes(selectedId) : false));
   const preview = useFontStore((s) => s.preview);
-  const storedAxes = useFontStore((s) => (selectedId ? s.previewAxes[selectedId] : undefined));
+  const storedAxes = useLiveAxes(selectedId);
   const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
 
   const font = selectedId ? findFont(selectedId, localFonts, googleFonts) : undefined;
@@ -59,7 +63,7 @@ export function FontInspector() {
   useEffect(() => {
     if (!font) return;
     void loadFont(font, "full");
-    setItalicOn(Boolean(preview.italic) && (font.italic || Boolean(realItalicAxes(font).ital || realItalicAxes(font).slnt)));
+    setItalicOn(isItalicOnlyFace(font) || Boolean(preview.italic));
     setFeatures({});
     setTagDraft("");
     setParsedTags(font.otFeatures);
@@ -112,10 +116,10 @@ export function FontInspector() {
 
   const stack = cssFamilyStack(font);
   const axes = axesForFont(font);
-  const liveAxes = previewAxisValues(font, storedAxes, defaultWeightForFont(font), italicOn);
-  const weight = liveAxes.wght ?? defaultWeightForFont(font);
+  const cardWeight = storedAxes?.wght ?? defaultWeightForFont(font);
+  const liveAxes = previewAxisValues(font, storedAxes, cardWeight, italicOn);
+  const weight = liveAxes.wght ?? cardWeight;
   const { ital: italAxis, slnt: slntAxis } = realItalicAxes(font);
-  const hasItalAxis = Boolean(italAxis || slntAxis);
   const axisStyle = variationStyle(
     {
       ...liveAxes,
@@ -138,7 +142,7 @@ export function FontInspector() {
                 ? "Fontsource"
                 : "Google Fonts"
               : font.source === "system"
-                ? "Windows"
+                ? "System"
                 : "Local file"}
             {font.variable ? " · Variable" : ""}
             {scriptLang(font.family) ? ` · ${scriptLang(font.family)}` : ""}
@@ -154,7 +158,7 @@ export function FontInspector() {
             <p
               className={cn(
                 "fm-spec overflow-hidden rounded-lg bg-paper px-4 py-5 text-ink",
-                italicOn && (hasItalAxis || font.italic) ? "fm-spec-italic" : "fm-spec-roman",
+                italicOn ? "fm-spec-italic" : "fm-spec-roman",
                 font.variable ? "fm-spec-variable" : "fm-spec-static",
                 preview.align === "center" && "text-center",
                 preview.align === "right" && "text-right",
@@ -168,7 +172,7 @@ export function FontInspector() {
                 ...featureCss,
                 fontWeight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
                 fontStyle:
-                  italicOn && (hasItalAxis || font.italic)
+                  italicOn
                     ? axisStyle.fontStyle && axisStyle.fontStyle !== "normal"
                       ? axisStyle.fontStyle
                       : "italic"
@@ -188,9 +192,17 @@ export function FontInspector() {
 
             <div className="flex flex-wrap gap-2">
               {font.source === "system" ? (
-                <p className="text-sm text-muted-foreground">
-                  Windows font — already available to Word and other apps. Read-only here (no Activate or Delete).
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm text-muted-foreground">
+                    System font — already available to Word and other apps. Read-only here (no Activate or Delete).
+                  </p>
+                  <HelpTip label="Open C:\\Windows\\Fonts">
+                    <Button size="sm" variant="ghost" onClick={() => void openSystemFontsFolder()}>
+                      <FolderOpen />
+                      Folder
+                    </Button>
+                  </HelpTip>
+                </div>
               ) : (
                 <>
               <HelpTip
@@ -245,7 +257,13 @@ export function FontInspector() {
                 </HelpTip>
               )}
               {font.source === "google" && (
-                <HelpTip label="Delete downloaded files from Documents. The family stays in Fontsource. Deactivate only unloads them from other apps.">
+                <HelpTip
+                  label={
+                    font.catalog === "other"
+                      ? "Delete downloaded files from Documents. The family stays in Fontsource. Deactivate only unloads them from other apps."
+                      : "Delete downloaded files from Documents. The family stays in Google Fonts. Deactivate only unloads them from other apps."
+                  }
+                >
                   <Button
                     size="sm"
                     variant="ghost"
@@ -307,12 +325,13 @@ export function FontInspector() {
               </div>
             </section>
             )}
-            {font.italic || hasItalAxis ? (
-              <label className="flex h-10 items-center justify-between rounded-md bg-secondary px-3 text-sm">
+            <label className="flex h-10 items-center justify-between rounded-md bg-secondary px-3 text-sm">
                 Italic
                 <Switch
                   checked={italicOn}
+                  disabled={isItalicOnlyFace(font)}
                   onCheckedChange={(on) => {
+                    if (isItalicOnlyFace(font)) return;
                     setItalicOn(on);
                     if (italAxis) setPreviewAxis(font.id, "ital", on ? 1 : 0);
                     if (slntAxis) {
@@ -332,7 +351,6 @@ export function FontInspector() {
                   }}
                 />
               </label>
-            ) : null}
 
             <section className="space-y-2">
               <Label>OpenType features</Label>
@@ -404,7 +422,7 @@ export function FontInspector() {
               <p className="text-xs text-muted-foreground">
                 Inferred from the file — not legal advice. Confirm the author’s license before shipping work.
               </p>
-              {font.source === "local" && (
+              {font.source !== "system" && (
                 <div className="grid grid-cols-1 gap-1.5" role="radiogroup" aria-label="Font license">
                   {LICENSE_OPTIONS.map((id) => (
                     <button

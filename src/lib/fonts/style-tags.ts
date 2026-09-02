@@ -1,4 +1,5 @@
 import type { FontCategory } from "./types";
+import { TAG_ORDER } from "./types";
 import { readPanose } from "./panose";
 
 function push(tags: string[], tag: string) {
@@ -166,7 +167,7 @@ export function inferLocalStyle(input: {
   if (category === "handwriting") push(tags, "script");
   if (category === "mono") push(tags, "coding");
 
-  return { category, tags, fromName: Boolean(named?.strong) };
+  return { category, tags: canonicalTags(tags), fromName: Boolean(named?.strong) };
 }
 
 const CATEGORY_AS_TAG: Record<FontCategory, Set<string>> = {
@@ -179,6 +180,49 @@ const CATEGORY_AS_TAG: Record<FontCategory, Set<string>> = {
   icons: new Set(["icons", "icon"]),
 };
 
+/** Style categories are not tags. Seed leftovers and CSS table names map or drop. */
+const TAG_ALIAS: Record<string, string | null> = {
+  svg: "color",
+  colrv0: "color",
+  colrv1: "color",
+  cbdt: "color",
+  sbix: "color",
+  symbol: "symbols",
+  dingbat: "symbols",
+  dingbats: "symbols",
+  "display-sans": null,
+  ui: null,
+  friendly: null,
+  elegant: null,
+  neutral: null,
+  handwriting: null,
+  display: null,
+  sans: null,
+  "sans-serif": null,
+  serif: null,
+  mono: null,
+  monospace: null,
+  other: null,
+  icons: null,
+  icon: null,
+  uploaded: null,
+};
+
+const CANONICAL_TAG = new Set<string>(TAG_ORDER as readonly string[]);
+
+/** One vocabulary for sidebar chips, search, and inspector. */
+export function canonicalTags(tags: Iterable<string>): string[] {
+  const out: string[] = [];
+  for (const raw of tags) {
+    const key = raw.trim().toLowerCase();
+    if (!key) continue;
+    const mapped = Object.prototype.hasOwnProperty.call(TAG_ALIAS, key) ? TAG_ALIAS[key] : key;
+    if (!mapped || !CANONICAL_TAG.has(mapped)) continue;
+    push(out, mapped);
+  }
+  return out;
+}
+
 export function tagsForGoogleFamily(
   family: string,
   category: FontCategory,
@@ -186,11 +230,11 @@ export function tagsForGoogleFamily(
 ): string[] {
   const inferred = inferLocalStyle({ family, fileName: family });
   const skip = CATEGORY_AS_TAG[category] ?? new Set();
-  const out: string[] = [];
+  const raw: string[] = [];
   for (const tag of [...extra, ...inferred.tags]) {
     const t = tag.trim().toLowerCase();
     if (!t || skip.has(t)) continue;
-    push(out, t);
+    raw.push(t);
   }
-  return out;
+  return canonicalTags(raw);
 }

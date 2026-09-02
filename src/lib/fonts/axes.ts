@@ -138,7 +138,11 @@ export function variationCss(values: Record<string, number>, axes: FontAxis[] = 
 /**
  * High-level CSS for registered axes + font-variation-settings for the full tuple.
  * font-weight/style keep GDI-ish apps and older Chromium in sync with wght/ital.
+ * Do not put wght/wdth/slnt/ital/opsz in FVS when the high-level property is set —
+ * Chromium then ignores both and the card slider looks stuck on Regular.
  */
+const HIGH_LEVEL_AXES = new Set(["wght", "wdth", "slnt", "ital", "opsz"]);
+
 export function variationStyle(
   values: Record<string, number>,
   axes: FontAxis[] = [],
@@ -152,8 +156,15 @@ export function variationStyle(
   const ital = values.ital;
   const slnt = values.slnt;
   const wdth = values.wdth;
+  const customAxes = axes.filter((axis) => !HIGH_LEVEL_AXES.has(axis.tag));
+  const customValues: Record<string, number> = {};
+  for (const [tag, n] of Object.entries(values)) {
+    if (!HIGH_LEVEL_AXES.has(tag) && Number.isFinite(n)) customValues[tag] = n;
+  }
   return {
-    fontVariationSettings: variationCss(values, axes),
+    fontVariationSettings: customAxes.length || Object.keys(customValues).length
+      ? variationCss(customValues, customAxes)
+      : "normal",
     fontWeight: typeof wght === "number" ? Math.round(clampAxis({ tag: "wght", name: "", min: 1, max: 1000, def: 400 }, wght)) : undefined,
     fontStretch: typeof wdth === "number" ? `${wdth}%` : undefined,
     fontStyle:
@@ -241,7 +252,17 @@ export function hasRealItalic(font: Pick<FontRecord, "italic" | "axes">) {
   return Boolean(ital || slnt || font.italic);
 }
 
-/** Library-card italic: real ital/slnt or a true italic file. Never fake-oblique a variable font. */
+/** Uploaded italic-only file (Inter-Italic.ttf). Catalog `italic: true` means the family *has* an italic cut, not that this row is italic-only. */
+export function isItalicOnlyFace(
+  font: Pick<FontRecord, "source" | "variable" | "italic" | "fileName" | "fullName">,
+) {
+  if (font.variable || !font.italic || font.source !== "local") return false;
+  return /italic|oblique/i.test(`${font.fileName ?? ""} ${font.fullName ?? ""}`);
+}
+
+/** Library-card italic: real ital/slnt when the file has them. Otherwise
+ *  `font-style: italic` so the header I actually toggles. Catalog VF often
+ *  has no fvar in the snapshot — synthesis is the only immediate preview. */
 export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" | "axes" | "weights">, on: boolean) {
   if (!on) {
     return {
@@ -270,25 +291,11 @@ export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" 
       fontSynthesis: "none" as const,
     };
   }
-  if (font.italic) {
-    return {
-      fontStyle: "italic" as const,
-      fontVariationSettings: font.variable
-        ? variationCss(defaultAxisValues(axesForFont(font)), axesForFont(font))
-        : undefined,
-      fontSynthesis: font.variable ? ("none" as const) : ("style" as const),
-    };
-  }
-  if (font.variable) {
-    return {
-      fontStyle: "normal" as const,
-      fontVariationSettings: undefined,
-      fontSynthesis: "none" as const,
-    };
-  }
   return {
     fontStyle: "italic" as const,
-    fontVariationSettings: undefined,
+    fontVariationSettings: font.variable
+      ? variationCss(defaultAxisValues(axesForFont(font)), axesForFont(font))
+      : undefined,
     fontSynthesis: "style" as const,
   };
 }

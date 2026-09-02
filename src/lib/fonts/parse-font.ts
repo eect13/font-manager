@@ -9,6 +9,7 @@ import { sha256Hex } from "./hash";
 
 export interface ParsedLocalFont {
   family: string;
+  fullName: string;
   weight: number;
   italic: boolean;
   version: string;
@@ -301,6 +302,7 @@ function finishParsed(
   face: {
     family: string;
     subfamily?: string;
+    fullName?: string;
     weight: number;
     italic: boolean;
     version: string;
@@ -330,8 +332,13 @@ function finishParsed(
   const variable = face.axes.length > 0 || /variable/i.test(face.subfamily ?? "");
   if (variable && !tags.includes("variable")) tags.push("variable");
   const licensed = classifyLicenseText(face.licenseText ?? "");
+  const sub = (face.subfamily ?? "").trim();
+  const fullName =
+    (face.fullName ?? "").trim() ||
+    (sub && !face.family.toLowerCase().includes(sub.toLowerCase()) ? `${face.family} ${sub}` : face.family);
   return {
     family: face.family,
+    fullName,
     weight: guessWeight(face.subfamily ?? "", face.weight),
     italic: face.italic,
     version: face.version,
@@ -363,6 +370,7 @@ function fromSfntFace(face: SfntFace, fileName: string, fileSize: number, checks
     {
       family: face.family,
       subfamily: face.subfamily,
+      fullName: face.fullName,
       weight: face.weight,
       italic: face.italic,
       version: face.version,
@@ -441,8 +449,12 @@ async function parseFontFileFromBuffer(
     const varStorage = variationCodec(font, buffer);
     const variable = axes.length > 0 || /variable/i.test(subfamily);
     if (variable && !tags.includes("variable")) tags.push("variable");
+    const fullName =
+      englishName(font, "fullName") ||
+      (subfamily && !family.toLowerCase().includes(subfamily.toLowerCase()) ? `${family} ${subfamily}` : family);
     return {
       family,
+      fullName,
       weight: guessWeight(subfamily, os2?.usWeightClass),
       italic,
       version: englishName(font, "version"),
@@ -467,6 +479,7 @@ async function parseFontFileFromBuffer(
     const style = inferLocalStyle({ family: fallbackFamily, fileName });
     return {
       family: fallbackFamily,
+      fullName: fallbackFamily,
       weight: 400,
       italic: /italic|oblique/i.test(fileName),
       version: "",

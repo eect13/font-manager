@@ -5,6 +5,7 @@ export type SfntInstance = { name: string; coords: Record<string, number> };
 export type SfntFace = {
   family: string;
   subfamily: string;
+  fullName: string;
   version: string;
   weight: number;
   italic: boolean;
@@ -23,6 +24,7 @@ export type SfntFace = {
 
 const NAME_FAMILY = 1;
 const NAME_SUBFAMILY = 2;
+const NAME_FULL = 4;
 const NAME_VERSION = 5;
 const NAME_LICENSE = 13;
 const NAME_LICENSE_URL = 14;
@@ -350,9 +352,11 @@ function parseFaceFromTables(
     names[NAME_TYPO_FAMILY] || names[NAME_WWS_FAMILY] || names[NAME_FAMILY] || fallbackName;
   const subfamily = names[NAME_TYPO_SUBFAMILY] || names[NAME_SUBFAMILY] || "";
   const italic = os2.italic || /italic|oblique/i.test(subfamily);
+  const fullName = names[NAME_FULL] || [family, subfamily].filter(Boolean).join(" ") || family;
   return {
     family,
     subfamily,
+    fullName,
     version: names[NAME_VERSION] || "",
     weight: os2.weight,
     italic,
@@ -409,6 +413,7 @@ export async function parseSfntCollection(buffer: ArrayBuffer, fileName: string)
       {
         family: fallback,
         subfamily: "",
+        fullName: fallback,
         version: "",
         weight: 400,
         italic: /italic|oblique/i.test(fileName),

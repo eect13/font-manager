@@ -18,9 +18,21 @@ export type LibraryScope =
   | `tag:${string}`
   | `license:${FontLicense}`;
 
+export type LibraryFacet =
+  | ""
+  | `license:${FontLicense}`
+  | `category:${FontCategory}`
+  | `tag:${string}`;
+
+export function isFacetScope(value: string): value is Exclude<LibraryFacet, ""> {
+  return value.startsWith("license:") || value.startsWith("category:") || value.startsWith("tag:");
+}
+
 export interface FontRecord {
   id: string;
   family: string;
+  /** Name ID 4 (or family + subfamily) for local files. Card title; family stays the activate key. */
+  fullName?: string;
   source: FontSource;
   /** Google-hosted vs Fontsource-only (type: other). */
   catalog?: "google" | "other";
@@ -124,6 +136,7 @@ export const TAG_ORDER = [
   "noto",
   "emoji",
   "color",
+  "symbols",
   "ligatures",
 ] as const;
 

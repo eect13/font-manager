@@ -55,6 +55,7 @@ export function licenseFromCode(raw?: string): LicenseHit | null {
   }
   if (n === "mit") return { license: "free", licenseName: "MIT License" };
   if (n === "cc0" || n === "cc0-1.0") return { license: "free", licenseName: "CC0-1.0" };
+  if (n === "unlicense" || n === "the-unlicense") return { license: "free", licenseName: "Unlicense" };
   if (n.startsWith("cc-by-nc")) return { license: "personal", licenseName: "CC BY-NC" };
   return null;
 }

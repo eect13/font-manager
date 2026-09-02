@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -154,23 +154,9 @@ fn dir_has_intact(dir: &Path) -> bool {
     files.iter().any(|p| ttf_intact(p))
 }
 
-fn scrub_font_dir(dir: &Path) {
-    let mut files = Vec::new();
-    walk_font_files(dir, &mut files);
-    for path in files {
-        if !ttf_intact(&path) {
-            unregister_path(&path);
-            intact_forget(&path);
-            let _ = fs::remove_file(&path);
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn disk_family_keys(app: &AppHandle) -> HashSet<String> {
-    let mut set = HashSet::new();
+fn for_family_dirs(app: &AppHandle, mut visit: impl FnMut(&Path)) {
     let Ok(root) = documents_root(app) else {
-        return set;
+        return;
     };
     for dir in [root.clone(), root.join("Activated"), root.join("Library")] {
         let Ok(rd) = fs::read_dir(&dir) else {
@@ -181,15 +167,16 @@ fn disk_family_keys(app: &AppHandle) -> HashSet<String> {
             if !path.is_dir() {
                 continue;
             }
-            scrub_font_dir(&path);
-            if dir_has_intact(&path) {
-                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                    set.insert(name.to_lowercase());
-                }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if name.eq_ignore_ascii_case("Activated") || name.eq_ignore_ascii_case("Library") {
+                continue;
             }
+            visit(&path);
         }
     }
-    set
 }
 
 #[cfg(windows)]
@@ -197,7 +184,7 @@ mod winfont {
     use std::collections::{HashMap, HashSet};
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
@@ -238,25 +225,97 @@ mod winfont {
         D.get_or_init(|| AtomicBool::new(false))
     }
 
+    fn unloading() -> &'static AtomicBool {
+        static U: OnceLock<AtomicBool> = OnceLock::new();
+        U.get_or_init(|| AtomicBool::new(false))
+    }
+
+    fn in_gdi() -> &'static AtomicU32 {
+        static N: OnceLock<AtomicU32> = OnceLock::new();
+        N.get_or_init(|| AtomicU32::new(0))
+    }
+
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    pub fn register(path: &Path) {
-        if let Ok(g) = loaded().lock() {
-            if g.contains(path) {
-                return;
-            }
-        }
-        let w = wide(path);
-        let n = unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) };
-        if n <= 0 {
+    fn remove_one(path: &Path) {
+        if is_windows_fonts_path(path) {
             return;
         }
-        if let Ok(mut g) = loaded().lock() {
-            g.insert(path.to_path_buf());
+        let w = wide(path);
+        unsafe {
+            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
+        }
+    }
+
+    pub fn begin_unload() {
+        unloading().store(true, Ordering::SeqCst);
+    }
+
+    pub fn wait_in_flight(timeout: Duration) {
+        let start = Instant::now();
+        while in_gdi().load(Ordering::SeqCst) > 0 && start.elapsed() < timeout {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub fn snapshot_loaded() -> Vec<PathBuf> {
+        loaded()
+            .lock()
+            .map(|g| g.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn is_windows_fonts_path(path: &Path) -> bool {
+        let lower = path.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
+        lower.contains("\\windows\\fonts")
+    }
+
+    pub fn register(path: &Path) -> bool {
+        if is_windows_fonts_path(path) {
+            return false;
+        }
+        if unloading().load(Ordering::SeqCst) {
+            return false;
+        }
+        {
+            let Ok(mut g) = loaded().lock() else {
+                return false;
+            };
+            if !g.insert(path.to_path_buf()) {
+                return false;
+            }
+        }
+        if unloading().load(Ordering::SeqCst) {
+            if let Ok(mut g) = loaded().lock() {
+                g.remove(path);
+            }
+            return false;
+        }
+        in_gdi().fetch_add(1, Ordering::SeqCst);
+        let w = wide(path);
+        // Add only. Crash leftovers are Remove'd in session_begin from
+        // .session-paths.txt. Remove-then-Add here doubled GDI on every boot.
+        let n = unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) };
+        in_gdi().fetch_sub(1, Ordering::SeqCst);
+        if unloading().load(Ordering::SeqCst) {
+            if n > 0 {
+                remove_one(path);
+            }
+            if let Ok(mut g) = loaded().lock() {
+                g.remove(path);
+            }
+            return false;
+        }
+        if n <= 0 {
+            if let Ok(mut g) = loaded().lock() {
+                g.remove(path);
+            }
+            return false;
         }
         dirty().store(true, Ordering::SeqCst);
+        true
     }
 
     pub fn bind(family: &str, path: &Path) {
@@ -285,18 +344,29 @@ mod winfont {
     }
 
     pub fn unregister(path: &Path) {
-        let known = loaded().lock().map(|g| g.contains(path)).unwrap_or(true);
-        if !known {
+        if is_windows_fonts_path(path) {
             return;
-        }
-        let w = wide(path);
-        unsafe {
-            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
         }
         if let Ok(mut g) = loaded().lock() {
             g.remove(path);
         }
+        let w = wide(path);
+        unsafe {
+            // Always Remove, even if this process did not Add — crash leftover
+            // or a path that never entered `loaded` still locks DeleteFile.
+            // Second Remove drops a leftover refcount; a miss is a no-op.
+            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
+            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
+        }
         dirty().store(true, Ordering::SeqCst);
+    }
+
+    /// Flush this thread's GDI batch so RemoveFontResourceExW takes effect
+    /// before DeleteFile. Do not pair with HWND_BROADCAST — that hung Quit.
+    pub fn flush_local() {
+        unsafe {
+            GdiFlush();
+        }
     }
 
     /// Tell GDI + other apps. Windows Font Cache rebuilds on WM_FONTCHANGE — call sparingly.
@@ -333,24 +403,58 @@ mod winfont {
         notify();
     }
 
-    pub fn unload_all() {
-        let paths = loaded().lock().map(|g| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default();
-        for path in paths {
-            unregister(&path);
+    /// Drain this process's Adds plus leftover paths from a previous incomplete
+    /// quit. Chunked local GdiFlush (not HWND_BROADCAST). One WM_FONTCHANGE at
+    /// the end. AddFontResourceExW is a session font-table entry, not an HFONT.
+    pub fn unload_paths(extra: Vec<PathBuf>, broadcast: bool) {
+        let mut paths = loaded()
+            .lock()
+            .map(|mut g| g.drain().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if let Ok(mut g) = by_family().lock() {
+            g.clear();
         }
-        notify();
+        let mut seen: HashSet<PathBuf> = paths.iter().cloned().collect();
+        for path in extra {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+        for (i, path) in paths.iter().enumerate() {
+            remove_one(path);
+            let _ = i;
+        }
+        if !paths.is_empty() {
+            unsafe {
+                GdiFlush();
+            }
+        }
+        if broadcast {
+            unsafe {
+                SendNotifyMessageW(HWND_BROADCAST, WM_FONTCHANGE, 0, 0);
+            }
+        }
+        dirty().store(false, Ordering::SeqCst);
     }
 }
 
-fn register_path(path: &Path) {
+fn register_path(path: &Path) -> bool {
     #[cfg(windows)]
-    winfont::register(path);
+    {
+        return winfont::register(path);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
 }
 
-fn register_family_path(family: &str, path: &Path) {
-    register_path(path);
+fn register_family_path(family: &str, path: &Path) -> bool {
+    let added = register_path(path);
     #[cfg(windows)]
     winfont::bind(family, path);
+    added
 }
 
 fn unregister_family_session(family: &str) -> u32 {
@@ -370,6 +474,44 @@ fn unregister_path(path: &Path) {
     winfont::unregister(path);
 }
 
+fn gdi_flush_local() {
+    #[cfg(windows)]
+    winfont::flush_local();
+}
+
+fn is_lock_err(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(5) | Some(32) | Some(33))
+        || err.kind() == ErrorKind::PermissionDenied
+}
+
+/// Release GDI, then delete. Windows holds a session lock on AddFontResourceExW
+/// files; DeleteFile fails until matching RemoveFontResourceExW + GdiFlush.
+fn delete_font_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        intact_forget(path);
+        return Ok(());
+    }
+    unregister_path(path);
+    intact_forget(path);
+    gdi_flush_local();
+    for attempt in 0..5u32 {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) if is_lock_err(&err) => {
+                unregister_path(path);
+                gdi_flush_local();
+                thread::sleep(Duration::from_millis(40 * u64::from(attempt + 1)));
+            }
+            Err(err) => return Err(format!("could not delete {}: {err}", path.display())),
+        }
+    }
+    if path.exists() {
+        return Err("files locked — close Word or Adobe, then Retry".into());
+    }
+    Ok(())
+}
+
 fn notify_fonts_changed() {
     #[cfg(windows)]
     winfont::notify();
@@ -384,6 +526,45 @@ fn notify_fonts_changed_maybe() {
 
 fn session_path(app: &AppHandle) -> Option<PathBuf> {
     documents_root(app).ok().map(|p| p.join(".session-active.json"))
+}
+
+fn session_paths_file(app: &AppHandle) -> Option<PathBuf> {
+    documents_root(app).ok().map(|p| p.join(".session-paths.txt"))
+}
+
+fn load_session_paths(app: &AppHandle) -> Vec<PathBuf> {
+    let Some(path) = session_paths_file(app) else {
+        return Vec::new();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn save_session_paths(app: &AppHandle, paths: &[PathBuf]) {
+    let Some(file) = session_paths_file(app) else {
+        return;
+    };
+    if let Some(dir) = file.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let mut body = String::new();
+    for p in paths {
+        body.push_str(&p.to_string_lossy());
+        body.push('\n');
+    }
+    let _ = fs::write(file, body);
+}
+
+fn clear_session_paths(app: &AppHandle) {
+    if let Some(file) = session_paths_file(app) {
+        let _ = fs::remove_file(file);
+    }
 }
 
 fn load_session_families(app: &AppHandle) -> Vec<String> {
@@ -460,35 +641,67 @@ pub fn session_families(app: AppHandle) -> Result<Vec<String>, String> {
 pub fn session_begin(app: &AppHandle) {
     #[cfg(windows)]
     {
-        let families = load_session_families(app);
-        if families.is_empty() {
-            return;
+        let leftover = load_session_paths(app);
+        if !leftover.is_empty() {
+            winfont::unload_paths(leftover, false);
+            clear_session_paths(app);
         }
-        let index = build_disk_index(app);
-        let mut n = 0usize;
+        // Targeted dirs only — do not walk all of Documents before the UI is up.
+        let families = load_session_families(app);
+        let mut files = 0usize;
         let mut ready = Vec::new();
         for family in &families {
-            if index_has(&index, family) {
-                n += register_from_index(app, &index, family);
+            let k = register_intact_family(app, family);
+            if k > 0 {
+                files += k;
                 ready.push(family.clone());
             }
         }
-        if n > 0 {
+        if files > 0 {
+            save_session_paths(app, &winfont::snapshot_loaded());
             notify_fonts_changed();
         }
         if ready.len() != families.len() {
             save_session_families(app, &ready);
         }
+        let handle = app.clone();
+        thread::spawn(move || {
+            let _ = index_disk(&handle, true);
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let handle = app.clone();
+        thread::spawn(move || {
+            let _ = index_disk(&handle, true);
+        });
+    }
+}
+
+pub fn session_end(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        static ENDING: AtomicBool = AtomicBool::new(false);
+        if ENDING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        bulk().cancel.store(true, Ordering::SeqCst);
+        bulk().running.store(false, Ordering::SeqCst);
+        winfont::begin_unload();
+        winfont::wait_in_flight(Duration::from_millis(1500));
+        // Persist before Remove so a hung watchdog still has a leftover list
+        // for next boot. Do not walk Documents — that was 2k+ folders of
+        // no-op Removes and AV scans on the quit path.
+        let mut extra = load_session_paths(app);
+        extra.extend(winfont::snapshot_loaded());
+        save_session_paths(app, &extra);
+        winfont::unload_paths(extra, true);
+        clear_session_paths(app);
     }
     #[cfg(not(windows))]
     {
         let _ = app;
     }
-}
-
-pub fn session_end() {
-    #[cfg(windows)]
-    winfont::unload_all();
 }
 
 fn write_font_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -498,7 +711,16 @@ fn write_font_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(path, bytes).map_err(|e| e.to_string())?;
+    if path.exists() {
+        delete_font_file(path)?;
+    }
+    fs::write(path, bytes).map_err(|e| {
+        if is_lock_err(&e) {
+            "files locked — close Word or Adobe, then Retry".into()
+        } else {
+            e.to_string()
+        }
+    })?;
     register_path(path);
     Ok(())
 }
@@ -584,18 +806,26 @@ fn reset_circuits() {
 const UA_SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const UA_CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
-fn ttf_urls(slug: &str, weight: u16, italic: bool, subset: &str, bust: u128) -> Vec<String> {
+fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, bust: u128) -> Vec<String> {
     let q = if bust == 0 {
         String::new()
     } else {
         format!("?v={bust}")
     };
     let style = if italic { "italic" } else { "normal" };
+    let ver = version.trim().trim_start_matches('v');
+    let pin = if ver.is_empty() { "latest" } else { ver };
     let mut urls = vec![
-        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/{subset}-{weight}-{style}.ttf{q}"),
+        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@{pin}/{subset}-{weight}-{style}.ttf{q}"),
         format!("https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
         format!("https://unpkg.com/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
     ];
+    if pin != "latest" {
+        urls.insert(
+            1,
+            format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/{subset}-{weight}-{style}.ttf{q}"),
+        );
+    }
     if slug == "noto-color-emoji" {
         return vec![
             format!("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf{q}"),
@@ -608,7 +838,7 @@ fn ttf_urls(slug: &str, weight: u16, italic: bool, subset: &str, bust: u128) -> 
     urls
 }
 
-fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic: bool, subset: &str) -> Result<Vec<u8>, String> {
+fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weight: u16, italic: bool, subset: &str) -> Result<Vec<u8>, String> {
     let bust = if bulk().bust.load(Ordering::SeqCst) {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -617,7 +847,7 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic
     } else {
         0
     };
-    let urls = ttf_urls(slug, weight, italic, subset, bust);
+    let urls = ttf_urls(slug, version, weight, italic, subset, bust);
     let mut last = String::from("all CDNs failed");
     let mut skipped_open = 0usize;
     let mut not_found = 0u32;
@@ -677,7 +907,7 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, weight: u16, italic
 fn fontsource_meta(
     client: &reqwest::blocking::Client,
     slug: &str,
-) -> Option<(Vec<String>, Vec<u16>, bool)> {
+) -> Option<(Vec<String>, Vec<u16>, bool, String)> {
     let url = format!("https://api.fontsource.org/v1/fonts/{slug}");
     let text = client.get(&url).send().ok()?.text().ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -705,7 +935,14 @@ fn fontsource_meta(
         .and_then(|s| s.as_array())
         .map(|arr| arr.iter().any(|x| x.as_str() == Some("italic")))
         .unwrap_or(false);
-    Some((subsets, weights, italic))
+    let version = v
+        .get("version")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('v')
+        .to_string();
+    Some((subsets, weights, italic, version))
 }
 
 fn pick_subsets(all: &[String]) -> Vec<String> {
@@ -735,6 +972,7 @@ const MAX_FONTSOURCE_FILES: usize = 4;
 fn pull_fontsource_subset(
     client: &reqwest::blocking::Client,
     slug: &str,
+    version: &str,
     subsets: &[String],
     weights: &[u16],
     styles: &[bool],
@@ -750,7 +988,7 @@ fn pull_fontsource_subset(
                     return out;
                 }
                 let style = if *italic { "italic" } else { "normal" };
-                if let Ok(bytes) = fetch_ttf(client, slug, *weight, *italic, subset) {
+                if let Ok(bytes) = fetch_ttf(client, slug, version, *weight, *italic, subset) {
                     out.push((format!("{slug}-{subset}-{weight}-{style}.ttf"), bytes));
                 }
             }
@@ -759,9 +997,9 @@ fn pull_fontsource_subset(
     out
 }
 
-fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec<(String, Vec<u8>)> {
-    let (all_subsets, weights, has_italic) = fontsource_meta(client, slug)
-        .unwrap_or((vec!["latin".into()], vec![400, 700], false));
+fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> (Vec<(String, Vec<u8>)>, String) {
+    let (all_subsets, weights, has_italic, version) = fontsource_meta(client, slug)
+        .unwrap_or((vec!["latin".into()], vec![400, 700], false, String::new()));
     let mut subsets = pick_subsets(&all_subsets);
     if subsets.is_empty() {
         subsets.push("latin".into());
@@ -774,7 +1012,7 @@ fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec
     } else {
         &[false]
     };
-    let mut out = pull_fontsource_subset(client, slug, &subsets, &weights, styles);
+    let mut out = pull_fontsource_subset(client, slug, &version, &subsets, &weights, styles);
     if out.is_empty() {
         let rest: Vec<String> = all_subsets
             .iter()
@@ -783,10 +1021,10 @@ fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> Vec
             .cloned()
             .collect();
         if !rest.is_empty() {
-            out = pull_fontsource_subset(client, slug, &rest, &weights[..1.min(weights.len())], &[false]);
+            out = pull_fontsource_subset(client, slug, &version, &rest, &weights[..1.min(weights.len())], &[false]);
         }
     }
-    out
+    (out, version)
 }
 
 fn fetch_google_css_text(client: &reqwest::blocking::Client, family: &str, ua: &str, axis: &str) -> Option<String> {
@@ -956,7 +1194,7 @@ fn install_compat_pack(client: &reqwest::blocking::Client, root: &Path, family: 
         return;
     }
     let outline_slug = if slug.contains("emoji") { "noto-emoji" } else { slug };
-    if let Ok(bytes) = fetch_ttf(client, outline_slug, 400, false, "latin") {
+    if let Ok(bytes) = fetch_ttf(client, outline_slug, "", 400, false, "latin") {
         let patched = crate::namepatch::patch_family_name(&bytes, family).unwrap_or(bytes);
         let _ = write_font_file(&dest, &patched);
     }
@@ -969,12 +1207,26 @@ fn register_intact_family(app: &AppHandle, family: &str) -> usize {
         walk_font_files(&dir, &mut files);
         for path in files {
             if ttf_intact(&path) {
-                register_family_path(family, &path);
+                let _ = register_family_path(family, &path);
                 n += 1;
             }
         }
     }
     n
+}
+
+fn register_intact_new(app: &AppHandle, family: &str) -> usize {
+    let mut added = 0usize;
+    for dir in family_locations(app, family) {
+        let mut files = Vec::new();
+        walk_font_files(&dir, &mut files);
+        for path in files {
+            if ttf_intact(&path) && register_family_path(family, &path) {
+                added += 1;
+            }
+        }
+    }
+    added
 }
 
 fn alias_keys(name: &str) -> Vec<String> {
@@ -993,79 +1245,51 @@ fn alias_keys(name: &str) -> Vec<String> {
 struct DiskIndex {
     by_key: HashMap<String, Vec<PathBuf>>,
     names: Vec<String>,
-    corrupt: u32,
+}
+
+fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
+    let mut by_key: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let mut names = Vec::new();
+    for_family_dirs(app, |path| {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let mut files = Vec::new();
+        walk_font_files(path, &mut files);
+        let mut intact = Vec::new();
+        for file in files {
+            if ttf_intact(&file) {
+                intact.push(file);
+            } else if gc {
+                let _ = delete_font_file(&file);
+            }
+        }
+        if intact.is_empty() {
+            if gc {
+                let _ = fs::remove_file(path.join(".complete"));
+                let _ = fs::remove_file(path.join(".fontsource-version"));
+                let _ = fs::remove_dir_all(path);
+            }
+            return;
+        }
+        names.push(name.clone());
+        for key in alias_keys(&name) {
+            by_key.entry(key).or_default().extend(intact.iter().cloned());
+        }
+    });
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.dedup();
+    DiskIndex { by_key, names }
 }
 
 fn build_disk_index(app: &AppHandle) -> DiskIndex {
-    let mut by_key: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    let mut names = Vec::new();
-    let mut corrupt = 0u32;
-    let Ok(root) = documents_root(app) else {
-        return DiskIndex {
-            by_key,
-            names,
-            corrupt,
-        };
-    };
-    let roots = [root.clone(), root.join("Activated"), root.join("Library")];
-    for dir in roots {
-        let Ok(rd) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            if name.eq_ignore_ascii_case("Activated") || name.eq_ignore_ascii_case("Library") {
-                continue;
-            }
-            let mut files = Vec::new();
-            walk_font_files(&path, &mut files);
-            let mut intact = Vec::new();
-            for file in files {
-                if ttf_intact(&file) {
-                    intact.push(file);
-                } else {
-                    corrupt += 1;
-                    unregister_path(&file);
-                    intact_forget(&file);
-                    let _ = fs::remove_file(&file);
-                }
-            }
-            if intact.is_empty() {
-                continue;
-            }
-            names.push(name.clone());
-            for key in alias_keys(&name) {
-                by_key.entry(key).or_default().extend(intact.iter().cloned());
-            }
-        }
-    }
-    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-    names.dedup();
-    DiskIndex {
-        by_key,
-        names,
-        corrupt,
-    }
-}
-
-fn index_has(index: &DiskIndex, family: &str) -> bool {
-    alias_keys(family).iter().any(|k| index.by_key.contains_key(k))
+    index_disk(app, false)
 }
 
 fn family_has_intact(app: &AppHandle, family: &str) -> bool {
     family_locations(app, family).iter().any(|dir| dir_has_intact(dir))
-}
-
-fn family_on_disk(app: &AppHandle, index: &DiskIndex, family: &str) -> bool {
-    index_has(index, family) || family_has_intact(app, family)
 }
 
 fn split_ready_missing(
@@ -1073,23 +1297,8 @@ fn split_ready_missing(
     families: Vec<String>,
     bust: bool,
 ) -> (Vec<String>, Vec<String>, Option<DiskIndex>) {
-    if families.len() <= 8 {
-        let mut ready = Vec::new();
-        let mut missing = Vec::new();
-        for family in families {
-            let t = family.trim();
-            if t.is_empty() {
-                continue;
-            }
-            if !bust && family_has_intact(app, t) {
-                ready.push(family);
-            } else {
-                missing.push(family);
-            }
-        }
-        return (ready, missing, None);
-    }
-    let index = build_disk_index(app);
+    // Targeted path checks only. A full Documents walk of 2,000+ folders made
+    // Activate look like a download even when every family was already there.
     let mut ready = Vec::new();
     let mut missing = Vec::new();
     for family in families {
@@ -1097,13 +1306,13 @@ fn split_ready_missing(
         if t.is_empty() {
             continue;
         }
-        if !bust && family_on_disk(app, &index, t) {
+        if !bust && family_has_intact(app, t) {
             ready.push(family);
         } else {
             missing.push(family);
         }
     }
-    (ready, missing, Some(index))
+    (ready, missing, None)
 }
 
 fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskIndex>) {
@@ -1124,10 +1333,10 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     if n > 0 {
         notify_fonts_changed();
         session_add(app, ready);
+        #[cfg(windows)]
+        save_session_paths(app, &winfont::snapshot_loaded());
     }
     if let Ok(mut p) = bulk().progress.lock() {
-        p.skipped += ready.len() as u32;
-        p.done += ready.len() as u32;
         for family in ready {
             if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
                 p.ready_names.push(family.clone());
@@ -1143,15 +1352,14 @@ fn register_from_index(app: &AppHandle, index: &DiskIndex, family: &str) -> usiz
     for key in alias_keys(family) {
         if let Some(paths) = index.by_key.get(&key) {
             for path in paths {
-                if seen.insert(path.clone()) {
-                    register_family_path(family, path);
+                if seen.insert(path.clone()) && register_family_path(family, path) {
                     n += 1;
                 }
             }
         }
     }
-    if n == 0 {
-        n = register_intact_family(app, family);
+    if n == 0 && seen.is_empty() {
+        n = register_intact_new(app, family);
     }
     n
 }
@@ -1167,13 +1375,19 @@ fn mark_family_complete(root: &Path) {
 fn purge_family_files(app: &AppHandle, family: &str) {
     for dir in family_locations(app, family) {
         let _ = fs::remove_file(family_complete_marker(&dir));
+        let _ = fs::remove_file(dir.join(".fontsource-version"));
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
-        for path in files {
-            unregister_path(&path);
-            intact_forget(&path);
-            let _ = fs::remove_file(&path);
+        for path in &files {
+            unregister_path(path);
+            intact_forget(path);
         }
+        gdi_flush_local();
+        for path in files {
+            let _ = delete_font_file(&path);
+        }
+        // File-by-file, not remove_dir_all: one locked face must not abort the rest.
+        let _ = fs::remove_dir(&dir);
     }
 }
 
@@ -1282,27 +1496,40 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     if slug.is_empty() {
         return Err("empty family name".into());
     }
+    let bust = bulk().bust.load(Ordering::SeqCst);
     let existing = register_intact_family(app, family);
-    if existing > 0 && !bulk().bust.load(Ordering::SeqCst) {
+    if existing > 0 && !bust {
         return Ok(existing);
+    }
+    if bust {
+        purge_family_files(app, family);
     }
     let root = family_dir(app, family)?;
     fs::create_dir_all(&root).map_err(|e| format!("could not create folder: {e}"))?;
     let mut wrote = 0usize;
-    for (name, bytes) in fetch_fontsource_faces(client, &slug) {
+    let mut locked = false;
+    let (faces, version) = fetch_fontsource_faces(client, &slug);
+    for (name, bytes) in faces {
         if bulk().cancel.load(Ordering::SeqCst) {
             break;
         }
         let path = root.join(sanitize(&name));
-        if ttf_intact(&path) {
+        if !bust && ttf_intact(&path) {
             register_family_path(family, &path);
             wrote += 1;
             continue;
         }
-        if write_font_file(&path, &bytes).is_ok() {
-            register_family_path(family, &path);
-            wrote += 1;
+        match write_font_file(&path, &bytes) {
+            Ok(()) => {
+                register_family_path(family, &path);
+                wrote += 1;
+            }
+            Err(err) if err.contains("locked") => locked = true,
+            Err(_) => {}
         }
+    }
+    if wrote > 0 && !version.is_empty() {
+        let _ = fs::write(root.join(".fontsource-version"), version.as_bytes());
     }
     if wrote == 0 {
         for (name, bytes) in fetch_google_family_faces(client, family, &slug) {
@@ -1310,14 +1537,18 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
                 break;
             }
             let path = root.join(sanitize(&name));
-            if ttf_intact(&path) {
+            if !bust && ttf_intact(&path) {
                 register_family_path(family, &path);
                 wrote += 1;
                 continue;
             }
-            if write_font_file(&path, &bytes).is_ok() {
-                register_family_path(family, &path);
-                wrote += 1;
+            match write_font_file(&path, &bytes) {
+                Ok(()) => {
+                    register_family_path(family, &path);
+                    wrote += 1;
+                }
+                Err(err) if err.contains("locked") => locked = true,
+                Err(_) => {}
             }
         }
     }
@@ -1326,53 +1557,40 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     }
     let total = register_intact_family(app, family);
     if total == 0 {
+        if locked {
+            return Err("files locked — close Word or Adobe, then Retry".into());
+        }
         return Err("no installable TTF/OTF (Google CSS is WOFF2-only; Fontsource had no TTF)".into());
     }
     mark_family_complete(&root);
     Ok(total)
 }
 
-fn run_google_bulk(app: AppHandle, families: Vec<String>) {
+const DOWNLOAD_WORKERS: usize = 3;
+
+fn take_next_family(queue: &Mutex<VecDeque<String>>) -> Option<String> {
     let state = bulk();
-    if let Ok(mut p) = state.progress.lock() {
-        p.current = "Scanning Documents…".into();
-        p.running = true;
-    }
-    emit_progress(&app);
-
-    let bust = state.bust.load(Ordering::SeqCst);
-    let (ready, missing, index) = split_ready_missing(&app, families, bust);
-    commit_ready_families(&app, &ready, index.as_ref());
-    if let Ok(mut p) = state.progress.lock() {
-        p.skipped = ready.len() as u32;
-        p.done = ready.len() as u32;
-        p.total = (ready.len() + missing.len()) as u32;
-    }
-    emit_progress(&app);
-
-    let client = match reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(2)
-        .user_agent("FontManager/1.0")
-        .build()
-    {
-        Ok(c) => Arc::new(c),
-        Err(_) => {
-            if let Ok(mut p) = state.progress.lock() {
-                p.running = false;
+    if let Ok(mut extra) = state.pending.lock() {
+        if let Ok(mut q) = queue.lock() {
+            while let Some(item) = extra.pop_front() {
+                q.push_back(item);
             }
-            state.running.store(false, Ordering::SeqCst);
-            state.bust.store(false, Ordering::SeqCst);
-            emit_progress(&app);
-            return;
+            return q.pop_front();
         }
-    };
+    }
+    queue.lock().ok().and_then(|mut q| q.pop_front())
+}
 
-    let queue = Arc::new(Mutex::new(VecDeque::from(missing)));
+fn drain_download_queue(
+    app: AppHandle,
+    client: Arc<reqwest::blocking::Client>,
+    queue: Arc<Mutex<VecDeque<String>>>,
+) {
+    let state = bulk();
+    let mut idle = 0u8;
     loop {
         if state.cancel.load(Ordering::SeqCst) {
-            break;
+            return;
         }
         if state.pause.load(Ordering::SeqCst) {
             if let Ok(mut p) = state.progress.lock() {
@@ -1386,16 +1604,15 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         if let Ok(mut p) = state.progress.lock() {
             p.paused = false;
         }
-        if let Ok(mut extra) = state.pending.lock() {
-            if let Ok(mut q) = queue.lock() {
-                while let Some(item) = extra.pop_front() {
-                    q.push_back(item);
-                }
+        let Some(family) = take_next_family(&queue) else {
+            idle = idle.saturating_add(1);
+            if idle >= 2 {
+                return;
             }
-        }
-        let Some(family) = queue.lock().ok().and_then(|mut q| q.pop_front()) else {
-            break;
+            thread::sleep(Duration::from_millis(40));
+            continue;
         };
+        idle = 0;
         let denied = state
             .denied
             .lock()
@@ -1425,7 +1642,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         if cancelled {
             forget_queued(&family);
             if state.cancel.load(Ordering::SeqCst) {
-                break;
+                return;
             }
             continue;
         }
@@ -1454,11 +1671,105 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
             }
         }
         emit_progress(&app);
-        if result.is_ok() {
-            notify_fonts_changed_maybe();
+    }
+}
+
+fn run_google_bulk(app: AppHandle, families: Vec<String>) {
+    let state = bulk();
+    let bust = state.bust.load(Ordering::SeqCst);
+    let (ready, missing, index) = split_ready_missing(&app, families, bust);
+    if ready.is_empty() && missing.is_empty() {
+        if let Ok(mut p) = state.progress.lock() {
+            p.running = false;
+            p.current.clear();
+            p.total = 0;
         }
+        state.running.store(false, Ordering::SeqCst);
+        state.bust.store(false, Ordering::SeqCst);
+        emit_progress(&app);
+        return;
+    }
+    if let Ok(mut p) = state.progress.lock() {
+        p.skipped = ready.len() as u32;
+        p.done = ready.len() as u32;
+        p.total = (ready.len() + missing.len()) as u32;
+        p.current = if missing.is_empty() {
+            format!("Registering {} already on disk…", ready.len())
+        } else {
+            "Registering intact files…".into()
+        };
+        p.running = true;
+    }
+    emit_progress(&app);
+    commit_ready_families(&app, &ready, index.as_ref());
+    emit_progress(&app);
+
+    if missing.is_empty() {
+        if let Ok(mut p) = state.progress.lock() {
+            p.running = false;
+            p.current.clear();
+        }
+        state.running.store(false, Ordering::SeqCst);
+        state.bust.store(false, Ordering::SeqCst);
+        emit_progress(&app);
+        return;
+    }
+
+    let client = match reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(6)
+        .user_agent("FontManager/1.0")
+        .build()
+    {
+        Ok(c) => Arc::new(c),
+        Err(_) => {
+            if let Ok(mut p) = state.progress.lock() {
+                p.running = false;
+            }
+            state.running.store(false, Ordering::SeqCst);
+            state.bust.store(false, Ordering::SeqCst);
+            emit_progress(&app);
+            return;
+        }
+    };
+
+    let mut leftover = missing;
+    loop {
+        if state.cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        if leftover.is_empty() {
+            thread::sleep(Duration::from_millis(50));
+            leftover = state
+                .pending
+                .lock()
+                .map(|mut p| p.drain(..).collect())
+                .unwrap_or_default();
+            if leftover.is_empty() {
+                break;
+            }
+        }
+        let queue = Arc::new(Mutex::new(VecDeque::from(leftover)));
+        let mut joins = Vec::with_capacity(DOWNLOAD_WORKERS);
+        for _ in 0..DOWNLOAD_WORKERS {
+            let app = app.clone();
+            let client = client.clone();
+            let queue = queue.clone();
+            joins.push(thread::spawn(move || drain_download_queue(app, client, queue)));
+        }
+        for j in joins {
+            let _ = j.join();
+        }
+        leftover = state
+            .pending
+            .lock()
+            .map(|mut p| p.drain(..).collect())
+            .unwrap_or_default();
     }
     notify_fonts_changed();
+    #[cfg(windows)]
+    save_session_paths(&app, &winfont::snapshot_loaded());
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
         p.current.clear();
@@ -1504,7 +1815,7 @@ pub fn open_activation_folder(app: AppHandle) -> Result<(), String> {
 pub fn install_font_file(app: AppHandle, family: String, file_name: String, bytes: Vec<u8>) -> Result<(), String> {
     let path = family_dir(&app, &family)?.join(sanitize(&file_name));
     write_font_file(&path, &bytes)?;
-    notify_fonts_changed();
+    notify_fonts_changed_maybe();
     Ok(())
 }
 
@@ -1516,8 +1827,7 @@ pub fn save_library_file(app: AppHandle, family: String, file_name: String, byte
 #[tauri::command]
 pub fn remove_library_file(app: AppHandle, family: String, file_name: String) -> Result<(), String> {
     let path = family_dir(&app, &family)?.join(sanitize(&file_name));
-    unregister_path(&path);
-    let _ = fs::remove_file(&path);
+    delete_font_file(&path)?;
     notify_fonts_changed();
     Ok(())
 }
@@ -1525,11 +1835,15 @@ pub fn remove_library_file(app: AppHandle, family: String, file_name: String) ->
 #[tauri::command]
 pub fn register_font_path(path: String) -> Result<(), String> {
     let p = PathBuf::from(path);
+    let lower = p.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
+    if lower.contains("\\windows\\fonts") {
+        return Err("refusing to register C:\\Windows\\Fonts".into());
+    }
     if !ttf_intact(&p) {
         return Err("file is not an intact font".into());
     }
     register_path(&p);
-    notify_fonts_changed();
+    notify_fonts_changed_maybe();
     Ok(())
 }
 
@@ -1541,43 +1855,62 @@ pub fn flush_font_cache() -> Result<(), String> {
 }
 
 fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
+    // Session HashSet only. Walking Documents here was the Deactivate hang:
+    // thousands of RemoveFontResourceExW on files that were never Add'ed,
+    // including anything that looked like a System family name.
     let mut n = 0u32;
+    #[cfg(windows)]
+    let loaded = winfont::snapshot_loaded();
     for family in families {
-        let mut k = unregister_family_session(family);
+        let t = family.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let mut k = unregister_family_session(t);
+        #[cfg(windows)]
         if k == 0 {
-            if let Ok(dir) = family_dir(app, family) {
-                let mut files = Vec::new();
-                walk_font_files(&dir, &mut files);
-                for path in files {
-                    unregister_path(&path);
+            let keys: Vec<String> = alias_keys(t);
+            for path in &loaded {
+                if winfont::is_windows_fonts_path(path) {
+                    continue;
+                }
+                let parent = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if keys.iter().any(|key| parent.eq_ignore_ascii_case(key)) {
+                    unregister_path(path);
                     k += 1;
                 }
             }
         }
         n += k;
-        forget_queued(family);
+        forget_queued(t);
         if let Ok(mut denied) = bulk().denied.lock() {
-            denied.insert(family.trim().to_lowercase());
+            denied.insert(t.to_lowercase());
         }
     }
     session_remove(app, families);
-    if n > 0 || !families.is_empty() {
+    if n > 0 {
         notify_fonts_changed();
+        #[cfg(windows)]
+        save_session_paths(app, &winfont::snapshot_loaded());
     }
     n
 }
 
 #[tauri::command]
 pub fn unload_font_family(app: AppHandle, family: String) -> Result<u32, String> {
-    Ok(unload_now(&app, &[family]))
+    unload_font_families(app, vec![family])
 }
 
 #[tauri::command]
 pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32, String> {
-    if families.len() <= 8 {
-        return Ok(unload_now(&app, &families));
-    }
     let n = families.len() as u32;
+    if n == 0 {
+        return Ok(0);
+    }
     thread::spawn(move || {
         let _ = unload_now(&app, &families);
     });
@@ -1586,7 +1919,7 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
 
 #[tauri::command]
 pub fn uninstall_font_family(app: AppHandle, family: String) -> Result<(), String> {
-    let _ = unload_font_family(app.clone(), family.clone());
+    let _ = unload_now(&app, &[family.clone()]);
     purge_family_files(&app, &family);
     Ok(())
 }
@@ -1598,12 +1931,7 @@ pub fn font_family_installed(app: AppHandle, family: String) -> Result<bool, Str
 
 #[tauri::command]
 pub fn list_activated_families(app: AppHandle) -> Result<Vec<String>, String> {
-    let index = build_disk_index(&app);
-    let mut names = index.names;
-    names.extend(index.by_key.keys().cloned());
-    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-    names.dedup();
-    Ok(names)
+    Ok(build_disk_index(&app).names)
 }
 
 #[tauri::command]
@@ -1634,26 +1962,29 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
         return Ok(Vec::new());
     }
     let mut ready = Vec::new();
-    if families.len() <= 8 {
-        for family in families {
-            if family_has_intact(&app, &family) {
-                let _ = register_intact_family(&app, &family);
-                ready.push(family);
-            }
-        }
-    } else {
-        let index = build_disk_index(&app);
-        for family in families {
-            if family_on_disk(&app, &index, &family) {
-                let _ = register_from_index(&app, &index, &family);
-                ready.push(family);
-            }
+    for family in families {
+        if family_has_intact(&app, &family) {
+            ready.push(family);
         }
     }
-    if !ready.is_empty() {
-        notify_fonts_changed();
-        session_add(&app, &ready);
+    if ready.is_empty() {
+        return Ok(ready);
     }
+    let app2 = app.clone();
+    let ready2 = ready.clone();
+    thread::spawn(move || {
+        let mut added = 0usize;
+        for family in &ready2 {
+            added += register_intact_new(&app2, family);
+            forget_queued(family);
+        }
+        session_add(&app2, &ready2);
+        if added > 0 {
+            notify_fonts_changed();
+            #[cfg(windows)]
+            save_session_paths(&app2, &winfont::snapshot_loaded());
+        }
+    });
     Ok(ready)
 }
 
@@ -1669,26 +2000,13 @@ pub struct ActivationPlan {
 /// Fast folder walk. Does not download. Intact files stay put. Corrupt files are dropped.
 #[tauri::command]
 pub fn plan_google_activation(app: AppHandle, families: Vec<String>) -> Result<ActivationPlan, String> {
-    let index = build_disk_index(&app);
-    let mut ready = Vec::new();
-    let mut missing = Vec::new();
-    for family in families {
-        let t = family.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if index_has(&index, t) || family_has_intact(&app, t) {
-            ready.push(family);
-        } else {
-            missing.push(family);
-        }
-    }
+    let (ready, missing, _) = split_ready_missing(&app, families, false);
     Ok(ActivationPlan {
         scanned: (ready.len() + missing.len()) as u32,
-        ready,
+        ready: ready.clone(),
         missing,
-        corrupt: index.corrupt,
-        on_disk: index.names,
+        corrupt: 0,
+        on_disk: ready,
     })
 }
 
@@ -1778,6 +2096,14 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
         if !dir.is_dir() {
             continue;
         }
+        let name = dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("font")
+            .to_string();
+        if name.eq_ignore_ascii_case("Activated") || name.eq_ignore_ascii_case("Library") {
+            continue;
+        }
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
         let mut bytes = 0u64;
@@ -1790,18 +2116,11 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
                 intact.push(path);
             } else {
                 corrupt += 1;
-                unregister_path(&path);
-                let _ = fs::remove_file(&path);
             }
         }
         if intact.is_empty() && corrupt == 0 {
             continue;
         }
-        let name = dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("font")
-            .to_string();
         out.push(DiskFamily {
             name,
             bytes,
@@ -1811,6 +2130,47 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
+}
+
+/// Remove family folders whose names are not in `keep` (catalog + uploads).
+/// Unregisters first. Refuses if `keep` is too small so a bad catalog cannot wipe Documents.
+#[tauri::command]
+pub fn prune_unknown_folders(app: AppHandle, keep: Vec<String>) -> Result<u32, String> {
+    if keep.len() < 500 {
+        return Err("catalog too small to prune against".into());
+    }
+    let mut keep_keys: HashSet<String> = HashSet::new();
+    for name in &keep {
+        for key in alias_keys(name) {
+            keep_keys.insert(key);
+        }
+    }
+    let mut victims: Vec<(String, PathBuf)> = Vec::new();
+    for_family_dirs(&app, |path| {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            return;
+        }
+        if alias_keys(&name).iter().any(|k| keep_keys.contains(k)) {
+            return;
+        }
+        victims.push((name, path.to_path_buf()));
+    });
+    let mut n = 0u32;
+    for (name, path) in victims {
+        purge_family_files(&app, &name);
+        if path.exists() {
+            let _ = fs::remove_dir_all(&path);
+        }
+        if !path.exists() {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 #[tauri::command]

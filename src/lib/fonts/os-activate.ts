@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
+import { isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { idbGet } from "./idb";
 import type { FontRecord } from "./types";
 
@@ -70,14 +71,21 @@ let lastReadyCount = 0;
 function applyReadyFamilies(names: string[]) {
   if (!names.length) return;
   void import("./store").then(({ useFontStore }) => {
-    const { googleFonts, localFonts, markLiveActivated } = useFontStore.getState();
-    const byFamily = new Map<string, string>();
-    for (const font of googleFonts) byFamily.set(font.family.toLowerCase(), font.id);
-    for (const font of localFonts) byFamily.set(font.family.toLowerCase(), font.id);
+    const { googleFonts, localFonts, markLiveActivated, pendingSet } = useFontStore.getState();
+    const catalogByFamily = new Map<string, string>();
+    const localByFamily = new Map<string, string>();
+    for (const font of googleFonts) catalogByFamily.set(font.family.toLowerCase(), font.id);
+    for (const font of localFonts) localByFamily.set(font.family.toLowerCase(), font.id);
     const ids: string[] = [];
     for (const name of names) {
-      const id = byFamily.get(name.trim().toLowerCase());
-      if (id) ids.push(id);
+      const key = name.trim().toLowerCase();
+      const catalogId = catalogByFamily.get(key);
+      const localId = localByFamily.get(key);
+      // Prefer the id we queued (pending), then catalog over a local of the same family.
+      if (catalogId && pendingSet.has(catalogId)) ids.push(catalogId);
+      else if (localId && pendingSet.has(localId)) ids.push(localId);
+      else if (catalogId) ids.push(catalogId);
+      else if (localId) ids.push(localId);
     }
     if (ids.length) markLiveActivated(ids);
     useFontStore.getState().addDiskFamilies(names);
@@ -103,7 +111,7 @@ export async function retryFailedDownloads(): Promise<void> {
   if (added) {
     lastFailedNames = [];
     toast.message("Retrying — old files are replaced", {
-      description: `${added.toLocaleString()} ${added === 1 ? "family" : "families"}. Corrupt or empty files are overwritten.`,
+      description: `${added.toLocaleString()} ${added === 1 ? "family" : "families"}. GDI is released before delete. Close Word or Adobe if a file stays locked.`,
     });
     startGooglePoll();
     return;
@@ -196,15 +204,6 @@ export async function listSessionFamilies(): Promise<string[]> {
   }
 }
 
-export async function listDiskFamilies(): Promise<string[]> {
-  if (!(await inDesktopShell())) return [];
-  try {
-    return (await tauriInvoke<string[]>("list_activated_families")) ?? [];
-  } catch {
-    return [];
-  }
-}
-
 export type DiskFamilyInfo = { name: string; bytes: number; files: number; corrupt?: number };
 
 export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
@@ -213,6 +212,15 @@ export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
     return (await tauriInvoke<DiskFamilyInfo[]>("scan_disk_families")) ?? [];
   } catch {
     return [];
+  }
+}
+
+export async function pruneUnknownFolders(keep: string[]): Promise<number> {
+  if (!(await inDesktopShell())) return 0;
+  try {
+    return (await tauriInvoke<number>("prune_unknown_folders", { keep })) ?? 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -256,16 +264,6 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
 }
 
 const installedCache = new Set<string>();
-
-async function refreshInstalledCache() {
-  try {
-    const names = await tauriInvoke<string[]>("list_activated_families");
-    installedCache.clear();
-    for (const name of names ?? []) installedCache.add(name.toLowerCase());
-  } catch {
-    /* first run */
-  }
-}
 
 function cacheHas(family: string) {
   return installedCache.has(family.toLowerCase());
@@ -650,15 +648,29 @@ export async function saveUploadToDisk(opts: {
   void pumpUploads();
 }
 
-let webPreviewTold = false;
+let webPreviewTold = new Set<string>();
 
-function tellWebPreview() {
-  if (webPreviewTold) return;
-  webPreviewTold = true;
-  toast.message("Browser preview — files stay on Google’s servers", {
-    description: "This window loads CSS only. Use the desktop app to download TTFs into Documents and register them for Word or Adobe.",
-    duration: 12_000,
-  });
+function tellWebPreview(font?: FontRecord) {
+  const kind = !font ? "local" : isFontsourceOnly(font) ? "other" : isGoogleCatalog(font) ? "google" : "local";
+  if (webPreviewTold.has(kind)) return;
+  webPreviewTold.add(kind);
+  const fontsource = kind === "other";
+  const google = kind === "google";
+  toast.message(
+    fontsource
+      ? "This website previews Fontsource in the browser"
+      : google
+        ? "This website previews Google Fonts in the browser"
+        : "This website previews in the browser",
+    {
+      description: fontsource
+        ? "Files stay on Fontsource (jsDelivr). Use the desktop app to download TTFs into Documents and register them for Word or Adobe."
+        : google
+          ? "Files stay on Google Fonts. Use the desktop app to download TTFs into Documents and register them for Word or Adobe."
+          : "Use the desktop app to download TTFs into Documents and register them for Word or Adobe.",
+      duration: 12_000,
+    },
+  );
 }
 
 async function markPreviewLive(ids: string[]) {
@@ -668,11 +680,10 @@ async function markPreviewLive(ids: string[]) {
 }
 
 export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
+  if (font.source === "system") return true;
   if (!(await inDesktopShell())) {
     await markPreviewLive([font.id]);
-    const { loadFont } = await import("./loader");
-    void loadFont(font, "full");
-    tellWebPreview();
+    tellWebPreview(font);
     return true;
   }
   if (font.source === "google") {
@@ -726,6 +737,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
 }
 
 export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
+  if (font.source === "system") return;
   if (!(await inDesktopShell())) return;
   removeQueue.push(font);
   void pumpRemove(batchId);
@@ -749,13 +761,12 @@ export async function syncFontOnSystem(font: FontRecord, on: boolean): Promise<v
 }
 
 export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promise<void> {
+  fonts = fonts.filter((font) => font.source !== "system");
   if (!fonts.length) return;
   if (!(await inDesktopShell())) {
     if (on) {
       await markPreviewLive(fonts.map((font) => font.id));
-      const { loadFont } = await import("./loader");
-      for (const font of fonts.slice(0, 24)) void loadFont(font, "full");
-      tellWebPreview();
+      if (fonts.length === 1) tellWebPreview(fonts[0]);
     }
     return;
   }
@@ -800,7 +811,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   if (google.length) {
     const names = google.map((font) => font.family);
     toast.message("Scanning Documents first", {
-      description: `${names.length.toLocaleString()} families. Intact files register in the background; only missing files download, one at a time.`,
+      description: `${names.length.toLocaleString()} families. Intact files register only; missing files download up to three at a time.`,
     });
     const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
     startGooglePoll();

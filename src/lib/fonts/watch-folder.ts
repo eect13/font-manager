@@ -1,5 +1,11 @@
 import { toast } from "sonner";
-import { inDesktopShell, pickWatchFolder, scanWatchFolder } from "@/lib/desktop/open-fonts";
+import {
+  forbiddenWatchReason,
+  inDesktopShell,
+  listWatchFolder,
+  pickWatchFolder,
+  readWatchFiles,
+} from "@/lib/desktop/open-fonts";
 import { useFontStore } from "./store";
 
 function norm(path: string) {
@@ -14,10 +20,14 @@ function underWatch(origin: string, root: string) {
 
 let pollTimer = 0;
 let lastSig = "";
+let inflight = false;
+let queued = false;
+let started = false;
+const unwatchers = new Map<string, () => void>();
 
-function signature(paths: string[], sizes: number[]) {
+function signature(paths: string[], sizes: number[], mtimes: number[]) {
   return paths
-    .map((path, i) => `${norm(path)}:${sizes[i] ?? 0}`)
+    .map((path, i) => `${norm(path)}:${sizes[i] ?? 0}:${mtimes[i] ?? 0}`)
     .sort()
     .join("|");
 }
@@ -31,11 +41,18 @@ export async function addWatchedFolder(): Promise<void> {
     return;
   }
   if (!picked) return;
+  if (picked.blocked) {
+    toast.message("That folder cannot be watched", { description: picked.blocked });
+    return;
+  }
+  const blocked = forbiddenWatchReason(picked.path);
+  if (blocked) {
+    toast.message("That folder cannot be watched", { description: blocked });
+    return;
+  }
   const store = useFontStore.getState();
   const existing = store.collections.find((c) => c.watchPath && norm(c.watchPath) === norm(picked.path));
-  const id =
-    existing?.id ??
-    store.addCollection(picked.name);
+  const id = existing?.id ?? store.addCollection(picked.name);
   store.setCollectionWatch(id, picked.path, existing?.autoActivate ?? true);
   store.setScope(`collection:${id}`);
   if (picked.files.length) {
@@ -53,64 +70,135 @@ export async function addWatchedFolder(): Promise<void> {
     });
   }
   lastSig = "";
+  void bindNativeWatch();
   void refreshWatchedFolders();
 }
 
 export async function refreshWatchedFolders(): Promise<void> {
+  if (inflight) {
+    queued = true;
+    return;
+  }
   if (!(await inDesktopShell())) return;
-  const { collections, localFonts, importFiles, removeLocalFont } = useFontStore.getState();
-  const watched = collections.filter((c) => c.watchPath);
-  if (!watched.length) return;
-  const allOrigins: string[] = [];
-  const allSizes: number[] = [];
-  for (const folder of watched) {
-    const scanned = await scanWatchFolder(folder.watchPath!);
-    allOrigins.push(...scanned.originPaths);
-    allSizes.push(...scanned.files.map((file) => file.size));
-    const known = localFonts.filter((f) => f.originPath && underWatch(f.originPath, folder.watchPath!));
-    const knownByPath = new Map(known.map((f) => [norm(f.originPath!), f]));
-    const freshFiles: File[] = [];
-    const freshPaths: string[] = [];
-    for (let i = 0; i < scanned.files.length; i += 1) {
-      const origin = scanned.originPaths[i]!;
-      const file = scanned.files[i]!;
-      const prev = knownByPath.get(norm(origin));
-      if (prev && (prev.fileSize ?? 0) === file.size) continue;
-      if (prev) await removeLocalFont(prev.id);
-      freshFiles.push(file);
-      freshPaths.push(origin);
+  inflight = true;
+  try {
+    const { collections, localFonts, importFiles, removeLocalFont } = useFontStore.getState();
+    const watched = collections.filter((c) => c.watchPath);
+    if (!watched.length) return;
+    const allOrigins: string[] = [];
+    const allSizes: number[] = [];
+    const allMtimes: number[] = [];
+    for (const folder of watched) {
+      const root = folder.watchPath!;
+      const blocked = forbiddenWatchReason(root);
+      if (blocked) continue;
+      const listed = await listWatchFolder(root);
+      allOrigins.push(...listed.paths);
+      allSizes.push(...listed.sizes);
+      allMtimes.push(...listed.mtimes);
+      const known = localFonts.filter((f) => f.originPath && underWatch(f.originPath, root));
+      const knownByPath = new Map(known.map((f) => [norm(f.originPath!), f]));
+      const freshPaths: string[] = [];
+      for (let i = 0; i < listed.paths.length; i += 1) {
+        const origin = listed.paths[i]!;
+        const prev = knownByPath.get(norm(origin));
+        if (prev && (prev.fileSize ?? 0) === listed.sizes[i]) continue;
+        if (prev) await removeLocalFont(prev.id);
+        freshPaths.push(origin);
+      }
+      if (freshPaths.length) {
+        const scanned = await readWatchFiles(root, freshPaths);
+        if (scanned.files.length) {
+          await importFiles(scanned.files, {
+            collectionId: folder.id,
+            collectionName: folder.name,
+            originPaths: scanned.originPaths,
+          });
+        }
+      }
     }
-    if (freshFiles.length) {
-      await importFiles(freshFiles, {
-        collectionId: folder.id,
-        collectionName: folder.name,
-        originPaths: freshPaths,
-      });
+    const sig = signature(allOrigins, allSizes, allMtimes);
+    if (sig === lastSig) return;
+    lastSig = sig;
+    const live = new Set(allOrigins.map(norm));
+    const stale = useFontStore
+      .getState()
+      .localFonts.filter(
+        (f) =>
+          f.originPath &&
+          watched.some((w) => underWatch(f.originPath!, w.watchPath!)) &&
+          !live.has(norm(f.originPath)),
+      );
+    for (const font of stale) {
+      await removeLocalFont(font.id);
+    }
+  } finally {
+    inflight = false;
+    if (queued) {
+      queued = false;
+      void refreshWatchedFolders();
     }
   }
-  const sig = signature(allOrigins, allSizes);
-  if (sig === lastSig) return;
-  lastSig = sig;
-  const live = new Set(allOrigins.map(norm));
-  const stale = useFontStore
+}
+
+async function bindNativeWatch() {
+  if (!(await inDesktopShell())) return;
+  const watched = useFontStore
     .getState()
-    .localFonts.filter((f) => f.originPath && watched.some((w) => underWatch(f.originPath!, w.watchPath!)) && !live.has(norm(f.originPath)));
-  for (const font of stale) {
-    await removeLocalFont(font.id);
+    .collections.filter((c) => c.watchPath && !forbiddenWatchReason(c.watchPath));
+  const live = new Set(watched.map((c) => norm(c.watchPath!)));
+  for (const [key, stop] of unwatchers) {
+    if (live.has(key)) continue;
+    try {
+      stop();
+    } catch {
+      /* ignore */
+    }
+    unwatchers.delete(key);
+  }
+  if (!watched.length) return;
+  try {
+    const { watch } = await import("@tauri-apps/plugin-fs");
+    let debounce = 0;
+    const kick = () => {
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(() => void refreshWatchedFolders(), 280);
+    };
+    for (const folder of watched) {
+      const key = norm(folder.watchPath!);
+      if (unwatchers.has(key)) continue;
+      try {
+        const stop = await watch(folder.watchPath!, () => kick(), {
+          delayMs: 280,
+          recursive: true,
+        });
+        unwatchers.set(key, stop);
+      } catch {
+        /* installer without fs watch — poll instead */
+      }
+    }
+  } catch {
+    /* website bundle */
   }
 }
 
 export function startWatchPolling() {
-  if (pollTimer || typeof window === "undefined") return;
-  void refreshWatchedFolders();
-  const tick = () => {
-    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-    window.clearInterval(pollTimer);
-    pollTimer = window.setInterval(() => void refreshWatchedFolders(), hidden ? 12_000 : 2_500);
-  };
-  tick();
-  document.addEventListener("visibilitychange", () => {
+  if (started || typeof window === "undefined") return;
+  started = true;
+  window.setTimeout(() => {
+    void bindNativeWatch();
+    void refreshWatchedFolders();
+    const tick = () => {
+      const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+      const native = unwatchers.size > 0;
+      const ms = hidden ? 30_000 : native ? 20_000 : 8_000;
+      window.clearInterval(pollTimer);
+      pollTimer = window.setInterval(() => void refreshWatchedFolders(), ms);
+    };
     tick();
-    if (document.visibilityState === "visible") void refreshWatchedFolders();
-  });
+    document.addEventListener("visibilitychange", () => {
+      tick();
+      if (document.visibilityState === "visible") void refreshWatchedFolders();
+    });
+  }, 8000);
 }

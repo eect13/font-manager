@@ -45,11 +45,12 @@ export function Playground() {
   const right = findFont(rightId, localFonts, googleFonts);
 
   useEffect(() => {
+    const leftOk = leftId.startsWith("s:") || activatedSet.has(leftId);
+    const rightOk = rightId.startsWith("s:") || activatedSet.has(rightId);
+    if (leftOk && rightOk) return;
     if (!activatedFonts.length) return;
-    if (!activatedSet.has(leftId)) setLeftId(activatedFonts[0]!.id);
-    if (!activatedSet.has(rightId)) {
-      setRightId((activatedFonts[1] ?? activatedFonts[0])!.id);
-    }
+    if (!leftOk) setLeftId(activatedFonts[0]!.id);
+    if (!rightOk) setRightId((activatedFonts[1] ?? activatedFonts[0])!.id);
   }, [activatedFonts, activatedSet, leftId, rightId]);
 
   useEffect(() => {

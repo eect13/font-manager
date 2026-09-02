@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 import { FontCard } from "./font-card";
 import { UploadsResetDialog } from "./uploads-reset-dialog";
 import { Button } from "@/components/ui/button";
+import { inDesktopShell, isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { primeGooglePreview } from "@/lib/fonts/loader";
 import { loadSystemFonts } from "@/lib/fonts/system-fonts";
 import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
@@ -62,20 +63,51 @@ export function LibraryGrid() {
   const googleFonts = useFontStore((s) => s.googleFonts);
   const scope = useFontStore((s) => s.scope);
   const query = useFontStore((s) => s.query);
+  const deferredQuery = useDeferredValue(query);
   const customTags = useFontStore((s) => s.customTags);
   const preview = useFontStore((s) => s.preview);
-  const activated = useFontStore((s) => (scopeNeedsActivated(s.scope) ? s.activated : EMPTY_IDS));
+  const activated = useFontStore((s) => s.activated);
+  const pendingActivate = useFontStore((s) => s.pendingActivate);
   const favorites = useFontStore((s) => (s.scope === "favorites" ? s.favorites : EMPTY_IDS));
   const collections = useFontStore((s) =>
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
   );
   const systemFonts = useFontStore((s) => (s.scope === "system" ? s.systemFonts : EMPTY_FONTS));
+  const systemBusy = useFontStore((s) => s.systemBusy);
   const hideDupIds = useFontStore((s) => (s.autoHideDuplicates ? s.duplicateHideIds : EMPTY_IDS));
+  const facet = useFontStore((s) => s.facet);
   const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
+  const [desktopShell, setDesktopShell] = useState(isDesktopShellSync);
   const list = preview.view === "list";
   const sortMode =
     scope === "system" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
+
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      if (isDesktopShellSync()) {
+        if (alive) setDesktopShell(true);
+        return true;
+      }
+      const next = await inDesktopShell();
+      if (alive && next) setDesktopShell(true);
+      return next;
+    };
+    void tick();
+    const t1 = window.setTimeout(() => void tick(), 80);
+    const t2 = window.setTimeout(() => void tick(), 400);
+    return () => {
+      alive = false;
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, []);
+
+  const liveIds = useMemo(() => {
+    if (!scopeNeedsActivated(scope)) return EMPTY_IDS;
+    return pendingActivate.length ? [...activated, ...pendingActivate] : activated;
+  }, [scope, activated, pendingActivate]);
 
   const fonts = useMemo(
     () => {
@@ -83,15 +115,16 @@ export function LibraryGrid() {
       const list = filterLibrary(
         scope === "system" ? systemFonts : allFonts(localFonts, googleFonts),
         scope,
-        query,
+        deferredQuery,
         favorites,
-        activated,
+        liveIds,
         collections,
         customTags,
+        facet,
       );
       return sortLibrary(skip ? list.filter((f) => !skip.has(f.id)) : list, sortMode);
     },
-    [localFonts, googleFonts, systemFonts, scope, query, favorites, activated, collections, customTags, sortMode, hideDupIds],
+    [localFonts, googleFonts, systemFonts, scope, deferredQuery, favorites, liveIds, collections, customTags, sortMode, hideDupIds, facet],
   );
 
   const inner = Math.max(280, box.width - 24);
@@ -129,7 +162,7 @@ export function LibraryGrid() {
             ? `${localFonts.length.toLocaleString()} uploaded typeface${localFonts.length === 1 ? "" : "s"}`
             : "No uploaded typefaces"}
         </p>
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button
             type="button"
             size="sm"
@@ -159,7 +192,9 @@ export function LibraryGrid() {
     scope === "system" ? (
       <div className="border-b border-border px-3 py-2 md:px-4">
         <p className="text-sm text-muted-foreground">
-          Fonts already in Windows (Arial, Calibri, Segoe, …). View and favorite them here. Font Manager will not uninstall or deactivate them.
+          {desktopShell
+            ? "Fonts already on this computer (Arial, Calibri, Segoe, …). View and favorite them here. Font Manager will not uninstall or deactivate them."
+            : "System fonts list here in the installed desktop app — this website has no OS font folder. Font Manager will not uninstall them."}
         </p>
       </div>
     ) : null;
@@ -170,17 +205,29 @@ export function LibraryGrid() {
         {uploadedBar}
         {systemBar}
         <div className="flex flex-1 flex-col items-center justify-center px-6 py-20 text-center">
-          <p className="font-heading text-3xl">Nothing in this drawer</p>
+          <p className="font-heading text-3xl">
+            {scope === "system" && (systemBusy || desktopShell) && !query.trim()
+              ? systemBusy
+                ? "Reading system fonts"
+                : "Nothing in this drawer"
+              : "Nothing in this drawer"}
+          </p>
           <p className="mt-2 max-w-sm text-sm text-muted-foreground">
             {scope === "uploaded"
               ? "Drop a folder of TTF, OTF, or WOFF files here, or use Files / Folder in the header."
               : scope === "system"
                 ? query.trim()
-                  ? "No Windows fonts match this search. Clear the search box in the header."
-                  : "Arial, Calibri, Segoe and the rest of C:\\Windows\\Fonts show here in the desktop app. Font Manager will not uninstall them."
-              : scopeNeedsActivated(scope)
-                ? "This filter only lists activated typefaces. Open All typefaces, or click Activated."
-                : "Try another filter, or use Folder to add a whole directory of TTF, OTF, or WOFF files."}
+                  ? "No system fonts match this search. Clear the search box in the header."
+                  : systemBusy
+                    ? "Reading families already installed on this computer. Font Manager will not uninstall them."
+                    : desktopShell
+                      ? "No typefaces were found among system fonts. Font Manager will not uninstall them."
+                      : "Arial, Calibri, Segoe and the rest of the OS fonts show here in the installed desktop app — this website has none. Font Manager will not uninstall them."
+                : scopeNeedsActivated(scope)
+                  ? facet
+                    ? "No activated typefaces match this filter. Clear the chip above the grid, or pick another license / style / tag."
+                    : "Nothing is activated yet. Open All typefaces and click Activate on a card."
+                  : "Try another filter, or use Folder to add a whole directory of TTF, OTF, or WOFF files."}
           </p>
         </div>
         <UploadsResetDialog open={uploadsOpen} onOpenChange={setUploadsOpen} />

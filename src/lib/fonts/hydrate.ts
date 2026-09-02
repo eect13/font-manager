@@ -1,15 +1,17 @@
 import { useEffect } from "react";
+import { toast } from "sonner";
 import { GOOGLE_FONTS } from "./catalog";
-import { refreshGoogleCatalog } from "./google-api";
+import { loadCachedCatalog, scheduleCatalogSync } from "./google-api";
 import { idbGet, persistStorageOnGesture, requestPersistentStorage } from "./idb";
 import { refineLicense } from "./license";
 import { findFont, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
-import { restoreSessionFromDisk, rememberSessionFamilies, listDiskFamilies, listSessionFamilies } from "./os-activate";
+import { restoreSessionFromDisk, rememberSessionFamilies, listSessionFamilies, pruneUnknownFolders } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { startWatchPolling } from "./watch-folder";
 import { loadSystemFonts } from "./system-fonts";
+import { hydrateLiveAxes } from "./live-axes";
 import type { FontRecord } from "./types";
 
 async function reclassifyStoredLocalFonts(cancelled: () => boolean) {
@@ -103,8 +105,13 @@ async function reclassifyStoredLocalFonts(cancelled: () => boolean) {
 export function useHydrateFonts() {
   useEffect(() => {
     let cancelled = false;
-    void Promise.resolve(useFontStore.persist.rehydrate()).then(async () => {
+    let stopCatalog = () => {};
+    void (async () => {
+      await loadCachedCatalog();
       if (cancelled) return;
+      await useFontStore.persist.rehydrate();
+      if (cancelled) return;
+      hydrateLiveAxes(useFontStore.getState().previewAxes);
       const { localFonts, setHydrated, googleFonts, collections, scope } = useFontStore.getState();
       if (
         typeof scope === "string" &&
@@ -124,17 +131,21 @@ export function useHydrateFonts() {
       const wantIds = Array.from(new Set(useFontStore.getState().activated));
       const desktop = await inDesktopShell();
       if (desktop) {
-        const [sessionNames, diskNames] = await Promise.all([listSessionFamilies(), listDiskFamilies()]);
-        useFontStore.getState().setDiskFamilies(diskNames);
-        noteDiskFamilies(diskNames);
-        const persistNames = wantIds
-          .map((id) => findFont(id, localFonts, google)?.family)
-          .filter((name): name is string => Boolean(name));
+        const sessionNames = await listSessionFamilies();
+        const persistNames: string[] = [];
+        for (const id of wantIds) {
+          const font = findFont(id, localFonts, google);
+          if (font && font.source !== "system") persistNames.push(font.family);
+          else if (!font && id.startsWith("g:")) persistNames.push(id.slice(2));
+        }
         const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
         void restoreSessionFromDisk(wantNames).then((result) => {
           if (cancelled) return;
-          noteDiskFamilies(result.onDisk.length ? result.onDisk : diskNames);
-          useFontStore.getState().setDiskFamilies(result.onDisk.length ? result.onDisk : diskNames);
+          const diskNames = result.onDisk;
+          if (diskNames.length) {
+            noteDiskFamilies(diskNames);
+            useFontStore.getState().setDiskFamilies(diskNames);
+          }
           const allow = new Set<string>();
           for (const n of result.ready) allow.add(n.trim().toLowerCase());
           for (const n of result.onDisk) allow.add(n.trim().toLowerCase());
@@ -144,7 +155,16 @@ export function useHydrateFonts() {
           const consider = (id: string) => {
             if (seen.has(id)) return;
             const font = findFont(id, localFonts, google);
-            if (!font) return;
+            if (!font) {
+              if (id.startsWith("g:")) {
+                const name = id.slice(2).trim().toLowerCase();
+                if (allow.has(name)) {
+                  seen.add(id);
+                  live.push(id);
+                }
+              }
+              return;
+            }
             if (font.source === "local" || allow.has(font.family.toLowerCase())) {
               seen.add(id);
               live.push(id);
@@ -154,15 +174,39 @@ export function useHydrateFonts() {
           const byFamily = new Map<string, string>();
           for (const font of [...localFonts, ...google]) byFamily.set(font.family.toLowerCase(), font.id);
           for (const name of sessionNames) {
-            const id = byFamily.get(name.trim().toLowerCase());
-            if (id && allow.has(name.trim().toLowerCase())) consider(id);
+            const key = name.trim().toLowerCase();
+            if (!allow.has(key)) continue;
+            consider(byFamily.get(key) ?? `g:${name.trim()}`);
           }
           useFontStore.getState().restoreActivation(live, []);
           void rememberSessionFamilies(
             live
-              .map((id) => findFont(id, localFonts, google)?.family)
+              .map((id) => findFont(id, localFonts, google)?.family ?? (id.startsWith("g:") ? id.slice(2) : ""))
               .filter((name): name is string => Boolean(name)),
           );
+          const keep = [
+            ...google.map((f) => f.family),
+            ...localFonts.map((f) => f.family),
+            ...sessionNames,
+            ...persistNames,
+            ...live
+              .map((id) => findFont(id, localFonts, google)?.family ?? (id.startsWith("g:") ? id.slice(2) : ""))
+              .filter((name): name is string => Boolean(name)),
+          ];
+          if (keep.length < 500) return;
+          window.setTimeout(() => {
+            if (cancelled) return;
+            void pruneUnknownFolders(keep).then((n) => {
+              if (cancelled || !n) return;
+              toast.message(
+                `Removed ${n.toLocaleString()} leftover folder${n === 1 ? "" : "s"}`,
+                {
+                  description:
+                    "Renamed or delisted families. Uploads and the current catalog stayed. Nothing was copied to Windows\\Fonts.",
+                },
+              );
+            });
+          }, 4000);
         });
       }
       const liveIds = useFontStore.getState().activated;
@@ -174,17 +218,11 @@ export function useHydrateFonts() {
       startWatchPolling();
       void loadSystemFonts();
 
-      window.setTimeout(() => {
-        if (cancelled) return;
-        void refreshGoogleCatalog().then((live) => {
-          if (cancelled || !live) return;
-          useFontStore.getState().setGoogleFonts(GOOGLE_FONTS.slice());
-          useFontStore.getState().setCatalogLive(true);
-        });
-      }, 2500);
-    });
+      if (!cancelled) stopCatalog = scheduleCatalogSync();
+    })();
     return () => {
       cancelled = true;
+      stopCatalog();
     };
   }, []);
 }

@@ -58,6 +58,7 @@ export function GlyphMap() {
   const font = findFont(fontId, localFonts, googleFonts);
 
   useEffect(() => {
+    if (fontId.startsWith("s:")) return;
     if (!activated.length) {
       setFontId("");
       return;

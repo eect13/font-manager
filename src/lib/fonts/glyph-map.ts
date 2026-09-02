@@ -714,7 +714,23 @@ async function bufferFromDisk(family: string): Promise<ArrayBuffer | null> {
   return null;
 }
 
+async function bufferFromOrigin(path: string): Promise<ArrayBuffer | null> {
+  try {
+    const { convertFileSrc } = await import("@tauri-apps/api/core");
+    const res = await fetch(convertFileSrc(path));
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    return buf.byteLength >= 1000 ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
 async function bufferForFont(font: FontRecord): Promise<ArrayBuffer | null> {
+  if (font.originPath) {
+    const fromPath = await bufferFromOrigin(font.originPath);
+    if (fromPath) return fromPath;
+  }
   if (font.source === "local") {
     const blob = await idbGet(font.id);
     if (blob) return blob.arrayBuffer();

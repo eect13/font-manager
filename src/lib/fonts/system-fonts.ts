@@ -1,9 +1,10 @@
-import { inDesktopShell } from "@/lib/desktop/open-fonts";
+import { inDesktopShell, isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import type { FontCategory, FontRecord } from "./types";
 import { useFontStore } from "./store";
 
 type SystemFontOut = {
   family: string;
+  fullName?: string;
   path: string;
   fileName: string;
   italic: boolean;
@@ -26,6 +27,7 @@ function toRecord(row: SystemFontOut): FontRecord {
   return {
     id: `s:${row.family}`,
     family: row.family,
+    fullName: row.fullName && row.fullName !== row.family ? row.fullName : undefined,
     source: "system",
     category: categoryOf(row.family),
     weights: [weight],
@@ -34,24 +36,65 @@ function toRecord(row: SystemFontOut): FontRecord {
     tags: ["system"],
     popularity: 10_000,
     license: "unknown",
-    licenseName: "Windows",
+    licenseName: "System",
     fileName: row.fileName,
     cssFamily: row.family,
-    originPath: row.path,
+    originPath: row.path || undefined,
     colorKind: /emoji|color/i.test(row.family) ? "colrv1" : "none",
   };
 }
 
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+let inflight: Promise<void> | null = null;
+
 export async function loadSystemFonts(): Promise<void> {
-  if (!(await inDesktopShell())) {
-    useFontStore.getState().setSystemFonts([]);
-    return;
-  }
+  if (useFontStore.getState().systemFonts.length) return;
+  if (inflight) return inflight;
+  inflight = (async () => {
+    let desktop = isDesktopShellSync();
+    if (!desktop) desktop = await inDesktopShell();
+    if (!desktop) {
+      useFontStore.getState().setSystemBusy(false);
+      return;
+    }
+    useFontStore.getState().setSystemBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      let rows: SystemFontOut[] = [];
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          rows = (await invoke<SystemFontOut[]>("list_system_fonts")) ?? [];
+          lastErr = undefined;
+          break;
+        } catch (err) {
+          lastErr = err;
+          await sleep(200);
+        }
+      }
+      if (lastErr && !rows.length) throw lastErr;
+      useFontStore.getState().setSystemFonts(rows.map(toRecord));
+    } catch {
+      useFontStore.getState().setSystemBusy(false);
+      useFontStore.getState().setSystemFonts([]);
+    }
+  })().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+export async function openSystemFontsFolder(): Promise<void> {
+  if (!(await inDesktopShell())) return;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const rows = (await invoke<SystemFontOut[]>("list_system_fonts")) ?? [];
-    useFontStore.getState().setSystemFonts(rows.map(toRecord));
+    await invoke("open_system_fonts_folder");
   } catch {
-    useFontStore.getState().setSystemFonts([]);
+    /* web preview */
   }
 }

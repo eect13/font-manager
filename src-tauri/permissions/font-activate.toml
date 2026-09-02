@@ -23,14 +23,20 @@ commands.allow = [
   "google_download_progress",
   "register_existing_on_disk",
   "activate_families_on_disk",
+  "plan_google_activation",
   "set_session_families",
+  "session_families",
   "read_family_font",
   "scan_disk_families",
+  "prune_unknown_folders",
   "parse_family_cmap",
   "parse_family_layout",
   "parse_font_layout",
+  "parse_font_layouts",
   "parse_font_cmap",
   "hash_bytes",
   "hash_font_path",
-  "diff_font_bytes"
+  "diff_font_bytes",
+  "list_system_fonts",
+  "open_system_fonts_folder"
 ]

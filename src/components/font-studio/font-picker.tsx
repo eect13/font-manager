@@ -7,6 +7,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cssFamilyStack, loadFont } from "@/lib/fonts/loader";
 import { loadGlyphAtlas } from "@/lib/fonts/glyph-map";
 import { allFonts, findFont, tagsFor, useFontStore } from "@/lib/fonts/store";
+import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
 import type { FontRecord } from "@/lib/fonts/types";
 import { CATEGORY_LABEL } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
@@ -27,45 +28,54 @@ export function FontPicker({
 }) {
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
+  const systemFonts = useFontStore((s) => s.systemFonts);
   const activatedSet = useFontStore((s) => s.activatedSet);
   const customTags = useFontStore((s) => s.customTags);
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [shown, setShown] = useState(pageSize || Number.POSITIVE_INFINITY);
 
-  const fonts = useMemo(() => allFonts(localFonts, googleFonts), [localFonts, googleFonts]);
+  const fonts = useMemo(
+    () => [...systemFonts, ...allFonts(localFonts, googleFonts)],
+    [systemFonts, localFonts, googleFonts],
+  );
   const selected = findFont(value, localFonts, googleFonts);
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
     const match = (f: FontRecord) => {
-      if (!activatedSet.has(f.id)) return false;
+      if (f.source !== "system" && !activatedSet.has(f.id)) return false;
       if (!query) return true;
       if (f.family.toLowerCase().includes(query)) return true;
+      if (f.fullName?.toLowerCase().includes(query)) return true;
       if (f.category.includes(query)) return true;
       if (CATEGORY_LABEL[f.category]?.toLowerCase().includes(query)) return true;
       return tagsFor(f, customTags).some((tag) => tag.includes(query));
     };
     const hits = fonts.filter(match);
-    hits.sort((a, b) => a.family.localeCompare(b.family));
+    hits.sort((a, b) => (a.fullName || a.family).localeCompare(b.fullName || b.family));
     return hits;
   }, [fonts, q, activatedSet, customTags]);
 
   const visible = useMemo(() => {
     const cap = pageSize > 0 ? shown : filtered.length;
     const slice = filtered.slice(0, Math.min(filtered.length, cap));
-    if (selected && activatedSet.has(selected.id) && !slice.some((f) => f.id === selected.id)) {
+    if (selected && (selected.source === "system" || activatedSet.has(selected.id)) && !slice.some((f) => f.id === selected.id)) {
       return [selected, ...slice];
     }
     return slice;
   }, [filtered, shown, pageSize, selected, activatedSet]);
 
   const groups = useMemo(() => {
+    const windows = visible.filter((f) => f.source === "system");
     const uploaded = visible.filter((f) => f.source === "local");
-    const google = visible.filter((f) => f.source !== "local");
+    const fontsource = visible.filter(isFontsourceOnly);
+    const gfonts = visible.filter(isGoogleCatalog);
     return [
+      { label: "System", items: windows },
+      { label: "Fontsource", items: fontsource },
+      { label: "Google Fonts", items: gfonts },
       { label: "Uploaded", items: uploaded },
-      { label: "Fontsource", items: google },
     ].filter((g) => g.items.length);
   }, [visible]);
 
@@ -98,7 +108,7 @@ export function FontPicker({
       <PopoverTrigger asChild>
         <Button variant="outline" className="h-11 w-full justify-between font-normal">
           <span className="truncate" style={{ fontFamily: selected ? cssFamilyStack(selected) : undefined }}>
-            {selected?.family ?? label}
+            {selected?.fullName || selected?.family || label}
           </span>
           <ChevronsUpDown className="size-4 text-muted-foreground" />
         </Button>
@@ -107,14 +117,14 @@ export function FontPicker({
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search activated typefaces…"
+          placeholder="Search typefaces…"
           className="mb-2 h-9"
         />
         <ScrollArea className="h-72" onScrollCapture={onListScroll}>
           <div className="flex flex-col gap-2">
             {groups.length === 0 && (
               <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-                {q.trim() ? "No matches" : "Activate typefaces in the library to list them here."}
+                {q.trim() ? "No matches" : "Activate a catalog face in the library. System fonts list here in the desktop app."}
               </p>
             )}
             {groups.map((group) => (
@@ -134,10 +144,10 @@ export function FontPicker({
                     )}
                   >
                     <span className="truncate" style={{ fontFamily: cssFamilyStack(font) }}>
-                      {font.family}
+                      {font.fullName || font.family}
                     </span>
                     <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {font.source === "local" ? "file" : CATEGORY_LABEL[font.category]}
+                      {font.source === "local" ? "file" : font.source === "system" ? "System" : CATEGORY_LABEL[font.category]}
                     </span>
                   </button>
                 ))}

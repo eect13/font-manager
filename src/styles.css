@@ -173,22 +173,22 @@ html[data-theme="light"] {
 }
 .fm-spec.fm-spec-italic {
   font-style: italic !important;
-}
-.fm-spec.fm-spec-italic.fm-spec-static {
   font-synthesis: style !important;
 }
-.fm-spec.fm-spec-italic.fm-spec-variable {
+.fm-spec.fm-spec-italic.fm-spec-real {
   font-synthesis: none !important;
+}
+.fm-spec.fm-spec-variable {
+  font-optical-sizing: auto;
 }
 
 .fm-spec-pane {
   position: relative;
   display: flex;
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  flex-direction: column;
-  justify-content: center;
+  align-items: center;
   overflow: hidden;
 }
 

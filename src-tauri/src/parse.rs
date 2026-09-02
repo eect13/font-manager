@@ -365,6 +365,8 @@ pub fn diff_font_bytes(left: Vec<u8>, right: Vec<u8>) -> DiffOut {
 #[derive(Serialize, Clone)]
 pub struct SystemFontOut {
     pub family: String,
+    #[serde(rename = "fullName")]
+    pub full_name: String,
     pub path: String,
     #[serde(rename = "fileName")]
     pub file_name: String,
@@ -373,9 +375,12 @@ pub struct SystemFontOut {
     pub weight: u16,
 }
 
-fn face_family(face: &Face<'_>) -> Option<String> {
+/// Windows Fonts CPL name: typographic family (ID 16) then Win32 family (ID 1).
+/// Full name is ID 4. Never the file stem unless the name table is missing.
+fn face_installed_names(face: &Face<'_>) -> (String, String) {
     let mut family = None;
     let mut typo = None;
+    let mut full = None;
     for n in face.names() {
         let Some(s) = n.to_string() else { continue };
         let t = s.trim();
@@ -386,9 +391,13 @@ fn face_family(face: &Face<'_>) -> Option<String> {
             typo = Some(t.to_string());
         } else if n.name_id == ttf_parser::name_id::FAMILY && family.is_none() {
             family = Some(t.to_string());
+        } else if n.name_id == ttf_parser::name_id::FULL_NAME && full.is_none() {
+            full = Some(t.to_string());
         }
     }
-    typo.or(family)
+    let family = typo.or(family).unwrap_or_default();
+    let full = full.unwrap_or_else(|| family.clone());
+    (family, full)
 }
 
 fn system_font_dirs() -> Vec<std::path::PathBuf> {
@@ -413,15 +422,6 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
     }
 }
 
-fn stem_family(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Font")
-        .replace(['_', '-'], " ")
-        .trim()
-        .to_string()
-}
-
 fn push_system_font(path: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>) {
     let ext = path
         .extension()
@@ -434,82 +434,70 @@ fn push_system_font(path: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSe
     let Ok(meta) = std::fs::metadata(path) else {
         return;
     };
-    if meta.len() < 256 {
+    if meta.len() < 256 || meta.len() > 24 * 1024 * 1024 {
         return;
     }
-    let fallback = stem_family(path);
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("font.ttf")
+        .to_string();
+    let Ok(data) = std::fs::read(path) else {
+        return;
+    };
+    let path_s = path.to_string_lossy().into_owned();
     let mut added = false;
-    let cap = (meta.len() as usize).min(512 * 1024);
-    if let Ok(mut file) = File::open(path) {
-        let mut data = vec![0u8; cap];
-        if let Ok(n) = file.read(&mut data) {
-            data.truncate(n);
-            if let Ok(faces) = all_faces(&data, |_, face| {
-                let family = face_family(face).unwrap_or_default();
-                let italic = face.is_italic();
-                let variable = face.is_variable();
-                let weight = face.weight().to_number();
-                (family, italic, variable, weight)
-            }) {
-                for (family, italic, variable, weight) in faces {
-                    let family = family.trim().to_string();
-                    let family = if family.is_empty() {
-                        fallback.clone()
-                    } else {
-                        family
-                    };
-                    let key = family.to_ascii_lowercase();
-                    if !seen.insert(key) {
-                        continue;
-                    }
-                    out.push(SystemFontOut {
-                        family,
-                        path: path.to_string_lossy().into_owned(),
-                        file_name: path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("font.ttf")
-                            .to_string(),
-                        italic,
-                        variable,
-                        weight,
-                    });
-                    added = true;
-                    if out.len() >= 480 {
-                        return;
-                    }
+    if let Ok(faces) = all_faces(&data, |_, face| {
+        let (family, full) = face_installed_names(face);
+        let italic = face.is_italic();
+        let variable = face.is_variable();
+        let weight = face.weight().to_number();
+        (family, full, italic, variable, weight)
+    }) {
+        for (family, full, italic, variable, weight) in faces {
+            let family = family.trim().to_string();
+            if family.is_empty() {
+                continue;
+            }
+            let key = family.to_ascii_lowercase();
+            if !seen.insert(key) {
+                continue;
+            }
+            let full_name = {
+                let f = full.trim();
+                if f.is_empty() || f.eq_ignore_ascii_case(&family) {
+                    family.clone()
+                } else {
+                    f.to_string()
                 }
+            };
+            out.push(SystemFontOut {
+                family,
+                full_name,
+                path: path_s.clone(),
+                file_name: file_name.clone(),
+                italic,
+                variable,
+                weight,
+            });
+            added = true;
+            if out.len() >= 800 {
+                return;
             }
         }
     }
-    if !added {
-        let key = fallback.to_ascii_lowercase();
-        if seen.insert(key) {
-            out.push(SystemFontOut {
-                family: fallback,
-                path: path.to_string_lossy().into_owned(),
-                file_name: path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("font.ttf")
-                    .to_string(),
-                italic: false,
-                variable: false,
-                weight: 400,
-            });
-        }
-    }
+    let _ = added;
 }
 
 fn walk_system_dir(dir: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>, depth: u8) {
-    if out.len() >= 480 || depth > 4 {
+    if out.len() >= 800 || depth > 4 {
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in rd.flatten() {
-        if out.len() >= 480 {
+        if out.len() >= 800 {
             return;
         }
         let path = entry.path();
@@ -521,8 +509,7 @@ fn walk_system_dir(dir: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<
     }
 }
 
-#[tauri::command]
-pub fn list_system_fonts() -> Result<Vec<SystemFontOut>, String> {
+fn walk_system_fonts() -> Vec<SystemFontOut> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for dir in system_font_dirs() {
@@ -531,5 +518,41 @@ pub fn list_system_fonts() -> Result<Vec<SystemFontOut>, String> {
         }
     }
     out.sort_by(|a, b| a.family.to_lowercase().cmp(&b.family.to_lowercase()));
-    Ok(out)
+    out
+}
+
+#[tauri::command]
+pub fn list_system_fonts() -> Result<Vec<SystemFontOut>, String> {
+    // Snapshot C:\Windows\Fonts (file walk). Do not EnumFontFamiliesExW —
+    // session AddFontResourceExW(flag 0) makes Documents fonts show up as
+    // "installed" and the System drawer jitters on every WM_FONTCHANGE.
+    static CACHE: OnceLock<Vec<SystemFontOut>> = OnceLock::new();
+    Ok(CACHE.get_or_init(walk_system_fonts).clone())
+}
+
+#[tauri::command]
+pub fn open_system_fonts_folder() -> Result<String, String> {
+    let dir = system_font_dirs()
+        .into_iter()
+        .find(|d| d.is_dir())
+        .ok_or_else(|| "no system fonts folder".to_string())?;
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    }
+    Ok(dir.to_string_lossy().into_owned())
 }

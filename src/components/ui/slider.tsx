@@ -53,7 +53,11 @@ export function Slider({
         e.stopPropagation();
       }}
       onChange={(e) => {
-        const n = Number(e.target.value);
+        const n = Number(e.currentTarget.value);
+        if (Number.isFinite(n)) onValueChange?.([n]);
+      }}
+      onInput={(e) => {
+        const n = Number(e.currentTarget.value);
         if (Number.isFinite(n)) onValueChange?.([n]);
       }}
       className={cn(

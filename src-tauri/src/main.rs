@@ -4,6 +4,9 @@ mod activate;
 mod namepatch;
 mod parse;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -16,6 +19,30 @@ fn show_main(app: &tauri::AppHandle) {
         let _ = win.unminimize();
         let _ = win.set_focus();
     }
+}
+
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Hide first so X feels instant. Enumerable session fonts (flag 0) are NOT
+/// dropped when the process dies — RemoveFontResourceExW must finish.
+/// The unload thread is joined via a channel; 45s is only the hung-GDI cap.
+fn quit_gracefully(app: &tauri::AppHandle) {
+    if QUITTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    let handle = app.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        activate::session_end(&handle);
+        let _ = done_tx.send(());
+    });
+    std::thread::spawn(move || {
+        let _ = done_rx.recv_timeout(Duration::from_secs(45));
+        std::process::exit(0);
+    });
 }
 
 fn main() {
@@ -48,7 +75,7 @@ fn main() {
                     "folder" => {
                         let _ = activate::open_activation_folder(app.clone());
                     }
-                    "quit" => app.exit(0),
+                    "quit" => quit_gracefully(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -92,6 +119,7 @@ fn main() {
             activate::session_families,
             activate::read_family_font,
             activate::scan_disk_families,
+            activate::prune_unknown_folders,
             parse::parse_family_cmap,
             parse::parse_family_layout,
             parse::parse_font_layout,
@@ -101,20 +129,23 @@ fn main() {
             parse::hash_font_path,
             parse::diff_font_bytes,
             parse::list_system_fonts,
+            parse::open_system_fonts_folder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Font Manager")
         .run(|app, event| match event {
-            // X closes the app. Activations restore on the next launch.
             tauri::RunEvent::WindowEvent {
                 label,
-                event: tauri::WindowEvent::CloseRequested { .. },
+                event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
             } if label == "main" => {
-                app.exit(0);
+                api.prevent_close();
+                quit_gracefully(app);
             }
-            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. } => {
-                activate::session_end();
+            tauri::RunEvent::Exit => {
+                if !QUITTING.load(Ordering::SeqCst) {
+                    activate::session_end(app);
+                }
             }
             _ => {}
         });
