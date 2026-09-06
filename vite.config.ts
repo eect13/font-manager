@@ -226,10 +226,10 @@ export default defineConfig(({ command, isPreview }) => {
       root: projectRoot,
       clearScreen: false,
       base: "./",
-      // Vite 8: HTML entry is top-level `input`. `build.rollupOptions.input`
-      // is dropped (types omit it on the dep-optimizer alias; Rolldown then
-      // looks for index.html and the installer window is blank).
-      input: join(projectRoot, "desktop.html"),
+      // Relative entry — Vite 8 treats ()[]{} in *absolute* input as globs.
+      // Chrome/Edge zip folders named `font-manager-main (1)` used to fail the
+      // desktop pack (`input cannot contain glob characters`).
+      input: "desktop.html",
       plugins: [tailwindcss(), viteReact(), tauriIndexPlugin()],
       resolve: { tsconfigPaths: true },
       build: {
@@ -237,7 +237,7 @@ export default defineConfig(({ command, isPreview }) => {
         emptyOutDir: true,
         chunkSizeWarningLimit: 900,
         rolldownOptions: {
-          input: join(projectRoot, "desktop.html"),
+          input: "desktop.html",
           checks: quietRolldownChecks(),
           onLog(level, log, defaultHandler) {
             const code = String((log as { code?: string }).code ?? "");

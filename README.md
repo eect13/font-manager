@@ -1,8 +1,10 @@
-# Font Manager **1.0.131**
+# Font Manager **1.0.132**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse Fontsource and Google Fonts, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. **100% temporary session activation. Zero registry bloat. Fonts unload on close.** Files live in `Documents / Font Manager`. Nothing is copied to `C:\Windows\Fonts`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.131** sits next to the logo, not in the window title.
+Version **1.0.132** sits next to the logo, not in the window title.
+
+**1.0.132** — `deploy.bat` works from a Downloads folder named `font-manager-main (1)` (Vite 8 treated parentheses as globs). Restore radios are unchanged: **uninstall first** or **install over**.
 
 **1.0.131** — Restore page matches Finance Manager: two radios when an old copy exists (HKCU, HKLM, or the install folder). **Uninstall first** or **install over it**. 1.0.130 hid that page when only a machine-wide / MSI key was present.
 
@@ -139,7 +141,7 @@ Version **1.0.131** sits next to the logo, not in the window title.
 ## Install (Windows, VS Code only)
 
 1. [Node.js 22 LTS](https://nodejs.org) (Node 24 also builds).
-2. Unzip the project → VS Code **File → Open Folder**.
+2. Unzip the project → VS Code **File → Open Folder**. A folder named `font-manager-main (1)` is fine (1.0.132).
 3. Double-click **`deploy.bat`**. Leave it open through **three** phases:
    1. **Pack the UI** — Vite writes `desktop-….js`. A banner says **Phase 1 done**. That is **not** the installer.
    2. **Compile Rust** — cargo `--release` with LTO (first time 5–15 minutes). Looks like a new process; do not close the window.
@@ -319,7 +321,9 @@ Opening the inspector reads GSUB/GPOS from the TTF. Switches set `font-variant-l
 | Word doesn’t list the face yet | Wait a second; open the font menu again. |
 | OT toggles do nothing | Use the demo line, not the pangram. Confirm the file actually has that tag. |
 | Display face clipped | Library cards shrink-to-fit (min 13px). Inspector alphabet wraps with `overflow-wrap: anywhere`. |
-| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.102** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
+| `input` cannot contain glob characters / `font-manager-main (1)` | 1.0.132. Re-download this repo (or pull) and run `deploy.bat` again. |
+| Setup skips install/uninstall radios | Use the **1.0.132** setup.exe, not an older one in Downloads. The page appears when an old copy is already installed. |
+| Can’t install — **Unable to uninstall** / **Error launching installer** | Double-click **`fix-install.bat`**. Rebuild with **1.0.132** (`deploy.bat`). Right-click setup → Properties → **Unblock** if Windows marked the file. |
 | Build window closed after `index.html` | That was only the UI pack. Re-run `deploy.bat` and wait for Explorer. |
 | MSI missing, only setup.exe | Install [WiX Toolset v3](https://wixtoolset.org), then `deploy.bat` again. NSIS is enough to install. |
 
