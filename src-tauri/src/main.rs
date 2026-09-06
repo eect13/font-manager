@@ -30,6 +30,8 @@ fn quit_gracefully(app: &tauri::AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
+    // X is quit, not hide-to-tray.
+    let _ = app.remove_tray_by_id("main");
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
@@ -65,7 +67,7 @@ fn main() {
                 .cloned()
                 .expect("app icon");
 
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id("main")
                 .icon(icon)
                 .tooltip("Font Manager")
                 .menu(&menu)
@@ -131,22 +133,22 @@ fn main() {
             parse::list_system_fonts,
             parse::open_system_fonts_folder,
         ])
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                quit_gracefully(window.app_handle());
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building Font Manager")
-        .run(|app, event| match event {
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::CloseRequested { api, .. },
-                ..
-            } if label == "main" => {
-                api.prevent_close();
-                quit_gracefully(app);
-            }
-            tauri::RunEvent::Exit => {
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
                 if !QUITTING.load(Ordering::SeqCst) {
                     activate::session_end(app);
                 }
             }
-            _ => {}
         });
 }

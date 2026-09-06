@@ -1,7 +1,6 @@
 ; Font Manager — based on tauri-cli 2.11 installer.nsi
-; Patch: existing NSIS copy is overwritten (no old uninstall.exe).
-; That old stub is what shows "Unable to uninstall" / "Error launching installer"
-; when the tray copy is still running.
+; Restore page: overwrite (don't uninstall) or uninstall the previous copy first.
+; The running exe is killed first so uninstall.exe is not file-locked.
 
 Unicode true
 ManifestDPIAware true
@@ -192,7 +191,7 @@ Var ReinstallPageCheck
 Page custom PageReinstall PageLeaveReinstall
 
 Function KillFontManager
-  ; X hides to tray. Locked exe makes uninstall.exe fail.
+  ; Unlock the previous exe so overwrite or uninstall.exe can run.
   nsis_tauri_utils::KillProcessCurrentUser "${MAINBINARYNAME}.exe"
   Pop $R9
   nsis_tauri_utils::KillProcessCurrentUser "${PRODUCTNAME}.exe"
@@ -262,13 +261,8 @@ Function PageReinstall
   nsis_tauri_utils::SemverCompare "${VERSION}" $R0
   Pop $R0
 
-  ; Existing NSIS copy: skip this page and overwrite. Running the previous
-  ; uninstall.exe is what shows "Unable to uninstall" and "Error launching
-  ; installer" when the tray copy is still running or uninstall.exe is stale.
-  ${If} $WixMode = 0
-    Call KillFontManager
-    Abort
-  ${EndIf}
+  ; Unlock the previous copy so either radio choice can succeed.
+  Call KillFontManager
 
   ; Reinstalling the same version
   ${If} $R0 = 0

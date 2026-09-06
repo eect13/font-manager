@@ -1,8 +1,10 @@
-# Font Manager **1.0.129**
+# Font Manager **1.0.130**
 
 **TL;DR.** FontBase-style desktop typeface library. Browse Fontsource and Google Fonts, upload TTF/OTF/WOFF/WOFF2/TTC, **Activate** so Word, Adobe, and Figma can use them while this window is open. **100% temporary session activation. Zero registry bloat. Fonts unload on close.** Files live in `Documents / Font Manager`. Nothing is copied to `C:\Windows\Fonts`. This website is the same UI — a dress rehearsal before `deploy.bat`.
 
-Version **1.0.129** sits next to the logo, not in the window title.
+Version **1.0.130** sits next to the logo, not in the window title.
+
+**1.0.130** — Setup restore page is back: **Install over the old copy** or **uninstall it first**. Close (X) quits the process (tray is removed, session fonts unload). It does not minimize to tray.
 
 **1.0.129** — Glyph search matches the library field (icon + deferred filter on the parsed cmap; no TTF parse per keystroke). Provider list is **Google Fonts → Fontsource → Local**. Playground / Glyphs pickers use the same order and deferred search.
 
