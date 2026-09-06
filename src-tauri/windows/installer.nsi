@@ -242,24 +242,61 @@ Function PageReinstall
     Goto compare_version
   wix_loop_done:
 
-  ; Check if there is an existing installation, if not, abort the reinstall page
-  ReadRegStr $R0 SHCTX "${UNINSTKEY}" ""
-  ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
-  ${IfThen} "$R0$R1" == "" ${|} Abort ${|}
+  ; Existing copy: HKCU (currentUser), HKLM (old MSI / per-machine), then disk.
+  ; Stock Tauri only reads SHCTX, so a leftover machine install hides this page.
+  StrCpy $R7 0
+  ReadRegStr $R0 HKCU "${UNINSTKEY}" ""
+  ReadRegStr $R1 HKCU "${UNINSTKEY}" "UninstallString"
+  ${If} "$R0$R1" != ""
+    StrCpy $R7 1
+  ${EndIf}
+  ${If} $R7 = 0
+    ReadRegStr $R0 HKLM "${UNINSTKEY}" ""
+    ReadRegStr $R1 HKLM "${UNINSTKEY}" "UninstallString"
+    ${If} "$R0$R1" != ""
+      StrCpy $R7 1
+    ${EndIf}
+  ${EndIf}
+  ${If} $R7 = 0
+    ReadRegStr $R0 SHCTX "${UNINSTKEY}" ""
+    ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
+    ${If} "$R0$R1" != ""
+      StrCpy $R7 1
+    ${EndIf}
+  ${EndIf}
+  ${If} $R7 = 0
+    IfFileExists "$LOCALAPPDATA\${PRODUCTNAME}\${MAINBINARYNAME}.exe" have_old_copy
+    IfFileExists "$LOCALAPPDATA\${PRODUCTNAME}\${PRODUCTNAME}.exe" have_old_copy
+    IfFileExists "$PROGRAMFILES64\${PRODUCTNAME}\${MAINBINARYNAME}.exe" have_old_copy
+    IfFileExists "$PROGRAMFILES\${PRODUCTNAME}\${MAINBINARYNAME}.exe" have_old_copy
+    Abort
+    have_old_copy:
+    StrCpy $R7 1
+  ${EndIf}
 
-  ; Compare this installar version with the existing installation
-  ; and modify the messages presented to the user accordingly
+  ; Compare this installer version with the existing installation
   compare_version:
   StrCpy $R4 "$(older)"
   ${If} $WixMode = 1
     ReadRegStr $R0 HKLM "$R6" "DisplayVersion"
   ${Else}
-    ReadRegStr $R0 SHCTX "${UNINSTKEY}" "DisplayVersion"
+    ReadRegStr $R0 HKCU "${UNINSTKEY}" "DisplayVersion"
+    ${If} $R0 == ""
+      ReadRegStr $R0 HKLM "${UNINSTKEY}" "DisplayVersion"
+    ${EndIf}
+    ${If} $R0 == ""
+      ReadRegStr $R0 SHCTX "${UNINSTKEY}" "DisplayVersion"
+    ${EndIf}
   ${EndIf}
   ${IfThen} $R0 == "" ${|} StrCpy $R4 "$(unknown)" ${|}
 
   nsis_tauri_utils::SemverCompare "${VERSION}" $R0
   Pop $R0
+  ${If} $R0 <> 0
+  ${AndIf} $R0 <> 1
+  ${AndIf} $R0 <> -1
+    StrCpy $R0 1
+  ${EndIf}
 
   ; Unlock the previous copy so either radio choice can succeed.
   Call KillFontManager
@@ -387,7 +424,16 @@ Function PageLeaveReinstall
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
       ${If} $4 == ""
+        ReadRegStr $4 HKCU "${MANUPRODUCTKEY}" ""
+      ${EndIf}
+      ${If} $4 == ""
+        ReadRegStr $4 HKLM "${MANUPRODUCTKEY}" ""
+      ${EndIf}
+      ${If} $4 == ""
         StrCpy $4 $INSTDIR
+      ${EndIf}
+      ${If} $4 == ""
+        StrCpy $4 "$LOCALAPPDATA\${PRODUCTNAME}"
       ${EndIf}
       IfFileExists "$4\uninstall.exe" 0 force_clean_old
       ClearErrors
