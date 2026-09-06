@@ -11,11 +11,11 @@
     "nf3": "0.3.17"
   },
   "scripts": {
-    "dev": "node scripts.with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
+    "dev": "node scripts/with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
     "build": "node scripts/with-app-env.mjs vite build && node scripts/ensure-tauri-index.mjs && node scripts/migrate.mjs",
     "db:migrate": "node scripts/migrate.mjs",
-    "build:dev": "node scripts.with-app-env.mjs vite build --mode development",
-    "preview": "node scripts.with-app-env.mjs vite preview",
+    "build:dev": "node scripts/with-app-env.mjs vite build --mode development",
+    "preview": "node scripts/with-app-env.mjs vite preview",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs'",
