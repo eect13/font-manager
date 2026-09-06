@@ -1,6 +1,6 @@
 {
   "name": "font-manager",
-  "version": "1.0.130",
+  "version": "1.0.131",
   "description": "Font Manager — FontBase-style library: Fontsource, Google Fonts, uploads, session activation, glyphs, variable axes.",
   "sideEffects": false,
   "type": "module",
@@ -11,11 +11,11 @@
     "nf3": "0.3.17"
   },
   "scripts": {
-    "dev": "node scripts/with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
+    "dev": "node scripts.with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
     "build": "node scripts/with-app-env.mjs vite build && node scripts/ensure-tauri-index.mjs && node scripts/migrate.mjs",
     "db:migrate": "node scripts/migrate.mjs",
-    "build:dev": "node scripts/with-app-env.mjs vite build --mode development",
-    "preview": "node scripts/with-app-env.mjs vite preview",
+    "build:dev": "node scripts.with-app-env.mjs vite build --mode development",
+    "preview": "node scripts.with-app-env.mjs vite preview",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs'",
@@ -45,7 +45,7 @@
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-separator": "^1.1.8",
     "@radix-ui/react-slot": "^1.2.4",
-    "@radix-ui/react-switch": "^1.2.6",
+    "@radix-ui/react-switch": "^2.2.6",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toggle": "^1.1.10",
     "@radix-ui/react-toggle-group": "^1.1.11",
