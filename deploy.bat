@@ -1,6 +1,22 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0"
+
+if not exist "%~dp0package.json" (
+  echo.
+  echo This is not the Font Manager project folder.
+  echo GitHub zip: open the inner font-manager-main folder, then double-click deploy.bat there.
+  echo.
+  pause
+  exit /b 1
+)
+if not exist "%~dp0scripts\deploy.mjs" (
+  echo.
+  echo scripts\deploy.mjs is missing. Re-download the repo zip and run deploy.bat from that folder.
+  echo.
+  pause
+  exit /b 1
+)
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -16,6 +32,6 @@ if errorlevel 1 (
 echo Building Font Manager installers...
 echo Leave this window open. First build can take a long time.
 echo.
-node scripts\deploy.mjs
+node "%~dp0scripts\deploy.mjs"
 echo.
 pause

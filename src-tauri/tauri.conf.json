@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Font Manager",
-  "version": "1.0.132",
+  "version": "1.0.133",
   "identifier": "app.fontmanager.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -66,7 +66,8 @@
       "allowDowngrades": true,
       "nsis": {
         "installMode": "currentUser",
-        "template": "windows/installer.nsi",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "installerHooks": "windows/hooks.nsh"
       }
     }

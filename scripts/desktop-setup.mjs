@@ -29,16 +29,35 @@ function fail(msg, extra) {
 }
 
 function which(cmd) {
-  const probe = WIN ? "where" : "which";
-  const r = spawnSync(probe, [cmd], { stdio: "ignore", shell: WIN });
+  const r = spawnSync(WIN ? "where.exe" : "which", [cmd], {
+    stdio: "ignore",
+    shell: false,
+    windowsHide: true,
+  });
   return r.status === 0;
 }
 
 function run(cmd, cmdArgs, opts = {}) {
+  if (WIN) {
+    const line = [cmd, ...cmdArgs]
+      .map((a) => {
+        const s = String(a);
+        return /[\s&()^<>|]/.test(s) || s.includes('"') ? `"${s.replace(/"/g, '\\"')}"` : s;
+      })
+      .join(" ");
+    const r = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", line], {
+      cwd: ROOT,
+      stdio: "inherit",
+      shell: false,
+      windowsVerbatimArguments: true,
+      env: process.env,
+      ...opts,
+    });
+    return r.status ?? 1;
+  }
   const r = spawnSync(cmd, cmdArgs, {
     cwd: ROOT,
     stdio: "inherit",
-    shell: WIN,
     env: process.env,
     ...opts,
   });

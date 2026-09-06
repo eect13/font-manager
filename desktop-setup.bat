@@ -1,6 +1,14 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0"
+
+if not exist "%~dp0package.json" (
+  echo.
+  echo GitHub zip: open the inner font-manager-main folder, then run this file.
+  echo.
+  pause
+  exit /b 1
+)
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -14,6 +22,6 @@ if errorlevel 1 (
 )
 
 echo Running Font Manager desktop setup...
-node scripts\desktop-setup.mjs --run
+node "%~dp0scripts\desktop-setup.mjs" --run
 echo.
 pause
