@@ -1887,8 +1887,21 @@ pub fn save_library_file(app: AppHandle, family: String, file_name: String, byte
 #[tauri::command]
 pub fn remove_library_file(app: AppHandle, family: String, file_name: String) -> Result<(), String> {
     let path = family_dir(&app, &family)?.join(sanitize(&file_name));
+    unregister_path(&path);
+    gdi_flush_local();
     delete_font_file(&path)?;
+    // Drop empty family folder so Delete does not leave orphans.
+    if let Some(dir) = path.parent() {
+        let mut left = Vec::new();
+        walk_font_files(dir, &mut left);
+        if left.is_empty() {
+            let _ = fs::remove_file(family_complete_marker(dir));
+            let _ = fs::remove_file(dir.join(".fontsource-version"));
+            let _ = fs::remove_dir(dir);
+        }
+    }
     notify_fonts_changed();
+    let _ = app;
     Ok(())
 }
 
@@ -1962,7 +1975,8 @@ fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
 
 #[tauri::command]
 pub fn unload_font_family(app: AppHandle, family: String) -> Result<u32, String> {
-    unload_font_families(app, vec![family])
+    // Sync — callers that delete next must finish Remove before DeleteFile.
+    Ok(unload_now(&app, &[family]))
 }
 
 #[tauri::command]
@@ -1971,6 +1985,7 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
     if n == 0 {
         return Ok(0);
     }
+    // Bulk deactivate stays background so Activate-all off does not freeze UI.
     thread::spawn(move || {
         let _ = unload_now(&app, &families);
     });
