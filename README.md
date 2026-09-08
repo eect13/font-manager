@@ -1,4 +1,4 @@
-# Font Manager **1.0.137**
+# Font Manager **1.0.138**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -45,6 +45,8 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 | **Repair** | Re-fetch when `.complete` is missing (partial faces) | Register when done |
 
 **X** quits the app (session fonts unload; Documents files stay). A family is **ready** only with a `.complete` marker (full face set) — one leftover TTF is incomplete and needs Repair/Retry, not a silent skip. Ready families register again on next launch — no re-download.
+
+**Documents sync.** `Documents / Font Manager` (plus `Activated` / `Library` children) stays in sync with the library via Scan and hydrate. It is not a watch folder. Windows Fonts stays read-only System. WOFF/WOFF2 on disk are preview-only — not counted as corrupt.
 
 ---
 

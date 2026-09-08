@@ -2,10 +2,12 @@ import { toast } from "sonner";
 import {
   forbiddenWatchReason,
   inDesktopShell,
+  isManagedFontManagerRoot,
   listWatchFolder,
   pickWatchFolder,
   readWatchFiles,
 } from "@/lib/desktop/open-fonts";
+import { syncManagedDocumentsRoot } from "./os-activate";
 import { useFontStore } from "./store";
 
 function norm(path: string) {
@@ -90,6 +92,11 @@ export async function refreshWatchedFolders(): Promise<void> {
     const allMtimes: number[] = [];
     for (const folder of watched) {
       const root = folder.watchPath!;
+      if (isManagedFontManagerRoot(root)) {
+        // Never treat managed store as a watch folder — sync library from Documents instead.
+        await syncManagedDocumentsRoot();
+        continue;
+      }
       const blocked = forbiddenWatchReason(root);
       if (blocked) continue;
       const listed = await listWatchFolder(root);

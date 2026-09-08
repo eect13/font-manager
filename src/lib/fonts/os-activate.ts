@@ -255,6 +255,20 @@ export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
   }
 }
 
+/** Keep library diskFamilies in sync with Documents\Font Manager (incl. Activated/Library). */
+export async function syncManagedDocumentsRoot(): Promise<DiskFamilyInfo[]> {
+  const rows = await scanDiskFamilies();
+  if (!rows.length) return rows;
+  const names = rows.map((r) => r.name);
+  void import("./store").then(({ useFontStore }) => {
+    useFontStore.getState().setDiskFamilies(names);
+  });
+  void import("./loader").then(({ noteDiskFamilies }) => {
+    noteDiskFamilies(names);
+  });
+  return rows;
+}
+
 export async function pruneUnknownFolders(keep: string[]): Promise<number> {
   if (!(await inDesktopShell())) return 0;
   try {
