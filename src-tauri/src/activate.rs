@@ -1284,6 +1284,7 @@ fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
         if intact.is_empty() {
             if gc {
                 let _ = fs::remove_file(path.join(".complete"));
+                let _ = fs::remove_file(path.join(".expected"));
                 let _ = fs::remove_file(path.join(".fontsource-version"));
                 let _ = fs::remove_dir_all(path);
             }
@@ -1384,20 +1385,78 @@ fn family_complete_marker(dir: &Path) -> PathBuf {
     dir.join(".complete")
 }
 
-fn mark_family_complete(root: &Path) {
-    let _ = fs::write(family_complete_marker(root), b"1");
+fn family_expected_marker(dir: &Path) -> PathBuf {
+    dir.join(".expected")
+}
+
+fn write_expected_faces(dir: &Path, expected: usize) {
+    let _ = fs::write(family_expected_marker(dir), expected.to_string().as_bytes());
+}
+
+fn read_expected_faces(dir: &Path) -> Option<usize> {
+    if let Ok(s) = fs::read_to_string(family_expected_marker(dir)) {
+        if let Ok(n) = s.trim().parse::<usize>() {
+            if n > 0 {
+                return Some(n);
+            }
+        }
+    }
+    // New stamps store the expected count in `.complete` itself.
+    if let Ok(s) = fs::read_to_string(family_complete_marker(dir)) {
+        if let Ok(n) = s.trim().parse::<usize>() {
+            if n > 1 {
+                // Trust multi-face counts without a sidecar. Legacy stamps were bare "1".
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+fn count_intact_faces(dir: &Path) -> usize {
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    files.iter().filter(|p| ttf_intact(p)).count()
+}
+
+fn clear_complete_marker(dir: &Path) {
+    let _ = fs::remove_file(family_complete_marker(dir));
+}
+
+/// Stamp `.complete` only for a full face set. Body + `.expected` store the count.
+fn mark_family_complete(root: &Path, expected: usize) {
+    if expected == 0 {
+        return;
+    }
+    write_expected_faces(root, expected);
+    let _ = fs::write(family_complete_marker(root), expected.to_string().as_bytes());
 }
 
 fn dir_is_complete(dir: &Path) -> bool {
     family_complete_marker(dir).is_file()
 }
 
-/// Ready = .complete sentinel plus at least one intact TTF/OTF (full face set).
-/// Any one TTF without .complete is incomplete — Activate must Repair, not skip.
+/// Drop lying `.complete` when intact faces are below the expected full set.
+/// Keeps Documents files intact — only the sentinel is removed so Repair appears.
+fn verify_complete_marker(dir: &Path) {
+    if !dir_is_complete(dir) {
+        return;
+    }
+    let Some(expected) = read_expected_faces(dir) else {
+        return;
+    };
+    if count_intact_faces(dir) < expected {
+        clear_complete_marker(dir);
+    }
+}
+
+/// Ready = honest `.complete` plus at least one intact TTF/OTF (full face set).
+/// Any one TTF without `.complete` is incomplete — Activate must Repair, not skip.
 fn family_is_ready(app: &AppHandle, family: &str) -> bool {
-    family_locations(app, family)
-        .iter()
-        .any(|dir| dir_is_complete(dir) && dir_has_intact(dir))
+    family_locations(app, family).iter().any(|dir| {
+        verify_complete_marker(dir);
+        dir_is_complete(dir) && dir_has_intact(dir)
+    })
 }
 
 fn family_is_incomplete(app: &AppHandle, family: &str) -> bool {
@@ -1413,6 +1472,7 @@ fn purge_family_files_result(app: &AppHandle, family: &str) -> Result<(), String
     let mut last_err = String::new();
     for dir in family_locations(app, family) {
         let _ = fs::remove_file(family_complete_marker(&dir));
+        let _ = fs::remove_file(family_expected_marker(&dir));
         let _ = fs::remove_file(dir.join(".fontsource-version"));
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
@@ -1566,7 +1626,9 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     fs::create_dir_all(&root).map_err(|e| format!("could not create folder: {e}"))?;
     let mut wrote = 0usize;
     let mut locked = false;
+    let mut planned = 0usize;
     let (faces, version) = fetch_fontsource_faces(client, &slug);
+    planned = faces.len();
     for (name, bytes) in faces {
         if bulk().cancel.load(Ordering::SeqCst) {
             break;
@@ -1590,7 +1652,9 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
         let _ = fs::write(root.join(".fontsource-version"), version.as_bytes());
     }
     if wrote == 0 {
-        for (name, bytes) in fetch_google_family_faces(client, family, &slug) {
+        let google_faces = fetch_google_family_faces(client, family, &slug);
+        planned = google_faces.len();
+        for (name, bytes) in google_faces {
             if bulk().cancel.load(Ordering::SeqCst) {
                 break;
             }
@@ -1610,18 +1674,37 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
             }
         }
     }
+    if planned > 0 {
+        write_expected_faces(&root, planned);
+    }
     if needs_compat_pack(&slug) && (wrote > 0 || existing > 0) {
         install_compat_pack(client, &root, family, &slug);
     }
     let total = register_intact_family(app, family);
+    if bulk().cancel.load(Ordering::SeqCst) {
+        clear_complete_marker(&root);
+        return Err("cancelled".into());
+    }
     if total == 0 {
+        clear_complete_marker(&root);
         if locked {
             return Err("files locked — close Word or Adobe, then Retry".into());
         }
         return Err("no installable TTF/OTF (Google CSS is WOFF2-only; Fontsource had no TTF)".into());
     }
-    mark_family_complete(&root);
-    Ok(total)
+    let intact = count_intact_faces(&root);
+    // Only stamp when the on-disk face count meets the expected full set.
+    if planned > 0 && intact >= planned {
+        mark_family_complete(&root, planned);
+        Ok(total)
+    } else {
+        clear_complete_marker(&root);
+        if planned == 0 {
+            Err("could not enumerate full face set — Repair".into())
+        } else {
+            Err(format!("incomplete face set ({intact}/{planned}) — Repair"))
+        }
+    }
 }
 
 const DOWNLOAD_WORKERS: usize = 3;
@@ -1874,7 +1957,10 @@ pub fn install_font_file(app: AppHandle, family: String, file_name: String, byte
     let root = family_dir(&app, &family)?;
     let path = root.join(sanitize(&file_name));
     write_font_file(&path, &bytes)?;
-    mark_family_complete(&root);
+    let intact = count_intact_faces(&root);
+    if intact > 0 {
+        mark_family_complete(&root, intact);
+    }
     notify_fonts_changed_maybe();
     Ok(())
 }
@@ -1896,6 +1982,7 @@ pub fn remove_library_file(app: AppHandle, family: String, file_name: String) ->
         walk_font_files(dir, &mut left);
         if left.is_empty() {
             let _ = fs::remove_file(family_complete_marker(dir));
+            let _ = fs::remove_file(family_expected_marker(dir));
             let _ = fs::remove_file(dir.join(".fontsource-version"));
             let _ = fs::remove_dir(dir);
         }
@@ -2158,6 +2245,7 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
     let mut targets = Vec::new();
     if families.is_empty() {
         for_family_dirs(&app, |dir| {
+            verify_complete_marker(dir);
             if dir_has_intact(dir) && !dir_is_complete(dir) {
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     targets.push(name.to_string());
@@ -2203,7 +2291,7 @@ pub struct DiskFamily {
     pub bytes: u64,
     pub files: usize,
     pub corrupt: usize,
-    /// Intact faces present but `.complete` missing — needs Repair.
+    /// Intact faces present but honest `.complete` missing (or face-count short) — needs Repair.
     pub incomplete: bool,
 }
 
@@ -2243,6 +2331,7 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
         if intact == 0 && corrupt == 0 && preview_only == 0 {
             return;
         }
+        verify_complete_marker(dir);
         let incomplete = intact > 0 && !dir_is_complete(dir);
         out.push(DiskFamily {
             name,
