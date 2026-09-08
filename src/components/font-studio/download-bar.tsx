@@ -95,10 +95,11 @@ export function DownloadBar() {
           )}
           <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
             <X />
-            Stop
+            Cancel
           </Button>
         </>
-      ) : job.failedNames.length ? (
+      ) : null}
+      {!job.running && !job.paused && job.failedNames.length ? (
         <>
           <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => void retryFailedDownloads()}>
             Retry
