@@ -1,4 +1,4 @@
-# Font Manager **1.0.141**
+# Font Manager **1.0.142**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -24,7 +24,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 | --- | --- |
 | **Library** | Search, sort, grid/list. ~2,100 faces. Virtual-scrolled cards with live specimens. |
 | **Activate** | Session fonts via `AddFontResourceExW`. Other apps see them until you Deactivate or quit. |
-| **Google Fonts** | Official list (~1,946). Overflow: Activate remaining / Deactivate all / Scan disk. |
+| **Google Fonts** | Official list (~1,946). Overflow: Activate remaining / Deactivate all / Scan disk (Repair **or** Remove extras — not both). |
 | **Fontsource** | Exclusive `type: other` families (~150). Same overflow menu. |
 | **Uploads** | Drop files or a folder. Stay in Documents. Deactivate unloads; Delete removes files. |
 | **System** | View-only snapshot of fonts already on the PC. Never uninstalls OS faces. |
