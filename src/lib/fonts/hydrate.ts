@@ -7,7 +7,7 @@ import { refineLicense } from "./license";
 import { findFont, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
-import { restoreSessionFromDisk, rememberSessionFamilies, listSessionFamilies, pruneUnknownFolders } from "./os-activate";
+import { restoreSessionFromDisk, rememberSessionFamilies, listSessionFamilies, pruneUnknownFolders, syncManagedDocumentsRoot } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { startWatchPolling } from "./watch-folder";
 import { loadSystemFonts } from "./system-fonts";
@@ -131,6 +131,7 @@ export function useHydrateFonts() {
       const wantIds = Array.from(new Set(useFontStore.getState().activated));
       const desktop = await inDesktopShell();
       if (desktop) {
+        void syncManagedDocumentsRoot();
         const sessionNames = await listSessionFamilies();
         const persistNames: string[] = [];
         for (const id of wantIds) {

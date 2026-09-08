@@ -2,10 +2,12 @@ import { toast } from "sonner";
 import {
   forbiddenWatchReason,
   inDesktopShell,
+  isManagedFontManagerRoot,
   listWatchFolder,
   pickWatchFolder,
   readWatchFiles,
 } from "@/lib/desktop/open-fonts";
+import { managedDocumentsRoot, syncManagedDocumentsRoot } from "./os-activate";
 import { useFontStore } from "./store";
 
 function norm(path: string) {
@@ -24,6 +26,11 @@ let inflight = false;
 let queued = false;
 let started = false;
 const unwatchers = new Map<string, () => void>();
+let managedUnwatch: (() => void) | null = null;
+let managedRootKey = "";
+let managedDebounce = 0;
+let managedPoll = 0;
+let managedVisBound = false;
 
 function signature(paths: string[], sizes: number[], mtimes: number[]) {
   return paths
@@ -90,6 +97,11 @@ export async function refreshWatchedFolders(): Promise<void> {
     const allMtimes: number[] = [];
     for (const folder of watched) {
       const root = folder.watchPath!;
+      if (isManagedFontManagerRoot(root)) {
+        // Never treat managed store as a watch folder — sync library from Documents instead.
+        await syncManagedDocumentsRoot();
+        continue;
+      }
       const blocked = forbiddenWatchReason(root);
       if (blocked) continue;
       const listed = await listWatchFolder(root);
@@ -182,10 +194,69 @@ async function bindNativeWatch() {
   }
 }
 
+
+function kickManagedSync() {
+  window.clearTimeout(managedDebounce);
+  managedDebounce = window.setTimeout(() => {
+    void syncManagedDocumentsRoot();
+  }, 320);
+}
+
+/** App-owned live sync for Documents\Font Manager. Not a user watch folder —
+ * forbiddenWatch still blocks picking this root / Windows Fonts. */
+async function bindManagedRootWatch() {
+  if (!(await inDesktopShell())) return;
+  const root = await managedDocumentsRoot();
+  if (!root) return;
+  // Only the managed Documents store — never Windows Fonts.
+  const n = root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  if (n.includes("/windows/fonts")) return;
+  if (!isManagedFontManagerRoot(root) && !n.endsWith("/documents/font manager") && !n.endsWith("/documents/font%20manager")) {
+    return;
+  }
+  const key = norm(root);
+  if (managedUnwatch && managedRootKey === key) return;
+  if (managedUnwatch) {
+    try {
+      managedUnwatch();
+    } catch {
+      /* ignore */
+    }
+    managedUnwatch = null;
+  }
+  managedRootKey = key;
+  try {
+    const { watch } = await import("@tauri-apps/plugin-fs");
+    managedUnwatch = await watch(root, () => kickManagedSync(), {
+      delayMs: 320,
+      recursive: true,
+    });
+  } catch {
+    /* installer without fs watch — poll below */
+  }
+  const tickManagedPoll = () => {
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    const native = Boolean(managedUnwatch);
+    const ms = hidden ? 45_000 : native ? 25_000 : 10_000;
+    window.clearInterval(managedPoll);
+    managedPoll = window.setInterval(() => void syncManagedDocumentsRoot(), ms);
+  };
+  tickManagedPoll();
+  if (typeof document !== "undefined" && !managedVisBound) {
+    managedVisBound = true;
+    document.addEventListener("visibilitychange", () => {
+      tickManagedPoll();
+      if (document.visibilityState === "visible") void syncManagedDocumentsRoot();
+    });
+  }
+}
+
 export function startWatchPolling() {
   if (started || typeof window === "undefined") return;
   started = true;
   window.setTimeout(() => {
+    void bindManagedRootWatch();
+    void syncManagedDocumentsRoot();
     void bindNativeWatch();
     void refreshWatchedFolders();
     const tick = () => {

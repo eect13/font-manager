@@ -1,4 +1,4 @@
-# Font Manager **1.0.133**
+# Font Manager **1.0.142**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -24,7 +24,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 | --- | --- |
 | **Library** | Search, sort, grid/list. ~2,100 faces. Virtual-scrolled cards with live specimens. |
 | **Activate** | Session fonts via `AddFontResourceExW`. Other apps see them until you Deactivate or quit. |
-| **Google Fonts** | Official list (~1,946). Overflow: Activate remaining / Deactivate all / Scan disk. |
+| **Google Fonts** | Official list (~1,946). Overflow: Activate remaining / Deactivate all / Scan disk (Repair **or** Remove extras — not both). |
 | **Fontsource** | Exclusive `type: other` families (~150). Same overflow menu. |
 | **Uploads** | Drop files or a folder. Stay in Documents. Deactivate unloads; Delete removes files. |
 | **System** | View-only snapshot of fonts already on the PC. Never uninstalls OS faces. |
@@ -42,8 +42,11 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 | **Activate** | Download if missing; keep the TTF | Register for this session |
 | **Deactivate** | File stays | Unload |
 | **Delete** | Remove the family folder | Unload |
+| **Repair** | Re-fetch when `.complete` is missing or face count is short of expected | Register when done |
 
-**X** quits the app (session fonts unload). Families already saved in Documents are registered again on next launch — no re-download.
+**X** quits the app (session fonts unload; Documents files stay). A family is **ready** only with a `.complete` marker stamped when the on-disk face count matches the expected full set — partial downloads do not stamp, and Scan/hydrate deletes lying `.complete` markers so Repair appears. Ready families register again on next launch — no re-download.
+
+**Documents sync.** `Documents / Font Manager` (plus `Activated` / `Library` children) stays in sync with the library via Scan, hydrate, and an app-owned live folder watcher while the window is open. Users still cannot add it (or Windows Fonts) as a watch folder. WOFF/WOFF2 on disk are preview-only — not counted as corrupt.
 
 ---
 

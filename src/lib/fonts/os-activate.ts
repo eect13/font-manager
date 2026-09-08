@@ -41,11 +41,11 @@ function notifyDownloadResult(done: number, failed: number, names: string[], det
     toast.error(
       `${names.length} typeface${names.length === 1 ? "" : "s"} failed — tap Retry`,
       {
-        description: `${preview}${extra}. Tried jsDelivr + unpkg with cache-bust. Re-upload a TTF if Retry still fails.`,
+        description: `${preview}${extra}. Tried jsDelivr + unpkg with cache-bust. Close Word/Adobe if locked, or Open folder and delete then Retry.`,
         duration: 24_000,
         action: {
-          label: "Retry",
-          onClick: () => void retryFailedDownloads(),
+          label: "Open folder",
+          onClick: () => void openActivatedFolder(),
         },
       },
     );
@@ -92,36 +92,70 @@ function applyReadyFamilies(names: string[]) {
   });
 }
 
+const MAX_RETRY_ATTEMPTS = 3;
+const retryAttempts = new Map<string, number>();
+
 export async function retryFailedDownloads(): Promise<void> {
   if (job.running && job.mode === "download") {
     startGooglePoll();
-    toast.message("Download already running", { description: "Wait for it to finish, then Retry if names remain." });
+    toast.message("Download already running", {
+      description: "Cancel first if you need to stop, then Retry remaining failures.",
+    });
     return;
   }
   const names = (lastFailedNames.length ? lastFailedNames : job.failedNames).slice();
   if (!names.length) {
     toast.message("Nothing to retry", {
-      description: "No failed families in this session. Delete files, then Activate again.",
+      description: "No failed families in this session. Delete files in Documents, then Activate again.",
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
     });
     return;
   }
-  const added = await tauriInvoke<number>("retry_google_downloads", { families: names }).catch(
-    () => 0,
-  );
-  if (added) {
-    lastFailedNames = [];
-    toast.message("Retrying — old files are replaced", {
-      description: `${added.toLocaleString()} ${added === 1 ? "family" : "families"}. GDI is released before delete. Close Word or Adobe if a file stays locked.`,
+  const capped: string[] = [];
+  const exhausted: string[] = [];
+  for (const name of names) {
+    const key = name.trim().toLowerCase();
+    if ((retryAttempts.get(key) ?? 0) >= MAX_RETRY_ATTEMPTS) exhausted.push(name);
+    else capped.push(name);
+  }
+  if (!capped.length) {
+    toast.error("Retry limit reached — stopped", {
+      description: `${exhausted.slice(0, 6).join(", ")}${exhausted.length > 6 ? "…" : ""}. Close Word/Adobe, Explorer-delete the family folder (empty = missing), then Activate again.`,
+      duration: 28_000,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
     });
-    startGooglePoll();
     return;
   }
-  toast.message("Retry skipped — files already on disk", {
-    description:
-      names.slice(0, 6).join(", ") +
-      (names.length > 6 ? "…" : "") +
-      ". Delete the family folder if you want a fresh download.",
-  });
+  for (const name of capped) {
+    const key = name.trim().toLowerCase();
+    retryAttempts.set(key, (retryAttempts.get(key) ?? 0) + 1);
+  }
+  try {
+    const added = await tauriInvoke<number>("retry_google_downloads", { families: capped });
+    if (added) {
+      lastFailedNames = exhausted.slice();
+      toast.message("Retrying — old files are replaced", {
+        description: `${added.toLocaleString()} ${added === 1 ? "family" : "families"} (attempt capped at ${MAX_RETRY_ATTEMPTS}). Cancel anytime. Close Word or Adobe if a file stays locked.`,
+      });
+      startGooglePoll();
+      return;
+    }
+    toast.error("Retry did not queue — not a silent success", {
+      description:
+        capped.slice(0, 6).join(", ") +
+        (capped.length > 6 ? "…" : "") +
+        ". Folder may still be locked, or already queued. Open Documents, delete the family folder if empty/corrupt, then Retry.",
+      duration: 24_000,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "retry failed");
+    toast.error("Retry failed", {
+      description: msg,
+      duration: 24_000,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+    });
+  }
 }
 
 export async function skipFailedDownloads(): Promise<void> {
@@ -204,7 +238,22 @@ export async function listSessionFamilies(): Promise<string[]> {
   }
 }
 
-export type DiskFamilyInfo = { name: string; bytes: number; files: number; corrupt?: number };
+export type DiskFamilyInfo = {
+  name: string;
+  bytes: number;
+  files: number;
+  corrupt?: number;
+  incomplete?: boolean;
+};
+
+export async function managedDocumentsRoot(): Promise<string | null> {
+  if (!(await inDesktopShell())) return null;
+  try {
+    return (await tauriInvoke<string>("activation_folder")) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
   if (!(await inDesktopShell())) return [];
@@ -215,11 +264,52 @@ export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
   }
 }
 
+/** Keep library diskFamilies in sync with Documents\Font Manager (incl. Activated/Library). */
+export async function syncManagedDocumentsRoot(): Promise<DiskFamilyInfo[]> {
+  const rows = await scanDiskFamilies();
+  if (!rows.length) return rows;
+  const names = rows.map((r) => r.name);
+  void import("./store").then(({ useFontStore }) => {
+    useFontStore.getState().setDiskFamilies(names);
+  });
+  void import("./loader").then(({ noteDiskFamilies }) => {
+    noteDiskFamilies(names);
+  });
+  return rows;
+}
+
 export async function pruneUnknownFolders(keep: string[]): Promise<number> {
   if (!(await inDesktopShell())) return 0;
   try {
     return (await tauriInvoke<number>("prune_unknown_folders", { keep })) ?? 0;
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "prune failed");
+    toast.error("Could not prune Documents folders", { description: msg });
+    return 0;
+  }
+}
+
+export async function repairIncompleteFamilies(families: string[] = []): Promise<number> {
+  if (!(await inDesktopShell())) return 0;
+  try {
+    const n = (await tauriInvoke<number>("repair_incomplete_families", { families })) ?? 0;
+    if (n) {
+      toast.message("Repairing incomplete families", {
+        description: `${n.toLocaleString()} ${n === 1 ? "family" : "families"} — re-fetching missing faces.`,
+      });
+      startGooglePoll();
+    } else {
+      toast.message("Nothing to repair", {
+        description: "Every on-disk family has a .complete marker, or Documents is empty.",
+      });
+    }
+    return n;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "repair failed");
+    toast.error("Repair failed", {
+      description: msg,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+    });
     return 0;
   }
 }
@@ -572,8 +662,17 @@ export function cancelDownloadQueue() {
   installQueue.length = 0;
   removeQueue.length = 0;
   workers = 0;
+  const keepFailed = (lastFailedNames.length ? lastFailedNames : job.failedNames).slice();
+  const keepDetails = job.failedDetails.slice();
   ignoreProgress = true;
-  job = { ...EMPTY };
+  // Cancel always stops the queue; keep failures so Retry stays visible.
+  job = {
+    ...EMPTY,
+    failed: keepFailed.length,
+    failedNames: keepFailed,
+    failedDetails: keepDetails,
+  };
+  lastFailedNames = keepFailed;
   emit();
   unlockUi();
   void tauriInvoke("cancel_google_downloads").catch(() => undefined);
@@ -582,8 +681,14 @@ export function cancelDownloadQueue() {
     pollTimer = 0;
     rustSeenRunning = false;
   }
-  toast.message("Background download stopped", {
-    description: "Fonts already saved stay in Documents → Font Manager.",
+  window.setTimeout(() => {
+    ignoreProgress = false;
+  }, 600);
+  toast.message("Download cancelled", {
+    description: keepFailed.length
+      ? `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`
+      : "Fonts already saved stay in Documents → Font Manager.",
+    action: { label: "Open folder", onClick: () => void openActivatedFolder() },
   });
   void import("./store").then(({ useFontStore }) => {
     useFontStore.getState().clearPendingActivate();
@@ -743,13 +848,39 @@ export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   void pumpRemove(batchId);
 }
 
-export async function deleteFontFiles(font: FontRecord): Promise<void> {
-  if (!(await inDesktopShell())) return;
+/** Delete family folder from Documents after unload. Surfaces locks — no silent success. */
+export async function deleteFontFiles(font: FontRecord): Promise<boolean> {
+  if (font.source === "system") {
+    toast.message("System fonts are read-only", {
+      description: "Font Manager never deletes C:\\Windows\\Fonts.",
+    });
+    return false;
+  }
+  if (!(await inDesktopShell())) {
+    toast.message("Delete files needs the desktop app");
+    return false;
+  }
   try {
     await tauriInvoke("uninstall_font_family", { family: font.family });
     installedCache.delete(font.family.toLowerCase());
-  } catch {
-    /* ignore */
+    void import("./store").then(({ useFontStore }) => {
+      const s = useFontStore.getState();
+      s.setActivatedMany([font.id], false);
+      const next = s.diskFamilies.filter((n) => n.toLowerCase() !== font.family.toLowerCase());
+      s.setDiskFamilies(next);
+    });
+    toast.success(`Deleted ${font.family}`, {
+      description: "Removed from Documents → Font Manager. Catalog entry stays.",
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "delete failed");
+    toast.error(`Could not delete ${font.family}`, {
+      description: msg,
+      duration: 20_000,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+    });
+    return false;
   }
 }
 
