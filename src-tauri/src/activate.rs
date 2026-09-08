@@ -1436,13 +1436,18 @@ fn dir_is_complete(dir: &Path) -> bool {
     family_complete_marker(dir).is_file()
 }
 
-/// Drop lying `.complete` when intact faces are below the expected full set.
-/// Keeps Documents files intact — only the sentinel is removed so Repair appears.
+/// Drop lying `.complete` when intact faces are below the expected full set,
+/// or when there is no usable expected face count (legacy bare `"1"` body,
+/// missing/empty/unparsable `.expected`). Keeps Documents files intact — only
+/// the sentinel is removed so Repair appears. New expected-aware stamps
+/// (`.expected` sidecar and/or `.complete` body with count > 1) stay trusted.
 fn verify_complete_marker(dir: &Path) {
     if !dir_is_complete(dir) {
         return;
     }
     let Some(expected) = read_expected_faces(dir) else {
+        // Legacy bare "1" / unknown expected — untrusted; clear so Repair shows.
+        clear_complete_marker(dir);
         return;
     };
     if count_intact_faces(dir) < expected {
@@ -2486,4 +2491,81 @@ pub fn google_download_progress() -> GoogleDlProgress {
             ready_names: Vec::new(),
             skipped: 0,
         })
+}
+
+#[cfg(test)]
+mod complete_marker_tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_family_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fm-complete-{}-{}-{}",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn verify_clears_legacy_bare_complete() {
+        let dir = temp_family_dir("bare");
+        fs::write(dir.join(".complete"), b"1").unwrap();
+        verify_complete_marker(&dir);
+        assert!(
+            !family_complete_marker(&dir).is_file(),
+            "legacy bare .complete \"1\" must be cleared"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_clears_complete_when_expected_missing() {
+        let dir = temp_family_dir("empty");
+        fs::write(dir.join(".complete"), b"").unwrap();
+        verify_complete_marker(&dir);
+        assert!(!family_complete_marker(&dir).is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_keeps_expected_aware_stamp_when_faces_match() {
+        let dir = temp_family_dir("ok");
+        fs::write(dir.join(".expected"), b"1").unwrap();
+        fs::write(dir.join(".complete"), b"1").unwrap();
+        // Minimal intact TTF: magic + pad to >= 256 bytes.
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("Regular.ttf"), &fake).unwrap();
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            "honest .expected=1 stamp must remain"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_keeps_multiface_complete_body_without_sidecar() {
+        let dir = temp_family_dir("multi");
+        fs::write(dir.join(".complete"), b"2").unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("Regular.ttf"), &fake).unwrap();
+        fs::write(dir.join("Bold.ttf"), &fake).unwrap();
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            "expected-aware .complete body >1 must remain when faces match"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
