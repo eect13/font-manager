@@ -1979,8 +1979,11 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
 
 #[tauri::command]
 pub fn uninstall_font_family(app: AppHandle, family: String) -> Result<(), String> {
+    // Await unload on this thread before DeleteFile — do not race GDI.
     let _ = unload_now(&app, &[family.clone()]);
-    purge_family_files(&app, &family);
+    gdi_flush_local();
+    purge_family_files_result(&app, &family)?;
+    // Empty after Explorer-delete is success (missing = already gone).
     Ok(())
 }
 

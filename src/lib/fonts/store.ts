@@ -124,7 +124,10 @@ interface FontState extends PersistedSlice {
   setCollectionWatch: (id: string, watchPath: string | undefined, autoActivate?: boolean) => void;
   setCollectionAutoActivate: (id: string, autoActivate: boolean) => void;
   renameCollection: (id: string, name: string) => void;
-  deleteCollection: (id: string) => { folders: number; fonts: number };
+  deleteCollection: (
+    id: string,
+    opts?: { deleteFromDisk?: boolean },
+  ) => { folders: number; fonts: number };
   moveCollection: (id: string, parentId: string | null) => void;
   toggleInCollection: (collectionId: string, fontId: string) => void;
   addToCollection: (collectionId: string, fontId: string) => void;
@@ -658,7 +661,7 @@ export const useFontStore = create<FontState>()(
             c.id === id ? { ...c, name: name.trim() || c.name } : c,
           ),
         })),
-      deleteCollection: (id) => {
+      deleteCollection: (id, opts) => {
         const s = get();
         const impact = folderDeleteImpact(s.collections, s.localFonts, id);
         if (!impact.folderIds.length) return { folders: 0, fonts: 0 };
@@ -687,9 +690,10 @@ export const useFontStore = create<FontState>()(
           scope: nextScope,
         });
         for (const font of doomed) {
-          void uninstallFontOnSystem(font);
           void unloadLocalFont(font.id);
           void idbDelete(font.id);
+          if (opts?.deleteFromDisk) void removeUploadFromDisk(font);
+          else void uninstallFontOnSystem(font);
         }
         return { folders: impact.folderIds.length, fonts: impact.localFontIds.length };
       },
@@ -938,7 +942,12 @@ export const useFontStore = create<FontState>()(
           })),
         }));
         if (font?.originPath) return;
-        if (font) void removeUploadFromDisk(font);
+        if (font) {
+          const ok = await removeUploadFromDisk(font);
+          if (!ok) {
+            /* toast already shown; library row already removed — orphan risk noted */
+          }
+        }
       },
       clearLocalFonts: async () => {
         const fonts = get().localFonts.slice();

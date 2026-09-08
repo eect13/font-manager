@@ -1,9 +1,10 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type RefObject } from "react";
-import { GripVertical, Heart, Italic, Power } from "lucide-react";
+import { GripVertical, Heart, Italic, Power, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
+import { deleteFontFiles } from "@/lib/fonts/os-activate";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
@@ -125,6 +126,7 @@ export const FontCard = memo(function FontCard({
   const hasCollections = useFontStore((s) => s.collections.length > 0);
   const toggleActivated = useFontStore((s) => s.toggleActivated);
   const toggleFavorite = useFontStore((s) => s.toggleFavorite);
+  const removeLocalFont = useFontStore((s) => s.removeLocalFont);
   const selectFont = useFontStore((s) => s.selectFont);
   const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
   const storedAxes = useLiveAxes(font.id);
@@ -401,6 +403,26 @@ export const FontCard = memo(function FontCard({
         >
           <Heart className={cn("size-3.5", favorite && "fill-current")} />
         </button>
+        {font.source !== "system" ? (
+          <button
+            type="button"
+            title={
+              font.source === "local"
+                ? "Delete — remove from library and Documents"
+                : "Delete files — remove from Documents (catalog stays)"
+            }
+            aria-label="Delete"
+            onPointerDown={isolate}
+            onClick={(e) => {
+              isolate(e);
+              if (font.source === "local") void removeLocalFont(font.id);
+              else void deleteFontFiles(font);
+            }}
+            className="flex size-8 items-center justify-center rounded-full bg-background/80 text-destructive opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        ) : null}
         {font.source === "system" ? (
           <span
             title="System font — already installed. Read-only."

@@ -58,6 +58,7 @@ function GroupTree({
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [overId, setOverId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Collection | null>(null);
+  const [deleteFromDisk, setDeleteFromDisk] = useState(false);
   const isFolder = kind === "folder";
 
   const rows = useMemo(() => {
@@ -108,7 +109,10 @@ function GroupTree({
     setCollapsed((prev) => ({ ...prev, [parentId]: false }));
     setRenamingId(id);
   }, [isFolder]);
-  const onDelete = useCallback((folder: Collection) => setPendingDelete(folder), []);
+  const onDelete = useCallback((folder: Collection) => {
+    setDeleteFromDisk(false);
+    setPendingDelete(folder);
+  }, []);
   const onDragOver = useCallback((id: string, e: DragEvent) => {
     e.preventDefault();
     setOverId(id);
@@ -149,8 +153,11 @@ function GroupTree({
   function confirmDelete() {
     if (!pendingDelete) return;
     const name = pendingDelete.name;
-    const result = useFontStore.getState().deleteCollection(pendingDelete.id);
+    const result = useFontStore.getState().deleteCollection(pendingDelete.id, {
+      deleteFromDisk: deleteFromDisk && !pendingDelete.watchPath,
+    });
     setPendingDelete(null);
+    setDeleteFromDisk(false);
     if (result.fonts) {
       toast.success(
         `Removed ${name} and ${result.fonts.toLocaleString()} typeface${result.fonts === 1 ? "" : "s"} from the library`,
@@ -230,10 +237,21 @@ function GroupTree({
               {isFolder
                 ? "Stops watching this disk folder. Files on disk are never deleted."
                 : pendingImpact && pendingImpact.localFontIds.length > 0
-                  ? `Removes this collection${pendingImpact.folderIds.length > 1 ? " and nested collections" : ""} from the sidebar. Uploads stay in the library unless they only lived here.`
+                  ? `Removes this collection${pendingImpact.folderIds.length > 1 ? " and nested collections" : ""} from the sidebar. Uploads stay in the library unless they only lived here — or tick Delete from Documents.`
                   : "Only this collection is removed from the sidebar."}
             </DialogDescription>
           </DialogHeader>
+          {!isFolder && pendingImpact && pendingImpact.localFontIds.length > 0 ? (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={deleteFromDisk}
+                onChange={(e) => setDeleteFromDisk(e.target.checked)}
+              />
+              Also delete {pendingImpact.localFontIds.length.toLocaleString()} upload
+              {pendingImpact.localFontIds.length === 1 ? "" : "s"} from Documents
+            </label>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setPendingDelete(null)}>
               Cancel

@@ -825,13 +825,39 @@ export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   void pumpRemove(batchId);
 }
 
-export async function deleteFontFiles(font: FontRecord): Promise<void> {
-  if (!(await inDesktopShell())) return;
+/** Delete family folder from Documents after unload. Surfaces locks — no silent success. */
+export async function deleteFontFiles(font: FontRecord): Promise<boolean> {
+  if (font.source === "system") {
+    toast.message("System fonts are read-only", {
+      description: "Font Manager never deletes C:\\Windows\\Fonts.",
+    });
+    return false;
+  }
+  if (!(await inDesktopShell())) {
+    toast.message("Delete files needs the desktop app");
+    return false;
+  }
   try {
     await tauriInvoke("uninstall_font_family", { family: font.family });
     installedCache.delete(font.family.toLowerCase());
-  } catch {
-    /* ignore */
+    void import("./store").then(({ useFontStore }) => {
+      const s = useFontStore.getState();
+      s.setActivatedMany([font.id], false);
+      const next = s.diskFamilies.filter((n) => n.toLowerCase() !== font.family.toLowerCase());
+      s.setDiskFamilies(next);
+    });
+    toast.success(`Deleted ${font.family}`, {
+      description: "Removed from Documents → Font Manager. Catalog entry stays.",
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "delete failed");
+    toast.error(`Could not delete ${font.family}`, {
+      description: msg,
+      duration: 20_000,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+    });
+    return false;
   }
 }
 
