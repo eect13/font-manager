@@ -12,7 +12,7 @@ function baseName(path: string) {
   return path.replace(/[\\/]+$/, "").split(/[/\\]/).pop() ?? path;
 }
 
-/** Documents\Font Manager — default store. Synced via scan/hydrate, never as a watch folder. */
+/** Documents\Font Manager — default store. Library syncs via hydrate/Scan + an app-owned live watcher; not a user watch folder. */
 export function isManagedFontManagerRoot(dir: string): boolean {
   const n = dir.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
   return n.endsWith("/documents/font manager") || n.endsWith("/documents/font%20manager");
@@ -24,7 +24,7 @@ export function forbiddenWatchReason(dir: string): string | null {
     return "C:\\Windows\\Fonts is view-only (System). Do not watch it.";
   }
   if (isManagedFontManagerRoot(dir)) {
-    // Block watch only — library Scan / hydrate still sync this root on purpose.
+    // Block *user* watch only — the app may still run its own managed-root sync watcher.
     return "Documents\\Font Manager is the default store. The library syncs it automatically — pick another folder to watch.";
   }
   return null;

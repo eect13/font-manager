@@ -246,6 +246,15 @@ export type DiskFamilyInfo = {
   incomplete?: boolean;
 };
 
+export async function managedDocumentsRoot(): Promise<string | null> {
+  if (!(await inDesktopShell())) return null;
+  try {
+    return (await tauriInvoke<string>("activation_folder")) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
   if (!(await inDesktopShell())) return [];
   try {
