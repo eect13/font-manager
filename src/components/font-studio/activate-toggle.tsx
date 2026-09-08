@@ -2,7 +2,7 @@ import { Power, ScanSearch } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { pruneUnknownFolders, scanDiskFamilies } from "@/lib/fonts/os-activate";
+import { pruneUnknownFolders, repairIncompleteFamilies, scanDiskFamilies } from "@/lib/fonts/os-activate";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
@@ -132,6 +132,7 @@ export function ScanDiskMenuItem() {
           const bytes = rows.reduce((n, r) => n + (r.bytes || 0), 0);
           const files = rows.reduce((n, r) => n + (r.files || 0), 0);
           const corrupt = rows.reduce((n, r) => n + (r.corrupt || 0), 0);
+          const incomplete = rows.filter((r) => r.incomplete).map((r) => r.name);
           const catalog = googleFonts.length;
           toast.success(`Scan: ${rows.length.toLocaleString()} families on disk`, {
             description: [
@@ -140,33 +141,41 @@ export function ScanDiskMenuItem() {
               extras.length
                 ? `${extras.length.toLocaleString()} not in catalog (uploads or delisted)`
                 : "matches catalog",
+              incomplete.length
+                ? `${incomplete.length.toLocaleString()} incomplete (no .complete — Repair)`
+                : "all complete",
               corrupt
-                ? `${corrupt.toLocaleString()} corrupt (not TTF)`
+                ? `${corrupt.toLocaleString()} corrupt (not TTF; WOFF is preview-only)`
                 : "no corrupt files",
               "Explorer also counts .session-active.json — not a family",
             ].join(" · "),
-            duration: extras.length ? 12_000 : 6_000,
-            action: extras.length
+            duration: incomplete.length || extras.length ? 14_000 : 6_000,
+            action: incomplete.length
               ? {
-                  label: `Remove ${extras.length.toLocaleString()} extras`,
-                  onClick: () => {
-                    void (async () => {
-                      const keep = [
-                        ...googleFonts.map((f) => f.family),
-                        ...localFonts.map((f) => f.family),
-                      ];
-                      const n = await pruneUnknownFolders(keep);
-                      if (n) {
-                        toast.success(`Removed ${n.toLocaleString()} folders not in catalog`);
-                      } else {
-                        toast.message("Nothing removed", {
-                          description: "Folders still match the catalog, or the catalog is too small to prune against.",
-                        });
-                      }
-                    })();
-                  },
+                  label: `Repair ${incomplete.length.toLocaleString()}`,
+                  onClick: () => void repairIncompleteFamilies(incomplete),
                 }
-              : undefined,
+              : extras.length
+                ? {
+                    label: `Remove ${extras.length.toLocaleString()} extras`,
+                    onClick: () => {
+                      void (async () => {
+                        const keep = [
+                          ...googleFonts.map((f) => f.family),
+                          ...localFonts.map((f) => f.family),
+                        ];
+                        const n = await pruneUnknownFolders(keep);
+                        if (n) {
+                          toast.success(`Removed ${n.toLocaleString()} folders not in catalog`);
+                        } else {
+                          toast.message("Nothing removed", {
+                            description: "Folders still match the catalog, or the catalog is too small to prune against.",
+                          });
+                        }
+                      })();
+                    },
+                  }
+                : undefined,
           });
         })();
       }}

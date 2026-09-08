@@ -109,6 +109,7 @@ fn main() {
             activate::remove_library_file,
             activate::start_google_downloads,
             activate::retry_google_downloads,
+            activate::repair_incomplete_families,
             activate::skip_google_failures,
             activate::cancel_google_downloads,
             activate::pause_google_downloads,

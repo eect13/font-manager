@@ -661,6 +661,9 @@ pub fn session_begin(app: &AppHandle) {
         let mut files = 0usize;
         let mut ready = Vec::new();
         for family in &families {
+            if !family_is_ready(app, family) {
+                continue;
+            }
             let k = register_intact_family(app, family);
             if k > 0 {
                 files += k;
@@ -1318,9 +1321,10 @@ fn split_ready_missing(
         if t.is_empty() {
             continue;
         }
-        if !bust && family_has_intact(app, t) {
+        if !bust && family_is_ready(app, t) {
             ready.push(family);
         } else {
+            // Missing or incomplete (partial faces, no .complete) → download/Repair.
             missing.push(family);
         }
     }
@@ -1384,7 +1388,29 @@ fn mark_family_complete(root: &Path) {
     let _ = fs::write(family_complete_marker(root), b"1");
 }
 
+fn dir_is_complete(dir: &Path) -> bool {
+    family_complete_marker(dir).is_file()
+}
+
+/// Ready = .complete sentinel plus at least one intact TTF/OTF (full face set).
+/// Any one TTF without .complete is incomplete — Activate must Repair, not skip.
+fn family_is_ready(app: &AppHandle, family: &str) -> bool {
+    family_locations(app, family)
+        .iter()
+        .any(|dir| dir_is_complete(dir) && dir_has_intact(dir))
+}
+
+fn family_is_incomplete(app: &AppHandle, family: &str) -> bool {
+    !family_is_ready(app, family) && family_has_intact(app, family)
+}
+
 fn purge_family_files(app: &AppHandle, family: &str) {
+    let _ = purge_family_files_result(app, family);
+}
+
+fn purge_family_files_result(app: &AppHandle, family: &str) -> Result<(), String> {
+    let mut locked = false;
+    let mut last_err = String::new();
     for dir in family_locations(app, family) {
         let _ = fs::remove_file(family_complete_marker(&dir));
         let _ = fs::remove_file(dir.join(".fontsource-version"));
@@ -1396,11 +1422,31 @@ fn purge_family_files(app: &AppHandle, family: &str) {
         }
         gdi_flush_local();
         for path in files {
-            let _ = delete_font_file(&path);
+            if let Err(err) = delete_font_file(&path) {
+                if err.contains("locked") {
+                    locked = true;
+                }
+                last_err = err;
+            }
         }
         // File-by-file, not remove_dir_all: one locked face must not abort the rest.
-        let _ = fs::remove_dir(&dir);
+        if let Err(err) = fs::remove_dir(&dir) {
+            if dir.exists() {
+                if is_lock_err(&err) {
+                    locked = true;
+                    last_err = "files locked — close Word or Adobe, then Retry".into();
+                }
+            }
+        }
     }
+    if locked {
+        return Err(if last_err.is_empty() {
+            "files locked — close Word or Adobe, then Retry".into()
+        } else {
+            last_err
+        });
+    }
+    Ok(())
 }
 
 fn forget_queued(family: &str) {
@@ -1510,7 +1556,7 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     }
     let bust = bulk().bust.load(Ordering::SeqCst);
     let existing = register_intact_family(app, family);
-    if existing > 0 && !bust {
+    if existing > 0 && !bust && family_is_ready(app, family) {
         return Ok(existing);
     }
     if bust {
@@ -1643,7 +1689,7 @@ fn drain_download_queue(
             p.running = true;
         }
         emit_progress(&app);
-        let already = register_intact_family(&app, &family) > 0 && !state.bust.load(Ordering::SeqCst);
+        let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
             Ok(1usize)
         } else {
@@ -1825,8 +1871,10 @@ pub fn open_activation_folder(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn install_font_file(app: AppHandle, family: String, file_name: String, bytes: Vec<u8>) -> Result<(), String> {
-    let path = family_dir(&app, &family)?.join(sanitize(&file_name));
+    let root = family_dir(&app, &family)?;
+    let path = root.join(sanitize(&file_name));
     write_font_file(&path, &bytes)?;
+    mark_family_complete(&root);
     notify_fonts_changed_maybe();
     Ok(())
 }
@@ -1938,7 +1986,7 @@ pub fn uninstall_font_family(app: AppHandle, family: String) -> Result<(), Strin
 
 #[tauri::command]
 pub fn font_family_installed(app: AppHandle, family: String) -> Result<bool, String> {
-    Ok(register_intact_family(&app, &family) > 0)
+    Ok(family_is_ready(&app, &family))
 }
 
 #[tauri::command]
@@ -1975,7 +2023,7 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     }
     let mut ready = Vec::new();
     for family in families {
-        if family_has_intact(&app, &family) {
+        if family_is_ready(&app, &family) {
             ready.push(family);
         }
     }
@@ -2057,15 +2105,58 @@ pub fn read_family_font(app: AppHandle, family: String, italic: Option<bool>) ->
 
 #[tauri::command]
 pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
+    let mut locked = Vec::new();
+    let mut queued = Vec::new();
     for family in &families {
         forget_queued(family);
-        purge_family_files(&app, family);
+        // Empty folder after Explorer-delete counts as missing — purge is a no-op.
+        if let Err(err) = purge_family_files_result(&app, family) {
+            if err.contains("locked") {
+                locked.push(family.clone());
+                continue;
+            }
+        }
+        queued.push(family.clone());
+    }
+    if !locked.is_empty() && queued.is_empty() {
+        return Err(format!(
+            "files locked — close Word or Adobe, then Retry ({})",
+            locked.join(", ")
+        ));
+    }
+    if queued.is_empty() {
+        return Ok(0);
     }
     bulk().bust.store(true, Ordering::SeqCst);
     if !bulk().running.load(Ordering::SeqCst) {
         reset_circuits();
     }
-    start_google_downloads(app, families)
+    start_google_downloads(app, queued)
+}
+
+/// Re-fetch families that have partial faces (no `.complete`).
+#[tauri::command]
+pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
+    let mut targets = Vec::new();
+    if families.is_empty() {
+        for_family_dirs(&app, |dir| {
+            if dir_has_intact(dir) && !dir_is_complete(dir) {
+                if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
+                    targets.push(name.to_string());
+                }
+            }
+        });
+    } else {
+        for family in families {
+            if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
+                targets.push(family);
+            }
+        }
+    }
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    retry_google_downloads(app, targets)
 }
 
 #[tauri::command]
@@ -2094,52 +2185,55 @@ pub struct DiskFamily {
     pub bytes: u64,
     pub files: usize,
     pub corrupt: usize,
+    /// Intact faces present but `.complete` missing — needs Repair.
+    pub incomplete: bool,
 }
 
 #[tauri::command]
 pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
     let mut out = Vec::new();
-    let root = documents_root(&app)?;
-    let Ok(rd) = fs::read_dir(&root) else {
-        return Ok(out);
-    };
-    for entry in rd.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
+    // Include Activated/ and Library/ children — same roots as family_locations.
+    for_family_dirs(&app, |dir| {
         let name = dir
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("font")
             .to_string();
-        if name.eq_ignore_ascii_case("Activated") || name.eq_ignore_ascii_case("Library") {
-            continue;
-        }
         let mut files = Vec::new();
-        walk_font_files(&dir, &mut files);
+        walk_font_files(dir, &mut files);
         let mut bytes = 0u64;
-        let mut intact = Vec::new();
+        let mut intact = 0usize;
         let mut corrupt = 0usize;
+        let mut preview_only = 0usize;
         for path in files {
             let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             bytes += len;
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             if ttf_intact(&path) {
-                intact.push(path);
+                intact += 1;
+            } else if matches!(ext.as_str(), "woff" | "woff2") {
+                // Preview wrappers — not installable, not "corrupt".
+                preview_only += 1;
             } else {
                 corrupt += 1;
             }
         }
-        if intact.is_empty() && corrupt == 0 {
-            continue;
+        if intact == 0 && corrupt == 0 && preview_only == 0 {
+            return;
         }
+        let incomplete = intact > 0 && !dir_is_complete(dir);
         out.push(DiskFamily {
             name,
             bytes,
-            files: intact.len(),
+            files: intact,
             corrupt,
+            incomplete,
         });
-    }
+    });
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
 }

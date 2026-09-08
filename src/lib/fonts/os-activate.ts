@@ -204,7 +204,13 @@ export async function listSessionFamilies(): Promise<string[]> {
   }
 }
 
-export type DiskFamilyInfo = { name: string; bytes: number; files: number; corrupt?: number };
+export type DiskFamilyInfo = {
+  name: string;
+  bytes: number;
+  files: number;
+  corrupt?: number;
+  incomplete?: boolean;
+};
 
 export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
   if (!(await inDesktopShell())) return [];
@@ -219,7 +225,34 @@ export async function pruneUnknownFolders(keep: string[]): Promise<number> {
   if (!(await inDesktopShell())) return 0;
   try {
     return (await tauriInvoke<number>("prune_unknown_folders", { keep })) ?? 0;
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "prune failed");
+    toast.error("Could not prune Documents folders", { description: msg });
+    return 0;
+  }
+}
+
+export async function repairIncompleteFamilies(families: string[] = []): Promise<number> {
+  if (!(await inDesktopShell())) return 0;
+  try {
+    const n = (await tauriInvoke<number>("repair_incomplete_families", { families })) ?? 0;
+    if (n) {
+      toast.message("Repairing incomplete families", {
+        description: `${n.toLocaleString()} ${n === 1 ? "family" : "families"} — re-fetching missing faces.`,
+      });
+      startGooglePoll();
+    } else {
+      toast.message("Nothing to repair", {
+        description: "Every on-disk family has a .complete marker, or Documents is empty.",
+      });
+    }
+    return n;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "repair failed");
+    toast.error("Repair failed", {
+      description: msg,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+    });
     return 0;
   }
 }
