@@ -25,7 +25,8 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Hide first so X feels instant. Enumerable session fonts (flag 0) are NOT
 /// dropped when the process dies — RemoveFontResourceExW must finish.
-/// The unload thread is joined via a channel; 45s is only the hung-GDI cap.
+/// Wait for unload on this thread (up to 45s hung-GDI cap) so Explorer can
+/// delete Documents\Font Manager\Family folders after Quit.
 fn quit_gracefully(app: &tauri::AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
@@ -41,10 +42,9 @@ fn quit_gracefully(app: &tauri::AppHandle) {
         activate::session_end(&handle);
         let _ = done_tx.send(());
     });
-    std::thread::spawn(move || {
-        let _ = done_rx.recv_timeout(Duration::from_secs(45));
-        std::process::exit(0);
-    });
+    // Prefer finishing unload over a hard exit mid-Remove. 45s is the hung cap.
+    let _ = done_rx.recv_timeout(Duration::from_secs(45));
+    std::process::exit(0);
 }
 
 fn main() {

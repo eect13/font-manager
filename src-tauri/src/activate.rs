@@ -245,6 +245,9 @@ mod winfont {
         }
         let w = wide(path);
         unsafe {
+            // Match live unregister: one Remove can leave a refcount so Explorer
+            // still sees "in use". Second Remove is a no-op when already gone.
+            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
             RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
         }
     }
@@ -404,8 +407,9 @@ mod winfont {
     }
 
     /// Drain this process's Adds plus leftover paths from a previous incomplete
-    /// quit. Chunked local GdiFlush (not HWND_BROADCAST). One WM_FONTCHANGE at
-    /// the end. AddFontResourceExW is a session font-table entry, not an HFONT.
+    /// quit. Always double-Remove (same as live unregister). Local GdiFlush only
+    /// on the quit path — HWND_BROADCAST WM_FONTCHANGE can re-lock Documents
+    /// files in Explorer. Live Deactivate may still broadcast.
     pub fn unload_paths(extra: Vec<PathBuf>, broadcast: bool) {
         let mut paths = loaded()
             .lock()
@@ -420,11 +424,17 @@ mod winfont {
                 paths.push(path);
             }
         }
-        for (i, path) in paths.iter().enumerate() {
+        for path in paths.iter() {
             remove_one(path);
-            let _ = i;
         }
         if !paths.is_empty() {
+            unsafe {
+                GdiFlush();
+            }
+            // Second pass after flush: crash leftovers / raced Adds.
+            for path in paths.iter() {
+                remove_one(path);
+            }
             unsafe {
                 GdiFlush();
             }
@@ -689,14 +699,16 @@ pub fn session_end(app: &AppHandle) {
         bulk().running.store(false, Ordering::SeqCst);
         winfont::begin_unload();
         winfont::wait_in_flight(Duration::from_millis(1500));
-        // Persist before Remove so a hung watchdog still has a leftover list
-        // for next boot. Do not walk Documents — that was 2k+ folders of
-        // no-op Removes and AV scans on the quit path.
+        // Persist before Remove so a hung 45s watchdog still has a leftover
+        // list for next boot. Do not walk Documents on quit.
         let mut extra = load_session_paths(app);
         extra.extend(winfont::snapshot_loaded());
         save_session_paths(app, &extra);
-        winfont::unload_paths(extra, true);
-        clear_session_paths(app);
+        // No WM_FONTCHANGE on quit — broadcast can re-lock family folders in
+        // Explorer. Double-Remove + local GdiFlush is enough for DeleteFile.
+        winfont::unload_paths(extra, false);
+        // Keep .session-paths.txt until next session_begin finishes leftover
+        // unload. Clearing here made a mid-exit or partial Remove invisible.
     }
     #[cfg(not(windows))]
     {
