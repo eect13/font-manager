@@ -818,6 +818,12 @@ fn reset_circuits() {
     }
 }
 
+/// Google CSS2 returns full desktop TTF/OTF for Mozilla / Googlebot.
+/// Safari/Chrome get WOFF2 unicode-range subsets — Activate filters those out → empty install.
+const UA_DESKTOP_TTF: &str = "Mozilla/5.0";
+const UA_GOOGLEBOT: &str =
+    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+/// Emoji color-compat only (SVG-in-OTF / COLRv1). Never use for normal Activate CSS.
 const UA_SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const UA_CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
@@ -960,7 +966,18 @@ fn fontsource_meta(
     Some((subsets, weights, italic, version))
 }
 
+fn is_cjk_subset(name: &str) -> bool {
+    let s = name.to_ascii_lowercase();
+    s.starts_with("chinese") || s == "japanese" || s == "korean" || s == "japanese-latin"
+}
+
+/// Prefer CJK / script subsets when metadata lists them. Latin-only is wrong for
+/// Chiron / Noto CJK and must not be stamped `.complete`.
 fn pick_subsets(all: &[String]) -> Vec<String> {
+    let cjk: Vec<String> = all.iter().filter(|s| is_cjk_subset(s)).cloned().collect();
+    if !cjk.is_empty() {
+        return cjk;
+    }
     if all.iter().any(|s| s == "latin") {
         vec!["latin".into()]
     } else {
@@ -968,21 +985,16 @@ fn pick_subsets(all: &[String]) -> Vec<String> {
     }
 }
 
+/// Every advertised weight — never collapse to latin 400/700 as "complete".
 fn pick_fontsource_weights(all: &[u16]) -> Vec<u16> {
-    let mut out = Vec::new();
-    if all.contains(&400) {
-        out.push(400);
-    }
-    if all.contains(&700) {
-        out.push(700);
-    }
+    let mut out: Vec<u16> = all.to_vec();
+    out.sort_unstable();
+    out.dedup();
     if out.is_empty() {
-        out.extend(all.iter().copied().take(2));
+        out.push(400);
     }
     out
 }
-
-const MAX_FONTSOURCE_FILES: usize = 4;
 
 fn pull_fontsource_subset(
     client: &reqwest::blocking::Client,
@@ -995,16 +1007,26 @@ fn pull_fontsource_subset(
     let mut out = Vec::new();
     for subset in subsets {
         for weight in weights {
-            if bulk().cancel.load(Ordering::SeqCst) || out.len() >= MAX_FONTSOURCE_FILES {
+            if bulk().cancel.load(Ordering::SeqCst) {
                 return out;
             }
             for italic in styles {
-                if out.len() >= MAX_FONTSOURCE_FILES {
+                if bulk().cancel.load(Ordering::SeqCst) {
                     return out;
                 }
                 let style = if *italic { "italic" } else { "normal" };
-                if let Ok(bytes) = fetch_ttf(client, slug, version, *weight, *italic, subset) {
-                    out.push((format!("{slug}-{subset}-{weight}-{style}.ttf"), bytes));
+                match fetch_ttf(client, slug, version, *weight, *italic, subset) {
+                    Ok(bytes) => out.push((format!("{slug}-{subset}-{weight}-{style}.ttf"), bytes)),
+                    Err(err) if err.starts_with("404") => {
+                        // Static @fontsource/{slug} missing (variable-only) — stop burning CDNs.
+                        if subset == subsets.first().map(|s| s.as_str()).unwrap_or("")
+                            && *weight == weights[0]
+                            && !*italic
+                        {
+                            return Vec::new();
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
         }
@@ -1012,9 +1034,17 @@ fn pull_fontsource_subset(
     out
 }
 
-fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> (Vec<(String, Vec<u8>)>, String) {
-    let (all_subsets, weights, has_italic, version) = fontsource_meta(client, slug)
-        .unwrap_or((vec!["latin".into()], vec![400, 700], false, String::new()));
+/// Fontsource static faces. Empty on meta/package miss so callers fall through to Google.
+/// Never treats `@fontsource-variable/*` as a desktop install source.
+/// Returns (faces, version, expected face count from metadata).
+fn fetch_fontsource_faces(
+    client: &reqwest::blocking::Client,
+    slug: &str,
+) -> (Vec<(String, Vec<u8>)>, String, usize) {
+    let Some((all_subsets, weights, has_italic, version)) = fontsource_meta(client, slug) else {
+        // 404 / unreachable meta → skip straight out (no invented latin-400 retries).
+        return (Vec::new(), String::new(), 0);
+    };
     let mut subsets = pick_subsets(&all_subsets);
     if subsets.is_empty() {
         subsets.push("latin".into());
@@ -1027,19 +1057,16 @@ fn fetch_fontsource_faces(client: &reqwest::blocking::Client, slug: &str) -> (Ve
     } else {
         &[false]
     };
-    let mut out = pull_fontsource_subset(client, slug, &version, &subsets, &weights, styles);
-    if out.is_empty() {
-        let rest: Vec<String> = all_subsets
-            .iter()
-            .filter(|s| *s != "latin")
-            .take(1)
-            .cloned()
-            .collect();
-        if !rest.is_empty() {
-            out = pull_fontsource_subset(client, slug, &version, &rest, &weights[..1.min(weights.len())], &[false]);
-        }
+    let expected = subsets.len().saturating_mul(weights.len()).saturating_mul(styles.len());
+    let out = pull_fontsource_subset(client, slug, &version, &subsets, &weights, styles);
+    // CJK honesty: if metadata lists chinese-* but we only pulled latin, treat as failure.
+    if all_subsets.iter().any(|s| is_cjk_subset(s))
+        && !out.is_empty()
+        && out.iter().all(|(name, _)| name.contains("-latin-"))
+    {
+        return (Vec::new(), version, 0);
     }
-    (out, version)
+    (out, version, expected)
 }
 
 fn fetch_google_css_text(client: &reqwest::blocking::Client, family: &str, ua: &str, axis: &str) -> Option<String> {
@@ -1081,9 +1108,28 @@ fn css_ttf_url(block: &str) -> Option<String> {
     None
 }
 
-/// One TTF/OTF per (style, weight). Extra unicode-range subsets are skipped so Activate-all does not stall.
+fn css_range_rank(block: &str) -> i32 {
+    let lower = block.to_ascii_lowercase();
+    if lower.contains("u+4e00")
+        || lower.contains("chinese")
+        || lower.contains("japanese")
+        || lower.contains("korean")
+    {
+        return 3;
+    }
+    // Full desktop TTFs from Mozilla/Googlebot often omit unicode-range.
+    if !block.contains("unicode-range") {
+        return 2;
+    }
+    if block.contains("U+0000") {
+        return 0;
+    }
+    1
+}
+
+/// One TTF/OTF per (style, weight). Prefer full / CJK ranges over latin-only shreds.
 fn parse_css_faces(css: &str) -> Vec<(String, String, String)> {
-    let mut best: HashMap<(String, String), (bool, String)> = HashMap::new();
+    let mut best: HashMap<(String, String), (i32, String)> = HashMap::new();
     for block in css.split("@font-face") {
         let Some(url) = css_ttf_url(block) else {
             continue;
@@ -1097,12 +1143,12 @@ fn parse_css_faces(css: &str) -> Vec<(String, String, String)> {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join("-");
-        let latin = block.contains("U+0000") || !block.contains("unicode-range");
+        let rank = css_range_rank(block);
         let key = (style, weight);
         match best.get(&key) {
-            Some((had_latin, _)) if *had_latin || !latin => {}
+            Some((had, _)) if *had >= rank => {}
             _ => {
-                best.insert(key, (latin, url));
+                best.insert(key, (rank, url));
             }
         }
     }
@@ -1111,7 +1157,8 @@ fn parse_css_faces(css: &str) -> Vec<(String, String, String)> {
         .map(|((style, weight), (_, url))| (style, weight, url))
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    out.truncate(18);
+    // Official families advertise ≤18 static faces (9 weights × italic); keep headroom.
+    out.truncate(24);
     out
 }
 
@@ -1147,39 +1194,101 @@ fn fetch_google_css_font(client: &reqwest::blocking::Client, family: &str, ua: &
     None
 }
 
+fn fetch_google_css_listed(
+    client: &reqwest::blocking::Client,
+    family: &str,
+    ua: &str,
+    axis: &str,
+) -> Vec<(String, String, String)> {
+    let Some(css) = fetch_google_css_text(client, family, ua, axis) else {
+        return Vec::new();
+    };
+    parse_css_faces(&css)
+}
+
+/// Download listed TTF URLs; small pool so CJK (~30MB/face) finishes within long timeouts.
+fn download_listed_faces(
+    client: &reqwest::blocking::Client,
+    slug: &str,
+    listed: Vec<(String, String, String)>,
+) -> Vec<(String, Vec<u8>)> {
+    if listed.is_empty() {
+        return Vec::new();
+    }
+    let workers = listed.len().min(4).max(1);
+    let jobs = Arc::new(Mutex::new(listed));
+    let results = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let mut joins = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let client = client.clone();
+        let jobs = jobs.clone();
+        let results = results.clone();
+        let slug = slug.to_string();
+        joins.push(thread::spawn(move || loop {
+            if bulk().cancel.load(Ordering::SeqCst) {
+                return;
+            }
+            let next = jobs.lock().ok().and_then(|mut q| {
+                if q.is_empty() {
+                    None
+                } else {
+                    Some(q.remove(0))
+                }
+            });
+            let Some((style, weight, url)) = next else {
+                return;
+            };
+            if let Some(bytes) = fetch_url_ttf(&client, &url) {
+                let name = format!("{slug}-{weight}-{style}.ttf");
+                if let Ok(mut out) = results.lock() {
+                    out.push((name, bytes));
+                }
+            }
+        }));
+    }
+    for j in joins {
+        let _ = j.join();
+    }
+    let mut out = results.lock().map(|g| g.clone()).unwrap_or_default();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 /// Every Windows-installable face Google lists (weights + italic). WOFF2 is skipped.
-fn fetch_google_family_faces(client: &reqwest::blocking::Client, family: &str, slug: &str) -> Vec<(String, Vec<u8>)> {
+/// Uses Mozilla/Googlebot so CSS yields TTF — never Safari (WOFF2-only for install).
+/// Returns (downloaded faces, CSS-listed expected count) so `.complete` stays honest
+/// when some large CJK downloads fail.
+fn fetch_google_family_faces(
+    client: &reqwest::blocking::Client,
+    family: &str,
+    slug: &str,
+) -> (Vec<(String, Vec<u8>)>, usize) {
     let static_axis = static_weight_axis();
+    // Static ital,wght@0|1,w first: variable ranges 400 for some CJK (Chiron Sung HK).
     let axes = [
-        "ital,wght@0,100..900;1,100..900",
         static_axis.as_str(),
+        "ital,wght@0,100..900;1,100..900",
         "wght@100..900",
         "",
     ];
-    for axis in axes {
-        if bulk().cancel.load(Ordering::SeqCst) {
-            break;
-        }
-        let Some(css) = fetch_google_css_text(client, family, UA_SAFARI, axis) else {
-            continue;
-        };
-        let listed = parse_css_faces(&css);
-        if listed.is_empty() {
-            continue;
-        }
-        let mut out = Vec::new();
-        for (style, weight, url) in listed {
-            let Some(bytes) = fetch_url_ttf(client, &url) else {
+    let uas = [UA_DESKTOP_TTF, UA_GOOGLEBOT];
+    for ua in uas {
+        for axis in axes {
+            if bulk().cancel.load(Ordering::SeqCst) {
+                return (Vec::new(), 0);
+            }
+            let listed = fetch_google_css_listed(client, family, ua, axis);
+            if listed.is_empty() {
                 continue;
-            };
-            let name = format!("{slug}-{weight}-{style}.ttf");
-            out.push((name, bytes));
-        }
-        if !out.is_empty() {
-            return out;
+            }
+            let expected = listed.len();
+            let out = download_listed_faces(client, slug, listed);
+            if !out.is_empty() {
+                return (out, expected);
+            }
         }
     }
-    Vec::new()
+    (Vec::new(), 0)
 }
 
 fn needs_compat_pack(slug: &str) -> bool {
@@ -1632,8 +1741,19 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     let mut wrote = 0usize;
     let mut locked = false;
     let mut planned = 0usize;
-    let (faces, version) = fetch_fontsource_faces(client, &slug);
-    planned = faces.len();
+    let mut version = String::new();
+
+    // Google desktop TTFs first (official families). Fontsource only if Google yields 0.
+    let (google_faces, google_expected) = fetch_google_family_faces(client, family, &slug);
+    let faces: Vec<(String, Vec<u8>)> = if !google_faces.is_empty() {
+        planned = google_expected.max(google_faces.len());
+        google_faces
+    } else {
+        let (fs_faces, fs_ver, fs_expected) = fetch_fontsource_faces(client, &slug);
+        version = fs_ver;
+        planned = fs_expected.max(fs_faces.len());
+        fs_faces
+    };
     for (name, bytes) in faces {
         if bulk().cancel.load(Ordering::SeqCst) {
             break;
@@ -1656,29 +1776,6 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     if wrote > 0 && !version.is_empty() {
         let _ = fs::write(root.join(".fontsource-version"), version.as_bytes());
     }
-    if wrote == 0 {
-        let google_faces = fetch_google_family_faces(client, family, &slug);
-        planned = google_faces.len();
-        for (name, bytes) in google_faces {
-            if bulk().cancel.load(Ordering::SeqCst) {
-                break;
-            }
-            let path = root.join(sanitize(&name));
-            if !bust && ttf_intact(&path) {
-                register_family_path(family, &path);
-                wrote += 1;
-                continue;
-            }
-            match write_font_file(&path, &bytes) {
-                Ok(()) => {
-                    register_family_path(family, &path);
-                    wrote += 1;
-                }
-                Err(err) if err.contains("locked") => locked = true,
-                Err(_) => {}
-            }
-        }
-    }
     if planned > 0 {
         write_expected_faces(&root, planned);
     }
@@ -1695,7 +1792,7 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
         if locked {
             return Err("files locked — close Word or Adobe, then Retry".into());
         }
-        return Err("no installable TTF/OTF (Google CSS is WOFF2-only; Fontsource had no TTF)".into());
+        return Err("no installable TTF/OTF (Google CSS + Fontsource yielded none)".into());
     }
     let intact = count_intact_faces(&root);
     // Only stamp when the on-disk face count meets the expected full set.
@@ -1861,9 +1958,10 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         return;
     }
 
+    // CJK full TTFs are ~30MB each; 10s was too short (Chiron Sung HK).
     let client = match reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(120))
         .pool_max_idle_per_host(6)
         .user_agent("FontManager/1.0")
         .build()
@@ -2567,5 +2665,56 @@ mod complete_marker_tests {
             "expected-aware .complete body >1 must remain when faces match"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod install_path_tests {
+    use super::*;
+
+    #[test]
+    fn pick_weights_keeps_all_advertised() {
+        let w = pick_fontsource_weights(&[100, 400, 500, 700]);
+        assert_eq!(w, vec![100, 400, 500, 700]);
+    }
+
+    #[test]
+    fn pick_subsets_prefers_cjk_over_latin() {
+        let all = vec![
+            "latin".into(),
+            "chinese-hongkong".into(),
+            "vietnamese".into(),
+        ];
+        let got = pick_subsets(&all);
+        assert_eq!(got, vec!["chinese-hongkong".to_string()]);
+    }
+
+    #[test]
+    fn parse_css_keeps_ttf_and_medium_italic() {
+        let css = r#"
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: italic;
+  font-weight: 500;
+  src: url(https://fonts.gstatic.com/s/cormorantgaramond/v16/foo.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: normal;
+  font-weight: 400;
+  src: url(https://fonts.gstatic.com/s/cormorantgaramond/v16/bar.woff2) format('woff2');
+}
+"#;
+        let faces = parse_css_faces(css);
+        assert_eq!(faces.len(), 1, "woff2 must be skipped; one TTF kept");
+        assert_eq!(faces[0].0, "italic");
+        assert_eq!(faces[0].1, "500");
+    }
+
+    #[test]
+    fn css_range_prefers_full_over_latin() {
+        let latin = "font-style: normal; font-weight: 400; unicode-range: U+0000-00FF; src: url(https://x/a.ttf);";
+        let full = "font-style: normal; font-weight: 400; src: url(https://x/b.ttf);";
+        assert!(css_range_rank(full) > css_range_rank(latin));
     }
 }

@@ -463,12 +463,20 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   }
 }
 
+function isCjkSubset(name: string) {
+  const s = name.toLowerCase();
+  return s.startsWith("chinese") || s === "japanese" || s === "korean" || s === "japanese-latin";
+}
+
+/** Prefer CJK script subsets when present; never treat latin-only as enough for CJK families. */
 async function fontsourceSubsets(slug: string): Promise<string[]> {
   try {
     const res = await fetch(`https://api.fontsource.org/v1/fonts/${slug}`);
     if (!res.ok) return ["latin"];
     const data = (await res.json()) as { subsets?: string[] };
     const subsets = Array.isArray(data.subsets) ? data.subsets.filter((s) => typeof s === "string") : [];
+    const cjk = subsets.filter(isCjkSubset);
+    if (cjk.length) return cjk;
     if (subsets.includes("latin")) return ["latin"];
     return subsets.slice(0, 4);
   } catch {

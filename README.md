@@ -1,4 +1,4 @@
-# Font Manager **1.0.145**
+# Font Manager **1.0.146**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
