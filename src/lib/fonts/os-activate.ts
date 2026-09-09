@@ -68,9 +68,59 @@ function notifyDownloadResult(done: number, failed: number, names: string[], det
 let lastFailedNames: string[] = [];
 let lastReadyCount = 0;
 
-function applyReadyFamilies(names: string[]) {
-  if (!names.length) return;
-  void import("./store").then(({ useFontStore }) => {
+/** Never lock the document — DownloadBar is non-blocking. Keep clear as a defensive no-op. */
+function unlockUi() {
+  if (typeof document === "undefined") return;
+  document.body.style.pointerEvents = "";
+  document.documentElement.style.pointerEvents = "";
+}
+
+const READY_FLUSH_MS = 450;
+const PROGRESS_EMIT_MS = 300;
+let readyCumulative: string[] = [];
+let readyFlushTimer = 0;
+let lastFlushedReadyLen = 0;
+let progressEmitTimer = 0;
+let lastProgressEmit = 0;
+let lastPayloadSig = "";
+
+function flushReadyFamilies(): Promise<void> {
+  if (readyFlushTimer) {
+    window.clearTimeout(readyFlushTimer);
+    readyFlushTimer = 0;
+  }
+  const names = readyCumulative;
+  if (!names.length) return Promise.resolve();
+  const delta = names.slice(lastFlushedReadyLen);
+  lastFlushedReadyLen = names.length;
+  if (!delta.length) return Promise.resolve();
+  return commitReadyFamilies(delta);
+}
+
+function queueReadyFamilies(cumulative: string[]) {
+  if (!cumulative.length) return;
+  readyCumulative = cumulative;
+  if (readyFlushTimer) return;
+  readyFlushTimer = window.setTimeout(() => {
+    readyFlushTimer = 0;
+    void flushReadyFamilies();
+  }, READY_FLUSH_MS);
+}
+
+function resetReadyBatching() {
+  if (readyFlushTimer) {
+    window.clearTimeout(readyFlushTimer);
+    readyFlushTimer = 0;
+  }
+  readyCumulative = [];
+  lastFlushedReadyLen = 0;
+  lastReadyCount = 0;
+  lastPayloadSig = "";
+}
+
+function commitReadyFamilies(names: string[]): Promise<void> {
+  if (!names.length) return Promise.resolve();
+  return import("./store").then(({ useFontStore }) => {
     const { googleFonts, localFonts, markLiveActivated, pendingSet } = useFontStore.getState();
     const catalogByFamily = new Map<string, string>();
     const localByFamily = new Map<string, string>();
@@ -90,6 +140,21 @@ function applyReadyFamilies(names: string[]) {
     if (ids.length) markLiveActivated(ids);
     useFontStore.getState().addDiskFamilies(names);
   });
+}
+
+/** Flush ready marks (await markLiveActivated) then clear pending — never clear first. */
+async function finalizeReadyAndClearPending() {
+  await flushReadyFamilies();
+  resetReadyBatching();
+  const { useFontStore } = await import("./store");
+  useFontStore.getState().clearPendingActivate();
+}
+
+/** Direct callers (restore/resume) commit immediately; progress path uses queueReadyFamilies. */
+function applyReadyFamilies(names: string[]) {
+  if (!names.length) return;
+  if (pollTimer || job.running || job.paused) queueReadyFamilies(names);
+  else void commitReadyFamilies(names);
 }
 
 const MAX_RETRY_ATTEMPTS = 3;
@@ -328,12 +393,6 @@ export function subscribeDownloadJob(fn: () => void) {
   return () => listeners.delete(fn);
 }
 
-function unlockUi() {
-  if (typeof document === "undefined") return;
-  document.body.style.pointerEvents = "";
-  document.documentElement.style.pointerEvents = "";
-}
-
 function yieldUi() {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, 0);
@@ -470,6 +529,31 @@ let pollTimer = 0;
 let rustSeenRunning = false;
 let ignoreProgress = false;
 
+function emitProgress(force = false) {
+  if (force) {
+    if (progressEmitTimer) {
+      window.clearTimeout(progressEmitTimer);
+      progressEmitTimer = 0;
+    }
+    lastProgressEmit = Date.now();
+    emit();
+    return;
+  }
+  const now = Date.now();
+  if (now - lastProgressEmit >= PROGRESS_EMIT_MS) {
+    lastProgressEmit = now;
+    emit();
+    return;
+  }
+  if (!progressEmitTimer) {
+    progressEmitTimer = window.setTimeout(() => {
+      progressEmitTimer = 0;
+      lastProgressEmit = Date.now();
+      emit();
+    }, PROGRESS_EMIT_MS - (now - lastProgressEmit));
+  }
+}
+
 function applyPayload(p: {
   running: boolean;
   paused?: boolean;
@@ -483,6 +567,26 @@ function applyPayload(p: {
   skipped?: number;
 }) {
   if (ignoreProgress) return;
+  const readyLen = p.ready_names?.length ?? 0;
+  const sig = [
+    p.running ? 1 : 0,
+    p.paused ? 1 : 0,
+    p.done,
+    p.total,
+    p.failed,
+    p.skipped ?? 0,
+    readyLen,
+    p.failed_names?.length ?? 0,
+    // Include detail text so reason updates are not dropped when counts stay equal.
+    (p.failed_details ?? []).join("\x1e"),
+    p.current,
+  ].join("|");
+  // Poll + font-download events often deliver the same snapshot — skip duplicate work.
+  if (sig === lastPayloadSig) return;
+  lastPayloadSig = sig;
+  const prevRunning = job.running;
+  const prevPaused = job.paused;
+  const wasRunning = job.running || job.paused;
   job = {
     running: p.running,
     paused: Boolean(p.paused),
@@ -495,23 +599,28 @@ function applyPayload(p: {
     failedNames: p.failed_names ?? [],
     failedDetails: p.failed_details ?? [],
   };
-  emit();
+  const forceEmit =
+    Boolean(p.running) !== Boolean(prevRunning) ||
+    Boolean(p.paused) !== Boolean(prevPaused) ||
+    (!p.running && !p.paused && wasRunning);
+  emitProgress(forceEmit);
+  // Defensive: never leave body/html pointer-events locked (nothing sets it during download).
   unlockUi();
-  if (p.ready_names?.length && p.ready_names.length !== lastReadyCount) {
-    lastReadyCount = p.ready_names.length;
-    applyReadyFamilies(p.ready_names);
+  if (readyLen && readyLen !== lastReadyCount) {
+    lastReadyCount = readyLen;
+    queueReadyFamilies(p.ready_names ?? []);
   }
   if (p.running || p.paused) rustSeenRunning = true;
-  if (!p.running && !p.paused && pollTimer && (rustSeenRunning || p.skipped || p.ready_names?.length)) {
+  if (!p.running && !p.paused && pollTimer && (rustSeenRunning || p.skipped || readyLen)) {
     window.clearInterval(pollTimer);
     pollTimer = 0;
     rustSeenRunning = false;
-    lastReadyCount = 0;
-    if (p.ready_names?.length) applyReadyFamilies(p.ready_names);
+    // Keep full ready list so flush can mark any remaining delta while pending still exists.
+    if (p.ready_names?.length) readyCumulative = p.ready_names;
+    emitProgress(true);
     notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? []);
-    void import("./store").then(({ useFontStore }) => {
-      useFontStore.getState().clearPendingActivate();
-    });
+    // Ordered: flush+markLiveActivated, reset batching, THEN clearPending (never reverse).
+    void finalizeReadyAndClearPending();
   }
 }
 
@@ -553,9 +662,16 @@ async function bindDownloadEvents() {
 function startGooglePoll() {
   void bindDownloadEvents();
   ignoreProgress = false;
+  unlockUi();
+  // Always flush+reset when (re)starting — even if the poll is already running — so a prior
+  // job's timer/cumulative cannot leak. Capture delta synchronously before reset; mark may await.
+  const restartFlush = flushReadyFamilies();
+  resetReadyBatching();
+  void restartFlush;
   if (pollTimer) return;
   rustSeenRunning = false;
-  pollTimer = window.setInterval(() => void pollRustProgress(), 800);
+  // Events push live progress; poll is a slow fallback so we do not double-storm the UI.
+  pollTimer = window.setInterval(() => void pollRustProgress(), 1600);
   void pollRustProgress();
 }
 
@@ -690,9 +806,8 @@ export function cancelDownloadQueue() {
       : "Fonts already saved stay in Documents → Font Manager.",
     action: { label: "Open folder", onClick: () => void openActivatedFolder() },
   });
-  void import("./store").then(({ useFontStore }) => {
-    useFontStore.getState().clearPendingActivate();
-  });
+  // Flush+mark any queued ready families before clearPending; reset timer/cumulative with that.
+  void finalizeReadyAndClearPending();
 }
 
 export function pauseDownloadQueue() {
