@@ -39,12 +39,14 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 
 | | Disk | Other apps |
 | --- | --- | --- |
-| **Activate** | Download if missing; keep the TTF | Register for this session |
+| **Activate** | Download if missing (Google CSS richest listing first, streamed to disk); keep the TTF | Register for this session |
 | **Deactivate** | File stays | Unload |
 | **Delete** | Remove the family folder | Unload |
 | **Repair** | Re-fetch when `.complete` is missing or face count is short of expected | Register when done |
 
 **X** quits the app (session fonts unload; Documents files stay). A family is **ready** only with a `.complete` marker stamped when the on-disk face count matches the expected full set — partial downloads do not stamp, and Scan/hydrate deletes lying `.complete` markers (including legacy bare `"1"` with no expected face count) so Repair appears. Ready families register again on next launch — no re-download.
+
+**Google install path.** Activate discovers the richest CSS2 `ital,wght` TTF listing across Mozilla/Googlebot before downloading (bare `family=` Regular-400 cannot stamp `.complete` when a richer static listing exists). Face downloads stream to disk with a global in-flight cap so bulk CJK Activate cannot OOM. Non-Google (`catalog: other`) families skip Google CSS and use Fontsource only; partial Google still allows Fontsource fill.
 
 **Documents sync.** `Documents / Font Manager` (plus `Activated` / `Library` children) stays in sync with the library via Scan, hydrate, and an app-owned live folder watcher while the window is open. Users still cannot add it (or Windows Fonts) as a watch folder. WOFF/WOFF2 on disk are preview-only — not counted as corrupt.
 
