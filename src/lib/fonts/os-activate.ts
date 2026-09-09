@@ -463,12 +463,20 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   }
 }
 
+function isCjkSubset(name: string) {
+  const s = name.toLowerCase();
+  return s.startsWith("chinese") || s === "japanese" || s === "korean" || s === "japanese-latin";
+}
+
+/** Prefer CJK script subsets when present; never treat latin-only as enough for CJK families. */
 async function fontsourceSubsets(slug: string): Promise<string[]> {
   try {
     const res = await fetch(`https://api.fontsource.org/v1/fonts/${slug}`);
     if (!res.ok) return ["latin"];
     const data = (await res.json()) as { subsets?: string[] };
     const subsets = Array.isArray(data.subsets) ? data.subsets.filter((s) => typeof s === "string") : [];
+    const cjk = subsets.filter(isCjkSubset);
+    if (cjk.length) return cjk;
     if (subsets.includes("latin")) return ["latin"];
     return subsets.slice(0, 4);
   } catch {
@@ -476,8 +484,86 @@ async function fontsourceSubsets(slug: string): Promise<string[]> {
   }
 }
 
-async function googleTtfFiles(font: FontRecord, _lean: boolean) {
-  const slug = slugFamily(font.family);
+/** Build static ital,wght@0|1,w CSS2 axis (mirrors Rust static_weight_axis). */
+function staticWeightAxis() {
+  const pairs: string[] = [];
+  for (const ital of [0, 1]) {
+    for (const w of [100, 200, 300, 400, 500, 600, 700, 800, 900]) {
+      pairs.push(`${ital},${w}`);
+    }
+  }
+  return `ital,wght@${pairs.join(";")}`;
+}
+
+function parseCssTtfFaces(css: string): { style: string; weight: string; url: string }[] {
+  const best = new Map<string, { rank: number; style: string; weight: string; url: string }>();
+  for (const block of css.split("@font-face")) {
+    const urlMatch = block.match(/url\((['"]?)(https:\/\/[^)'"]+?\.(?:ttf|otf))\1\)/i);
+    if (!urlMatch || /\.woff/i.test(urlMatch[2])) continue;
+    const style = (block.match(/font-style:\s*([^;]+)/i)?.[1] ?? "normal").trim().toLowerCase();
+    const weight = (block.match(/font-weight:\s*([^;]+)/i)?.[1] ?? "400").trim().replace(/\s+/g, "-");
+    const lower = block.toLowerCase();
+    let rank = 1;
+    if (/u\+4e00|chinese|japanese|korean/.test(lower)) rank = 3;
+    else if (!/unicode-range/.test(block)) rank = 2;
+    else if (/U\+0000/.test(block)) rank = 0;
+    const key = `${style}|${weight}`;
+    const prev = best.get(key);
+    if (!prev || rank > prev.rank) best.set(key, { rank, style, weight, url: urlMatch[2] });
+  }
+  return [...best.values()]
+    .sort((a, b) => a.style.localeCompare(b.style) || a.weight.localeCompare(b.weight))
+    .slice(0, 24);
+}
+
+/** Google CSS2 desktop TTFs first (Mozilla UA). Discover richest axis listing, then fetch. */
+async function googleCssTtfFiles(family: string, slug: string) {
+  // Caller gates on isGoogleCatalog; still safe if mis-invoked for catalog:other.
+  // Match Rust discover_richest_google_listing: static ital,wght@… then bare.
+  // Skip variable 100..900 axes — they 400-sweep for some CJK (Chiron).
+  const axes = [staticWeightAxis(), ""];
+  let best: { style: string; weight: string; url: string }[] = [];
+  let bestRank = -1;
+  for (const axis of axes) {
+    const param = family.replace(/ /g, "+");
+    const href = axis
+      ? `https://fonts.googleapis.com/css2?family=${param}:${axis}&display=swap`
+      : `https://fonts.googleapis.com/css2?family=${param}&display=swap`;
+    try {
+      const res = await fetch(href, { headers: { "User-Agent": "Mozilla/5.0" } });
+      if (!res.ok) continue;
+      const css = await res.text();
+      if (css.length < 32 || !css.includes("@font-face")) continue;
+      const listed = parseCssTtfFaces(css);
+      if (!listed.length) continue;
+      const rank = !axis ? 0 : axis.startsWith("ital,wght@") ? 3 : 1;
+      if (listed.length > best.length || (listed.length === best.length && rank > bestRank)) {
+        best = listed;
+        bestRank = rank;
+      }
+      if (rank >= 3 && best.length >= 2) break;
+    } catch {
+      /* try next axis */
+    }
+  }
+  const files: { fileName: string; data: Uint8Array }[] = [];
+  // Cap concurrent browser downloads to avoid buffering many CJK faces at once.
+  const queue = best.slice();
+  const workers = Math.min(2, queue.length);
+  async function worker() {
+    while (queue.length) {
+      const face = queue.shift();
+      if (!face) return;
+      const data = await fetchBytes(face.url);
+      if (data) files.push({ fileName: `${slug}-${face.weight}-${face.style}.ttf`, data });
+    }
+  }
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return files;
+}
+
+
+async function fontsourceTtfFiles(font: FontRecord, slug: string) {
   const emoji = /emoji/i.test(font.family);
   const weights = emoji
     ? [400]
@@ -504,11 +590,27 @@ async function googleTtfFiles(font: FontRecord, _lean: boolean) {
           data = await fetchBytes(url);
           if (data) break;
         }
+        // First-face 404 on non-400 must not abort the whole family (variable-only still aborts on 400).
+        if (!data && subset === subsets[0] && weight === 400 && style === "normal") {
+          return files;
+        }
         if (data) files.push({ fileName: slug + "-" + subset + "-" + weight + "-" + style + ".ttf", data });
       }
     }
   }
   return files;
+}
+
+async function googleTtfFiles(font: FontRecord, _lean: boolean) {
+  const slug = slugFamily(font.family);
+  // Google CSS2 desktop TTFs first for official families; Fontsource only when Google listed nothing.
+  const google = isGoogleCatalog(font) ? await googleCssTtfFiles(font.family, slug) : [];
+  if (google.length) {
+    // Fontsource `*-{subset}-*` names can never fill Google face keys — skip FS
+    // fill on partial Google (matches Rust need_fontsource = google_expected == 0).
+    return google;
+  }
+  return fontsourceTtfFiles(font, slug);
 }
 
 async function localFiles(font: FontRecord) {
