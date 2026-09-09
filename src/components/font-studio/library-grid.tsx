@@ -104,10 +104,12 @@ export function LibraryGrid() {
     };
   }, []);
 
-  const liveIds = useMemo(() => {
+  const liveIdsRaw = useMemo(() => {
     if (!scopeNeedsActivated(scope)) return EMPTY_IDS;
     return pendingActivate.length ? [...activated, ...pendingActivate] : activated;
   }, [scope, activated, pendingActivate]);
+  // Keep Activated-scope grid from blocking navigation/search on every ready-family tick.
+  const liveIds = useDeferredValue(liveIdsRaw);
 
   const fonts = useMemo(
     () => {
