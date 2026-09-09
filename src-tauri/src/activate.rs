@@ -1981,10 +1981,17 @@ fn verify_complete_marker(dir: &Path) {
     if !dir_is_complete(dir) {
         return;
     }
-    let Some(expected) = read_expected_faces(dir) else {
-        // Legacy bare "1" / unknown expected — untrusted; clear so Repair shows.
-        clear_complete_marker(dir);
-        return;
+    // When `.google-planned` is a real key list, expected = keys.len() — never an
+    // understated `.expected` that could keep a partial Google stamp.
+    let expected = if let Some(keys) = read_google_planned_keys(dir) {
+        keys.len()
+    } else {
+        let Some(n) = read_expected_faces(dir) else {
+            // Legacy bare "1" / unknown expected — untrusted; clear so Repair shows.
+            clear_complete_marker(dir);
+            return;
+        };
+        n
     };
     if count_intact_toward_expected(dir) < expected {
         clear_complete_marker(dir);
@@ -2541,6 +2548,9 @@ pub fn install_font_file(app: AppHandle, family: String, file_name: String, byte
     write_font_file(&path, &bytes)?;
     let intact = count_intact_faces(&root);
     if intact > 0 {
+        // User/upload stamp — clear Google key list so verify does not require
+        // listed Google faces against a non-Google intact count.
+        clear_google_planned(&root);
         mark_family_complete(&root, intact);
     }
     notify_fonts_changed_maybe();
@@ -3349,6 +3359,43 @@ mod install_path_tests {
         assert_eq!(count_intact_toward_expected(&family_dir), 0);
         verify_complete_marker(&family_dir);
         assert!(!family_complete_marker(&family_dir).is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_uses_keys_len_not_understated_expected() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fm-understated-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let family_dir = dir.join("Roboto");
+        fs::create_dir_all(&family_dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        // One listed key present; .expected understates keys.len()=2 as 1.
+        fs::write(family_dir.join("roboto-400-normal.ttf"), &fake).unwrap();
+        fs::write(
+            family_dir.join(".google-planned"),
+            "roboto-400-normal.ttf\nroboto-700-normal.ttf\n".as_bytes(),
+        )
+        .unwrap();
+        fs::write(family_dir.join(".expected"), b"1").unwrap();
+        fs::write(family_dir.join(".complete"), b"1").unwrap();
+        assert_eq!(count_intact_toward_expected(&family_dir), 1);
+        verify_complete_marker(&family_dir);
+        assert!(
+            !family_complete_marker(&family_dir).is_file(),
+            "keys.len() must win over understated .expected"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
