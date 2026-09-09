@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 import { FontCard } from "./font-card";
 import { UploadsResetDialog } from "./uploads-reset-dialog";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { inDesktopShell, isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { primeGooglePreview } from "@/lib/fonts/loader";
 import { loadSystemFonts } from "@/lib/fonts/system-fonts";
+import { getDownloadJob, subscribeDownloadJob } from "@/lib/fonts/os-activate";
 import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
 import type { Collection, FontRecord } from "@/lib/fonts/types";
 
@@ -104,12 +105,38 @@ export function LibraryGrid() {
     };
   }, []);
 
-  const liveIdsRaw = useMemo(() => {
+  // Freeze Activated-scope liveIds while a download job runs — useDeferredValue alone still
+  // recomputes from thrashing pendingActivate/activated on every ready tick.
+  const downloadBusy = useSyncExternalStore(
+    subscribeDownloadJob,
+    () => {
+      const j = getDownloadJob();
+      return j.running || j.paused;
+    },
+    () => false,
+  );
+  const frozenLiveRef = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (downloadBusy && scopeNeedsActivated(scope)) {
+      if (!frozenLiveRef.current) {
+        frozenLiveRef.current = pendingActivate.length
+          ? [...activated, ...pendingActivate]
+          : activated.slice();
+      }
+    } else {
+      frozenLiveRef.current = null;
+    }
+  }, [downloadBusy, scope, activated, pendingActivate]);
+  const liveIds = useMemo(() => {
     if (!scopeNeedsActivated(scope)) return EMPTY_IDS;
+    if (downloadBusy) {
+      return (
+        frozenLiveRef.current ??
+        (pendingActivate.length ? [...activated, ...pendingActivate] : activated)
+      );
+    }
     return pendingActivate.length ? [...activated, ...pendingActivate] : activated;
-  }, [scope, activated, pendingActivate]);
-  // Keep Activated-scope grid from blocking navigation/search on every ready-family tick.
-  const liveIds = useDeferredValue(liveIdsRaw);
+  }, [scope, downloadBusy, activated, pendingActivate]);
 
   const fonts = useMemo(
     () => {

@@ -17,7 +17,7 @@ import {
   Monitor,
   FolderOpen,
 } from "lucide-react";
-import { useDeferredValue, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { LibraryGroups } from "./folder-tree";
 import { GoogleActivateMenuItem, GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
@@ -178,14 +178,25 @@ export function Sidebar({
     () => false,
   );
   const facetLiveRef = useRef<string[] | null>(null);
-  const wasDownloadBusy = useRef(false);
-  if (downloadBusy && !wasDownloadBusy.current) {
-    facetLiveRef.current = pendingActivate.length ? [...activated, ...pendingActivate] : activated.slice();
-  }
-  if (!downloadBusy) facetLiveRef.current = null;
-  wasDownloadBusy.current = downloadBusy;
+  useEffect(() => {
+    if (downloadBusy) {
+      if (!facetLiveRef.current) {
+        facetLiveRef.current = pendingActivate.length
+          ? [...activated, ...pendingActivate]
+          : activated.slice();
+      }
+    } else {
+      facetLiveRef.current = null;
+    }
+  }, [downloadBusy, activated, pendingActivate]);
   const facetLiveIds = useMemo(() => {
-    if (downloadBusy) return facetLiveRef.current ?? activated;
+    if (downloadBusy) {
+      // First busy frame (before effect) uses current live set; later ticks keep the freeze.
+      return (
+        facetLiveRef.current ??
+        (pendingActivate.length ? [...activated, ...pendingActivate] : activated)
+      );
+    }
     return pendingActivate.length ? [...activated, ...pendingActivate] : activated;
   }, [downloadBusy, activated, pendingActivate]);
   const activatedBadge = downloadBusy

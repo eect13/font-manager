@@ -84,17 +84,17 @@ let progressEmitTimer = 0;
 let lastProgressEmit = 0;
 let lastPayloadSig = "";
 
-function flushReadyFamilies() {
+function flushReadyFamilies(): Promise<void> {
   if (readyFlushTimer) {
     window.clearTimeout(readyFlushTimer);
     readyFlushTimer = 0;
   }
   const names = readyCumulative;
-  if (!names.length) return;
+  if (!names.length) return Promise.resolve();
   const delta = names.slice(lastFlushedReadyLen);
   lastFlushedReadyLen = names.length;
-  if (!delta.length) return;
-  commitReadyFamilies(delta);
+  if (!delta.length) return Promise.resolve();
+  return commitReadyFamilies(delta);
 }
 
 function queueReadyFamilies(cumulative: string[]) {
@@ -103,7 +103,7 @@ function queueReadyFamilies(cumulative: string[]) {
   if (readyFlushTimer) return;
   readyFlushTimer = window.setTimeout(() => {
     readyFlushTimer = 0;
-    flushReadyFamilies();
+    void flushReadyFamilies();
   }, READY_FLUSH_MS);
 }
 
@@ -118,9 +118,9 @@ function resetReadyBatching() {
   lastPayloadSig = "";
 }
 
-function commitReadyFamilies(names: string[]) {
-  if (!names.length) return;
-  void import("./store").then(({ useFontStore }) => {
+function commitReadyFamilies(names: string[]): Promise<void> {
+  if (!names.length) return Promise.resolve();
+  return import("./store").then(({ useFontStore }) => {
     const { googleFonts, localFonts, markLiveActivated, pendingSet } = useFontStore.getState();
     const catalogByFamily = new Map<string, string>();
     const localByFamily = new Map<string, string>();
@@ -142,11 +142,19 @@ function commitReadyFamilies(names: string[]) {
   });
 }
 
+/** Flush ready marks (await markLiveActivated) then clear pending — never clear first. */
+async function finalizeReadyAndClearPending() {
+  await flushReadyFamilies();
+  resetReadyBatching();
+  const { useFontStore } = await import("./store");
+  useFontStore.getState().clearPendingActivate();
+}
+
 /** Direct callers (restore/resume) commit immediately; progress path uses queueReadyFamilies. */
 function applyReadyFamilies(names: string[]) {
   if (!names.length) return;
   if (pollTimer || job.running || job.paused) queueReadyFamilies(names);
-  else commitReadyFamilies(names);
+  else void commitReadyFamilies(names);
 }
 
 const MAX_RETRY_ATTEMPTS = 3;
@@ -569,6 +577,8 @@ function applyPayload(p: {
     p.skipped ?? 0,
     readyLen,
     p.failed_names?.length ?? 0,
+    // Include detail text so reason updates are not dropped when counts stay equal.
+    (p.failed_details ?? []).join("\x1e"),
     p.current,
   ].join("|");
   // Poll + font-download events often deliver the same snapshot — skip duplicate work.
@@ -605,18 +615,12 @@ function applyPayload(p: {
     window.clearInterval(pollTimer);
     pollTimer = 0;
     rustSeenRunning = false;
-    if (p.ready_names?.length) {
-      readyCumulative = p.ready_names;
-      flushReadyFamilies();
-    }
-    lastReadyCount = 0;
-    lastFlushedReadyLen = 0;
-    readyCumulative = [];
+    // Keep full ready list so flush can mark any remaining delta while pending still exists.
+    if (p.ready_names?.length) readyCumulative = p.ready_names;
     emitProgress(true);
     notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? []);
-    void import("./store").then(({ useFontStore }) => {
-      useFontStore.getState().clearPendingActivate();
-    });
+    // Ordered: flush+markLiveActivated, reset batching, THEN clearPending (never reverse).
+    void finalizeReadyAndClearPending();
   }
 }
 
@@ -659,9 +663,13 @@ function startGooglePoll() {
   void bindDownloadEvents();
   ignoreProgress = false;
   unlockUi();
+  // Always flush+reset when (re)starting — even if the poll is already running — so a prior
+  // job's timer/cumulative cannot leak. Capture delta synchronously before reset; mark may await.
+  const restartFlush = flushReadyFamilies();
+  resetReadyBatching();
+  void restartFlush;
   if (pollTimer) return;
   rustSeenRunning = false;
-  resetReadyBatching();
   // Events push live progress; poll is a slow fallback so we do not double-storm the UI.
   pollTimer = window.setInterval(() => void pollRustProgress(), 1600);
   void pollRustProgress();
@@ -773,7 +781,6 @@ export function cancelDownloadQueue() {
   const keepFailed = (lastFailedNames.length ? lastFailedNames : job.failedNames).slice();
   const keepDetails = job.failedDetails.slice();
   ignoreProgress = true;
-  resetReadyBatching();
   // Cancel always stops the queue; keep failures so Retry stays visible.
   job = {
     ...EMPTY,
@@ -799,9 +806,8 @@ export function cancelDownloadQueue() {
       : "Fonts already saved stay in Documents → Font Manager.",
     action: { label: "Open folder", onClick: () => void openActivatedFolder() },
   });
-  void import("./store").then(({ useFontStore }) => {
-    useFontStore.getState().clearPendingActivate();
-  });
+  // Flush+mark any queued ready families before clearPending; reset timer/cumulative with that.
+  void finalizeReadyAndClearPending();
 }
 
 export function pauseDownloadQueue() {
