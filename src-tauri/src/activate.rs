@@ -1690,6 +1690,7 @@ fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
             if gc {
                 let _ = fs::remove_file(path.join(".complete"));
                 let _ = fs::remove_file(path.join(".expected"));
+                let _ = fs::remove_file(path.join(".google-planned"));
                 let _ = fs::remove_file(path.join(".fontsource-version"));
                 let _ = fs::remove_dir_all(path);
             }
@@ -1868,19 +1869,39 @@ fn family_google_planned_marker(dir: &Path) -> PathBuf {
     dir.join(".google-planned")
 }
 
-fn write_google_planned(dir: &Path, expected: usize) {
-    if expected == 0 {
+/// Persist the exact Google face-key list (one filename per line) so verify can
+/// match stamp — never a bare count that accepts any google-shaped / latin pad.
+fn write_google_planned(dir: &Path, keys: &[String]) {
+    if keys.is_empty() {
         let _ = fs::remove_file(family_google_planned_marker(dir));
         return;
     }
-    let _ = fs::write(
-        family_google_planned_marker(dir),
-        expected.to_string().as_bytes(),
-    );
+    let body = keys.join("\n");
+    let _ = fs::write(family_google_planned_marker(dir), body.as_bytes());
 }
 
 fn clear_google_planned(dir: &Path) {
     let _ = fs::remove_file(family_google_planned_marker(dir));
+}
+
+/// Read planned Google face keys from `.google-planned`. Rejects legacy bare-count
+/// bodies (`"18"`) — those cannot prove stamp/verify key parity.
+fn read_google_planned_keys(dir: &Path) -> Option<Vec<String>> {
+    let s = fs::read_to_string(family_google_planned_marker(dir)).ok()?;
+    let keys: Vec<String> = s
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect();
+    if keys.is_empty() {
+        return None;
+    }
+    // Legacy body was a single integer count — not a key list.
+    if keys.len() == 1 && keys[0].chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(keys)
 }
 
 fn count_intact_google_face_keys(dir: &Path, slug: &str) -> usize {
@@ -1910,14 +1931,20 @@ fn count_intact_google_listed_keys(
         .count()
 }
 
-/// Faces that count toward `.complete`. When Google planned the set, only Google face
-/// keys count — never Fontsource `*-latin-*` (or other subset) padding.
+fn count_intact_planned_keys(dir: &Path, keys: &[String]) -> usize {
+    keys.iter().filter(|k| ttf_intact(&dir.join(k))).count()
+}
+
+/// Faces that count toward `.complete`. When Google planned the set, only the
+/// listed keys in `.google-planned` count — never any-google-shaped or latin pad.
 fn count_intact_toward_expected(dir: &Path) -> usize {
     if family_google_planned_marker(dir).is_file() {
-        let slug = dir_slug_hint(dir);
-        if !slug.is_empty() {
-            return count_intact_google_face_keys(dir, &slug);
+        if let Some(keys) = read_google_planned_keys(dir) {
+            return count_intact_planned_keys(dir, &keys);
         }
+        // Marker present but body unreadable / legacy bare count: do not accept
+        // latin padding or arbitrary google-shaped files as satisfying the plan.
+        return 0;
     }
     count_intact_faces(dir)
 }
@@ -1987,6 +2014,7 @@ fn purge_family_files_result(app: &AppHandle, family: &str) -> Result<(), String
     for dir in family_locations(app, family) {
         let _ = fs::remove_file(family_complete_marker(&dir));
         let _ = fs::remove_file(family_expected_marker(&dir));
+        clear_google_planned(&dir);
         let _ = fs::remove_file(dir.join(".fontsource-version"));
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
@@ -2144,26 +2172,26 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     let mut version = String::new();
 
     // Google desktop TTFs first (official families): discover richest listing, then stream
-    // to disk (no full-family RAM buffer). Fontsource fills when Google yields 0 or partial.
+    // to disk (no full-family RAM buffer). Fontsource only when Google listed nothing.
     let (google_wrote, google_listed) =
         fetch_google_family_faces_to_dir(client, family, &slug, &root);
     let google_expected = google_listed.len();
     wrote = wrote.saturating_add(google_wrote);
     if google_expected > 0 {
         planned = google_expected;
-        write_google_planned(&root, google_expected);
+        let keys: Vec<String> = google_listed
+            .iter()
+            .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
+            .collect();
+        write_google_planned(&root, &keys);
     } else {
         clear_google_planned(&root);
     }
 
-    // Gate FS fill decision on Google face keys (not total intact, which latin padding inflates).
-    let google_keys_intact = if google_expected > 0 {
-        count_intact_google_listed_keys(&root, &slug, &google_listed)
-    } else {
-        0
-    };
-    let need_fontsource = google_wrote == 0
-        || (google_expected > 0 && google_keys_intact < google_expected);
+    // Fontsource `*-{subset}-*` names can never satisfy Google face keys — skip FS
+    // fill whenever Google planned a set (partial downloads included). Only burn
+    // Fontsource when Google listed nothing.
+    let need_fontsource = google_expected == 0;
     if need_fontsource {
         if let Some((all_subsets, weights, has_italic, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();
@@ -2260,7 +2288,7 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     }
 }
 
-const DOWNLOAD_WORKERS: usize = 3;
+const DOWNLOAD_WORKERS: usize = FACE_STREAM_SLOTS; // was 3; waits unbounded → match stream slots
 
 fn take_next_family(queue: &Mutex<VecDeque<String>>) -> Option<String> {
     let state = bulk();
@@ -2537,6 +2565,7 @@ pub fn remove_library_file(app: AppHandle, family: String, file_name: String) ->
         if left.is_empty() {
             let _ = fs::remove_file(family_complete_marker(dir));
             let _ = fs::remove_file(family_expected_marker(dir));
+            clear_google_planned(dir);
             let _ = fs::remove_file(dir.join(".fontsource-version"));
             let _ = fs::remove_dir(dir);
         }
@@ -3236,7 +3265,12 @@ mod install_path_tests {
             &fake,
         )
         .unwrap();
-        fs::write(family_dir.join(".google-planned"), b"2").unwrap();
+        // Key list (not bare count) — verify must require these exact files.
+        fs::write(
+            family_dir.join(".google-planned"),
+            b"chiron-sung-hk-400-normal.ttf\nchiron-sung-hk-700-normal.ttf\n",
+        )
+        .unwrap();
         fs::write(family_dir.join(".expected"), b"2").unwrap();
         fs::write(family_dir.join(".complete"), b"2").unwrap();
         assert_eq!(count_intact_faces(&family_dir), 2);
@@ -3246,6 +3280,75 @@ mod install_path_tests {
             !family_complete_marker(&family_dir).is_file(),
             "latin padding must not keep a Google-planned .complete"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_requires_listed_keys_not_any_google_shaped() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fm-listed-keys-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let family_dir = dir.join("Roboto");
+        fs::create_dir_all(&family_dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        // Listed keys want 400 + 700; disk has 400 + wrong google-shaped 500 (pad hole).
+        fs::write(family_dir.join("roboto-400-normal.ttf"), &fake).unwrap();
+        fs::write(family_dir.join("roboto-500-normal.ttf"), &fake).unwrap();
+        fs::write(
+            family_dir.join(".google-planned"),
+            b"roboto-400-normal.ttf\nroboto-700-normal.ttf\n",
+        )
+        .unwrap();
+        fs::write(family_dir.join(".expected"), b"2").unwrap();
+        fs::write(family_dir.join(".complete"), b"2").unwrap();
+        assert_eq!(count_intact_google_face_keys(&family_dir, "roboto"), 2);
+        assert_eq!(count_intact_toward_expected(&family_dir), 1);
+        verify_complete_marker(&family_dir);
+        assert!(
+            !family_complete_marker(&family_dir).is_file(),
+            "any-google-shaped pad must not keep stamp when listed key missing"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_bare_count_google_planned_does_not_trust_pad() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fm-legacy-gp-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let family_dir = dir.join("Roboto");
+        fs::create_dir_all(&family_dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(family_dir.join("roboto-400-normal.ttf"), &fake).unwrap();
+        fs::write(family_dir.join("roboto-latin-400-normal.ttf"), &fake).unwrap();
+        fs::write(family_dir.join(".google-planned"), b"2").unwrap(); // legacy bare count
+        fs::write(family_dir.join(".expected"), b"2").unwrap();
+        fs::write(family_dir.join(".complete"), b"2").unwrap();
+        assert_eq!(count_intact_toward_expected(&family_dir), 0);
+        verify_complete_marker(&family_dir);
+        assert!(!family_complete_marker(&family_dir).is_file());
         let _ = fs::remove_dir_all(&dir);
     }
 }

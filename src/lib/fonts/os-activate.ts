@@ -519,7 +519,9 @@ function parseCssTtfFaces(css: string): { style: string; weight: string; url: st
 /** Google CSS2 desktop TTFs first (Mozilla UA). Discover richest axis listing, then fetch. */
 async function googleCssTtfFiles(family: string, slug: string) {
   // Caller gates on isGoogleCatalog; still safe if mis-invoked for catalog:other.
-  const axes = [staticWeightAxis(), "ital,wght@0,100..900;1,100..900", "wght@100..900", ""];
+  // Match Rust discover_richest_google_listing: static ital,wght@… then bare.
+  // Skip variable 100..900 axes — they 400-sweep for some CJK (Chiron).
+  const axes = [staticWeightAxis(), ""];
   let best: { style: string; weight: string; url: string }[] = [];
   let bestRank = -1;
   for (const axis of axes) {
@@ -534,7 +536,7 @@ async function googleCssTtfFiles(family: string, slug: string) {
       if (css.length < 32 || !css.includes("@font-face")) continue;
       const listed = parseCssTtfFaces(css);
       if (!listed.length) continue;
-      const rank = !axis ? 0 : axis.startsWith("wght@") ? 1 : axis.includes("100..900") ? 2 : 3;
+      const rank = !axis ? 0 : axis.startsWith("ital,wght@") ? 3 : 1;
       if (listed.length > best.length || (listed.length === best.length && rank > bestRank)) {
         best = listed;
         bestRank = rank;
@@ -601,22 +603,11 @@ async function fontsourceTtfFiles(font: FontRecord, slug: string) {
 
 async function googleTtfFiles(font: FontRecord, _lean: boolean) {
   const slug = slugFamily(font.family);
-  // Google CSS2 desktop TTFs first for official families; Fontsource fills when empty/partial.
+  // Google CSS2 desktop TTFs first for official families; Fontsource only when Google listed nothing.
   const google = isGoogleCatalog(font) ? await googleCssTtfFiles(font.family, slug) : [];
   if (google.length) {
-    const weights = Array.from(new Set(font.weights.length ? font.weights : [400]));
-    const styleCount = font.italic ? 2 : 1;
-    const expected = Math.max(1, weights.length * styleCount);
-    // Only burn Fontsource when Google came back partial.
-    if (google.length >= expected) return google;
-    const have = new Set(google.map((f) => f.fileName));
-    const fs = await fontsourceTtfFiles(font, slug);
-    for (const f of fs) {
-      if (!have.has(f.fileName)) {
-        google.push(f);
-        have.add(f.fileName);
-      }
-    }
+    // Fontsource `*-{subset}-*` names can never fill Google face keys — skip FS
+    // fill on partial Google (matches Rust need_fontsource = google_expected == 0).
     return google;
   }
   return fontsourceTtfFiles(font, slug);
