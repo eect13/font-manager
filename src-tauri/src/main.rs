@@ -44,7 +44,7 @@ fn quit_gracefully(app: &tauri::AppHandle) {
         let _ = done_tx.send(());
     });
     // Prefer finishing unload over a hard exit mid-Remove. Budget grows with
-    // ~11k-path sessions (Skye 1.0.153); hard exit still leaves .session-paths
+    // ~11k-path sessions (~15ms/path); hard exit still leaves .session-paths
     // for startup recovery when the hung-GDI cap is hit.
     let _ = done_rx.recv_timeout(budget);
     std::process::exit(0);

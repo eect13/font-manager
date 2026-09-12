@@ -613,9 +613,10 @@ fn merge_unique_paths(primary: Vec<PathBuf>, extra: Vec<PathBuf>) -> Vec<PathBuf
 }
 
 /// Quit watchdog budget: large enumerable sessions need more than 45s.
-/// ~3ms/path, clamped to [45s, 300s].
+/// ~15ms/path (RemoveFontResourceExW + set_len probe), clamped to [45s, 300s].
+/// ~11k-path libraries need well above the old 3ms→45s floor.
 pub fn quit_unload_budget_for(path_count: usize) -> Duration {
-    let ms = (path_count as u64).saturating_mul(3).clamp(45_000, 300_000);
+    let ms = (path_count as u64).saturating_mul(15).clamp(45_000, 300_000);
     Duration::from_millis(ms)
 }
 
@@ -832,10 +833,34 @@ fn invalidate_google_latin_lies_once(app: &AppHandle) {
     let _ = fs::write(marker, b"1.0.147\n");
 }
 
+/// Payload for startup fail-loud toast when recovery keeps locked leftovers.
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)] // emitted from Windows-only recover_stale_session
+struct SessionRecoveryNotice {
+    locked: usize,
+    attempted: usize,
+}
+
+/// Emit after a short delay so the webview can bind listeners during hydrate.
+#[allow(dead_code)] // called from Windows-only recover_stale_session
+fn emit_session_recovery_toast(app: &AppHandle, locked: usize, attempted: usize) {
+    if locked == 0 {
+        return;
+    }
+    let handle = app.clone();
+    let notice = SessionRecoveryNotice { locked, attempted };
+    thread::spawn(move || {
+        // setup spawns session_begin before UI listen; one delayed emit avoids a
+        // lost event without toast-storming (name-heal style single notice).
+        thread::sleep(Duration::from_millis(2200));
+        let _ = handle.emit("session-recovery", &notice);
+    });
+}
+
 /// Recover crash/quit-without-unload leftovers before any fresh Add.
 /// Unloads `.session-paths.txt`, then clears sidecars after best-effort unload
 /// when locks are gone; otherwise keeps remaining locked paths and fail-loud
-/// logs so Heal is not silently stuck on thousands of GDI maps.
+/// (eprintln + startup toast) so Heal is not silently stuck on thousands of GDI maps.
 #[allow(dead_code)]
 fn recover_stale_session(app: &AppHandle) {
     #[cfg(windows)]
@@ -860,6 +885,7 @@ fn recover_stale_session(app: &AppHandle) {
                     still.len(),
                     stats.attempted
                 );
+                emit_session_recovery_toast(app, still.len(), stats.attempted.max(still.len()));
             }
         }
         // Drop stale active after path recovery so we do not re-Add thousands
@@ -5818,8 +5844,16 @@ mod session_sidecar_tests {
     fn quit_unload_budget_clamps() {
         assert_eq!(quit_unload_budget_for(0), Duration::from_secs(45));
         assert_eq!(quit_unload_budget_for(100), Duration::from_secs(45));
-        // 20_000 paths * 3ms = 60s
-        assert_eq!(quit_unload_budget_for(20_000), Duration::from_secs(60));
+        // ~11k library (Eric): 11_000 * 15ms = 165s — must exceed old 45s floor
+        let eleven_k = quit_unload_budget_for(11_000);
+        assert!(
+            eleven_k > Duration::from_secs(45),
+            "11k paths must get >45s (got {:?})",
+            eleven_k
+        );
+        assert_eq!(eleven_k, Duration::from_secs(165));
+        // 20_000 paths * 15ms = 300s (hits cap)
+        assert_eq!(quit_unload_budget_for(20_000), Duration::from_secs(300));
         assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(300));
     }
 
