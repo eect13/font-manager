@@ -7,7 +7,14 @@ import { refineLicense } from "./license";
 import { findFont, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
-import { restoreSessionFromDisk, rememberSessionFamilies, listSessionFamilies, pruneUnknownFolders, syncManagedDocumentsRoot } from "./os-activate";
+import {
+  restoreSessionFromDisk,
+  rememberSessionFamilies,
+  listSessionFamilies,
+  pruneUnknownFolders,
+  syncManagedDocumentsRoot,
+  bindDownloadEvents,
+} from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { startWatchPolling } from "./watch-folder";
 import { loadSystemFonts } from "./system-fonts";
@@ -106,6 +113,7 @@ export function useHydrateFonts() {
   useEffect(() => {
     let cancelled = false;
     let stopCatalog = () => {};
+    void bindDownloadEvents();
     void (async () => {
       await loadCachedCatalog();
       if (cancelled) return;

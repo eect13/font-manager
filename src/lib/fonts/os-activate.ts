@@ -375,6 +375,17 @@ function toastNameHealLocked(locked: number, healed = 0) {
   });
 }
 
+function toastSessionRecoveryLocked(locked: number, attempted = 0) {
+  const faces = `${locked.toLocaleString()} face${locked === 1 ? "" : "s"} still write-locked`;
+  const attemptedBit =
+    attempted > 0 ? ` after Remove (attempted ${attempted.toLocaleString()})` : "";
+  toast.error(`Session recovery: ${faces}`, {
+    description: `Prior quit left GDI maps held by fontdrvhost/Adobe${attemptedBit}. Deactivate-all or reboot, then Repair — Heal cannot rewrite locked TTFs.`,
+    duration: 28_000,
+    action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+  });
+}
+
 export async function repairIncompleteFamilies(families: string[] = []): Promise<number> {
   if (!(await inDesktopShell())) return 0;
   void bindDownloadEvents();
@@ -801,7 +812,8 @@ async function pollRustProgress() {
 }
 
 let eventsBound = false;
-async function bindDownloadEvents() {
+/** Bind desktop event listeners early (hydrate) so startup session-recovery toasts are not lost. */
+export async function bindDownloadEvents() {
   if (eventsBound) return;
   eventsBound = true;
   if (!(await inDesktopShell())) return;
@@ -816,6 +828,13 @@ async function bindDownloadEvents() {
       // Activate/download heal path — fail loud when Illustrator/fontdrvhost holds TTFs.
       if (locked > 0) {
         toastNameHealLocked(locked, p.healed ?? 0);
+      }
+    });
+    await listen("session-recovery", (ev) => {
+      const p = ev.payload as { locked?: number; attempted?: number };
+      const locked = p.locked ?? 0;
+      if (locked > 0) {
+        toastSessionRecoveryLocked(locked, p.attempted ?? 0);
       }
     });
   } catch {

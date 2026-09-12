@@ -1,4 +1,4 @@
-# Font Manager **1.0.153**
+# Font Manager **1.0.154**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -44,7 +44,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 | **Delete** | Remove the family folder | Unload |
 | **Repair** | Re-fetch when `.complete` is missing or face count is short of expected | Register when done |
 
-**X** quits the app (session fonts unload; Documents files stay). A family is **ready** only with a `.complete` marker stamped when the on-disk face count matches the expected full set — partial downloads do not stamp, and Scan/hydrate deletes lying `.complete` markers (including legacy bare `"1"` with no expected face count, and official Google Fontsource latin packs stamped complete without `.google-planned`, or — when there is no planned key list — below the catalog weights×italic floor; when `.google-planned` is a real key list, expected = keys.len() only) so Repair appears. Ready families register again on next launch — no re-download.
+**X** quits the app (session fonts unload via `RemoveFontResourceExW`; `.session-paths.txt` / `.session-active.json` clear when locks are gone; Documents TTFs stay). A family is **ready** only with a `.complete` marker stamped when the on-disk face count matches the expected full set — partial downloads do not stamp, and Scan/hydrate deletes lying `.complete` markers (including legacy bare `"1"` with no expected face count, and official Google Fontsource latin packs stamped complete without `.google-planned`, or — when there is no planned key list — below the catalog weights×italic floor; when `.google-planned` is a real key list, expected = keys.len() only) so Repair appears. Next launch recovers any stale session sidecars, then UI hydrate re-Activates the persisted library selection — no re-download.
 
 **1.0.149 UI honesty.** Activated scope and badge always follow live `activated[]` (never merge download queue / pendingActivate; no freeze while downloads run). Google Fonts drawer count is the official directory size (~1,946), not the full Fontsource-merged list. Catalog refresh toast: `Catalog N (Google 1946 · Fontsource exclusive M)`.
 

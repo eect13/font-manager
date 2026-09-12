@@ -239,16 +239,17 @@ mod winfont {
         path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
     }
 
-    fn remove_one(path: &Path) {
+    fn remove_one(path: &Path) -> bool {
         if is_windows_fonts_path(path) {
-            return;
+            return false;
         }
         let w = wide(path);
         unsafe {
             // Match live unregister: one Remove can leave a refcount so Explorer
             // still sees "in use". Second Remove is a no-op when already gone.
-            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
-            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
+            let a = RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
+            let b = RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
+            a != 0 || b != 0
         }
     }
 
@@ -406,11 +407,18 @@ mod winfont {
         notify();
     }
 
+    #[derive(Debug, Clone, Default)]
+    pub struct UnloadStats {
+        pub attempted: usize,
+        /// Paths where at least one RemoveFontResourceExW returned non-zero.
+        pub removed_ok: usize,
+    }
+
     /// Drain this process's Adds plus leftover paths from a previous incomplete
     /// quit. Always double-Remove (same as live unregister). Local GdiFlush only
     /// on the quit path — HWND_BROADCAST WM_FONTCHANGE can re-lock Documents
     /// files in Explorer. Live Deactivate may still broadcast.
-    pub fn unload_paths(extra: Vec<PathBuf>, broadcast: bool) {
+    pub fn unload_paths(extra: Vec<PathBuf>, broadcast: bool) -> UnloadStats {
         let mut paths = loaded()
             .lock()
             .map(|mut g| g.drain().collect::<Vec<_>>())
@@ -424,8 +432,12 @@ mod winfont {
                 paths.push(path);
             }
         }
+        let attempted = paths.len();
+        let mut removed_ok = 0usize;
         for path in paths.iter() {
-            remove_one(path);
+            if remove_one(path) {
+                removed_ok += 1;
+            }
         }
         if !paths.is_empty() {
             unsafe {
@@ -433,7 +445,7 @@ mod winfont {
             }
             // Second pass after flush: crash leftovers / raced Adds.
             for path in paths.iter() {
-                remove_one(path);
+                let _ = remove_one(path);
             }
             unsafe {
                 GdiFlush();
@@ -445,6 +457,10 @@ mod winfont {
             }
         }
         dirty().store(false, Ordering::SeqCst);
+        UnloadStats {
+            attempted,
+            removed_ok,
+        }
     }
 }
 
@@ -534,21 +550,15 @@ fn notify_fonts_changed_maybe() {
     }
 }
 
-fn session_path(app: &AppHandle) -> Option<PathBuf> {
-    documents_root(app).ok().map(|p| p.join(".session-active.json"))
+fn session_active_file_in(root: &Path) -> PathBuf {
+    root.join(".session-active.json")
 }
 
-fn session_paths_file(app: &AppHandle) -> Option<PathBuf> {
-    documents_root(app).ok().map(|p| p.join(".session-paths.txt"))
+fn session_paths_file_in(root: &Path) -> PathBuf {
+    root.join(".session-paths.txt")
 }
 
-fn load_session_paths(app: &AppHandle) -> Vec<PathBuf> {
-    let Some(path) = session_paths_file(app) else {
-        return Vec::new();
-    };
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
+fn parse_session_paths_text(text: &str) -> Vec<PathBuf> {
     text.lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
@@ -556,10 +566,16 @@ fn load_session_paths(app: &AppHandle) -> Vec<PathBuf> {
         .collect()
 }
 
-fn save_session_paths(app: &AppHandle, paths: &[PathBuf]) {
-    let Some(file) = session_paths_file(app) else {
-        return;
+fn load_session_paths_in(root: &Path) -> Vec<PathBuf> {
+    let path = session_paths_file_in(root);
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
     };
+    parse_session_paths_text(&text)
+}
+
+fn save_session_paths_in(root: &Path, paths: &[PathBuf]) {
+    let file = session_paths_file_in(root);
     if let Some(dir) = file.parent() {
         let _ = fs::create_dir_all(dir);
     }
@@ -571,9 +587,116 @@ fn save_session_paths(app: &AppHandle, paths: &[PathBuf]) {
     let _ = fs::write(file, body);
 }
 
+fn clear_session_paths_in(root: &Path) {
+    let _ = fs::remove_file(session_paths_file_in(root));
+}
+
+fn clear_session_active_in(root: &Path) {
+    let _ = fs::remove_file(session_active_file_in(root));
+}
+
+/// Drop quit/crash sidecars under Documents/Font Manager.
+fn clear_session_sidecars_in(root: &Path) {
+    clear_session_paths_in(root);
+    clear_session_active_in(root);
+}
+
+fn merge_unique_paths(primary: Vec<PathBuf>, extra: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for p in primary.into_iter().chain(extra) {
+        if seen.insert(p.clone()) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Quit watchdog budget: large enumerable sessions need more than 45s.
+/// ~15ms/path (RemoveFontResourceExW + set_len probe), clamped to [45s, 300s].
+/// ~11k-path libraries need well above the old 3ms→45s floor.
+pub fn quit_unload_budget_for(path_count: usize) -> Duration {
+    let ms = (path_count as u64).saturating_mul(15).clamp(45_000, 300_000);
+    Duration::from_millis(ms)
+}
+
+/// Decision after best-effort unload: clear sidecars on success; on partial
+/// failure keep remaining locked paths for next-boot recovery and fail loud.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionEndCleanup {
+    clear_active: bool,
+    clear_paths: bool,
+    keep_paths: Vec<PathBuf>,
+    fail_loud: Option<String>,
+}
+
+fn plan_session_end_cleanup(
+    attempted: usize,
+    still_locked: &[PathBuf],
+) -> SessionEndCleanup {
+    if still_locked.is_empty() {
+        SessionEndCleanup {
+            clear_active: true,
+            clear_paths: true,
+            keep_paths: Vec::new(),
+            fail_loud: None,
+        }
+    } else {
+        SessionEndCleanup {
+            clear_active: true,
+            clear_paths: false,
+            keep_paths: still_locked.to_vec(),
+            fail_loud: Some(format!(
+                "Font Manager: session unload incomplete — {} of {} paths still write-locked (fontdrvhost/Adobe?). Next launch will retry RemoveFontResourceExW; or Deactivate-all / reboot then Repair.",
+                still_locked.len(),
+                attempted.max(still_locked.len())
+            )),
+        }
+    }
+}
+
+fn session_path(app: &AppHandle) -> Option<PathBuf> {
+    documents_root(app).ok().map(|p| session_active_file_in(&p))
+}
+
+#[allow(dead_code)]
+fn session_paths_file(app: &AppHandle) -> Option<PathBuf> {
+    documents_root(app).ok().map(|p| session_paths_file_in(&p))
+}
+
+#[allow(dead_code)]
+fn load_session_paths(app: &AppHandle) -> Vec<PathBuf> {
+    let Ok(root) = documents_root(app) else {
+        return Vec::new();
+    };
+    load_session_paths_in(&root)
+}
+
+#[allow(dead_code)]
+fn save_session_paths(app: &AppHandle, paths: &[PathBuf]) {
+    let Ok(root) = documents_root(app) else {
+        return;
+    };
+    save_session_paths_in(&root, paths);
+}
+
+#[allow(dead_code)]
 fn clear_session_paths(app: &AppHandle) {
-    if let Some(file) = session_paths_file(app) {
-        let _ = fs::remove_file(file);
+    if let Ok(root) = documents_root(app) {
+        clear_session_paths_in(&root);
+    }
+}
+
+#[allow(dead_code)]
+fn clear_session_active(app: &AppHandle) {
+    if let Ok(root) = documents_root(app) {
+        clear_session_active_in(&root);
+    }
+}
+
+fn clear_session_sidecars(app: &AppHandle) {
+    if let Ok(root) = documents_root(app) {
+        clear_session_sidecars_in(&root);
     }
 }
 
@@ -596,6 +719,51 @@ fn save_session_families(app: &AppHandle, families: &[String]) {
     }
     let body = serde_json::to_vec_pretty(families).unwrap_or_else(|_| b"[]".to_vec());
     let _ = fs::write(path, body);
+}
+
+/// True when DeleteFile/rewrite would hit sharing violation (GDI/Adobe lock).
+/// Uses set_len(same) — does not truncate — so Heal-style rewrite locks surface
+/// without mutating font bytes.
+fn path_still_write_locked(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    match fs::OpenOptions::new().write(true).read(true).open(path) {
+        Ok(f) => {
+            let Ok(meta) = f.metadata() else {
+                return false;
+            };
+            match f.set_len(meta.len()) {
+                Ok(()) => false,
+                Err(err) => is_lock_err(&err),
+            }
+        }
+        Err(err) => is_lock_err(&err),
+    }
+}
+
+fn filter_still_write_locked(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|p| path_still_write_locked(p))
+        .cloned()
+        .collect()
+}
+
+/// How long quit_gracefully should wait for session_end (scales with path count).
+pub fn quit_unload_budget(app: &AppHandle) -> Duration {
+    #[cfg(windows)]
+    {
+        let n = load_session_paths(app)
+            .len()
+            .max(winfont::snapshot_loaded().len());
+        return quit_unload_budget_for(n);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        quit_unload_budget_for(0)
+    }
 }
 
 fn session_add(app: &AppHandle, names: &[String]) {
@@ -665,15 +833,81 @@ fn invalidate_google_latin_lies_once(app: &AppHandle) {
     let _ = fs::write(marker, b"1.0.147\n");
 }
 
+/// Payload for startup fail-loud toast when recovery keeps locked leftovers.
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)] // emitted from Windows-only recover_stale_session
+struct SessionRecoveryNotice {
+    locked: usize,
+    attempted: usize,
+}
+
+/// Emit after a short delay so the webview can bind listeners during hydrate.
+#[allow(dead_code)] // called from Windows-only recover_stale_session
+fn emit_session_recovery_toast(app: &AppHandle, locked: usize, attempted: usize) {
+    if locked == 0 {
+        return;
+    }
+    let handle = app.clone();
+    let notice = SessionRecoveryNotice { locked, attempted };
+    thread::spawn(move || {
+        // setup spawns session_begin before UI listen; one delayed emit avoids a
+        // lost event without toast-storming (name-heal style single notice).
+        thread::sleep(Duration::from_millis(2200));
+        let _ = handle.emit("session-recovery", &notice);
+    });
+}
+
+/// Recover crash/quit-without-unload leftovers before any fresh Add.
+/// Unloads `.session-paths.txt`, then clears sidecars after best-effort unload
+/// when locks are gone; otherwise keeps remaining locked paths and fail-loud
+/// (eprintln + startup toast) so Heal is not silently stuck on thousands of GDI maps.
+#[allow(dead_code)]
+fn recover_stale_session(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        let Ok(root) = documents_root(app) else {
+            return;
+        };
+        let leftover = load_session_paths_in(&root);
+        let had_active = session_active_file_in(&root).is_file();
+        if leftover.is_empty() && !had_active {
+            return;
+        }
+        if !leftover.is_empty() {
+            let stats = winfont::unload_paths(leftover.clone(), false);
+            let still = filter_still_write_locked(&leftover);
+            if still.is_empty() {
+                clear_session_paths_in(&root);
+            } else {
+                save_session_paths_in(&root, &still);
+                eprintln!(
+                    "Font Manager: startup session recovery — {} path(s) still write-locked after Remove (attempted {}). Deactivate-all or reboot, then Repair.",
+                    still.len(),
+                    stats.attempted
+                );
+                emit_session_recovery_toast(app, still.len(), stats.attempted.max(still.len()));
+            }
+        }
+        // Drop stale active after path recovery so we do not re-Add thousands
+        // before UI hydrate/Repair. Live Activate rewrites `.session-active.json`.
+        // Keep it only while locked leftovers remain (Deactivate-all target).
+        let paths_remain = session_paths_file_in(&root).is_file()
+            && !load_session_paths_in(&root).is_empty();
+        if !paths_remain {
+            clear_session_active_in(&root);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+    }
+}
+
 pub fn session_begin(app: &AppHandle) {
     invalidate_google_latin_lies_once(app);
     #[cfg(windows)]
     {
-        let leftover = load_session_paths(app);
-        if !leftover.is_empty() {
-            winfont::unload_paths(leftover, false);
-            clear_session_paths(app);
-        }
+        recover_stale_session(app);
         // Targeted dirs only — do not walk all of Documents before the UI is up.
         let families = load_session_families(app);
         let mut files = 0usize;
@@ -702,6 +936,12 @@ pub fn session_begin(app: &AppHandle) {
     }
     #[cfg(not(windows))]
     {
+        // Non-Windows: still drop leftover sidecar files from a copied library.
+        if let Ok(root) = documents_root(app) {
+            if session_paths_file_in(&root).is_file() || session_active_file_in(&root).is_file() {
+                clear_session_sidecars_in(&root);
+            }
+        }
         let handle = app.clone();
         thread::spawn(move || {
             let _ = index_disk(&handle, true);
@@ -720,20 +960,38 @@ pub fn session_end(app: &AppHandle) {
         bulk().running.store(false, Ordering::SeqCst);
         winfont::begin_unload();
         winfont::wait_in_flight(Duration::from_millis(1500));
-        // Persist before Remove so a hung 45s watchdog still has a leftover
+        // Persist before Remove so a hung quit watchdog still has a leftover
         // list for next boot. Do not walk Documents on quit.
         let mut extra = load_session_paths(app);
-        extra.extend(winfont::snapshot_loaded());
+        extra = merge_unique_paths(extra, winfont::snapshot_loaded());
         save_session_paths(app, &extra);
+        let attempted = extra.len();
         // No WM_FONTCHANGE on quit — broadcast can re-lock family folders in
         // Explorer. Double-Remove + local GdiFlush is enough for DeleteFile.
-        winfont::unload_paths(extra, false);
-        // Keep .session-paths.txt until next session_begin finishes leftover
-        // unload. Clearing here made a mid-exit or partial Remove invisible.
+        let stats = winfont::unload_paths(extra.clone(), false);
+        let still = filter_still_write_locked(&extra);
+        let plan = plan_session_end_cleanup(attempted.max(stats.attempted), &still);
+        if let Some(msg) = &plan.fail_loud {
+            eprintln!("{msg}");
+        } else if stats.attempted > 0 && stats.removed_ok * 2 < stats.attempted {
+            // Probe clean but most Removes returned 0 — still surface it.
+            eprintln!(
+                "Font Manager: session unload Remove acknowledged {}/{} paths (rest already absent or refcount miss). Sidecars cleared.",
+                stats.removed_ok, stats.attempted
+            );
+        }
+        if plan.clear_active {
+            clear_session_active(app);
+        }
+        if plan.clear_paths {
+            clear_session_paths(app);
+        } else if !plan.keep_paths.is_empty() {
+            save_session_paths(app, &plan.keep_paths);
+        }
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
+        clear_session_sidecars(app);
     }
 }
 
@@ -5490,5 +5748,131 @@ mod install_path_tests {
             "keys.len() must win over understated .expected"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+
+#[cfg(test)]
+mod session_sidecar_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fm-session-{}-{}-{}",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn parse_session_paths_skips_blank_lines() {
+        let got = parse_session_paths_text("a.ttf\n\n  b.ttf  \n\n");
+        assert_eq!(got.len(), 2);
+        assert!(got[0].ends_with("a.ttf"));
+        assert!(got[1].ends_with("b.ttf"));
+    }
+
+    #[test]
+    fn clear_session_sidecars_removes_paths_and_active() {
+        let root = temp_root("clear");
+        fs::write(session_paths_file_in(&root), "C:\\\\a.ttf\n").unwrap();
+        fs::write(session_active_file_in(&root), b"[\"Nunito\"]\n").unwrap();
+        assert!(session_paths_file_in(&root).is_file());
+        assert!(session_active_file_in(&root).is_file());
+        clear_session_sidecars_in(&root);
+        assert!(!session_paths_file_in(&root).is_file());
+        assert!(!session_active_file_in(&root).is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_load_roundtrip_session_paths() {
+        let root = temp_root("roundtrip");
+        let paths = vec![
+            PathBuf::from("C:/Fonts/a.ttf"),
+            PathBuf::from("C:/Fonts/b.ttf"),
+        ];
+        save_session_paths_in(&root, &paths);
+        let got = load_session_paths_in(&root);
+        assert_eq!(got, paths);
+        clear_session_paths_in(&root);
+        assert!(load_session_paths_in(&root).is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_unique_paths_dedupes() {
+        let a = vec![PathBuf::from("x"), PathBuf::from("y")];
+        let b = vec![PathBuf::from("y"), PathBuf::from("z")];
+        let m = merge_unique_paths(a, b);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m[0], PathBuf::from("x"));
+        assert_eq!(m[2], PathBuf::from("z"));
+    }
+
+    #[test]
+    fn plan_clears_both_when_no_locks_remain() {
+        let plan = plan_session_end_cleanup(10, &[]);
+        assert!(plan.clear_active);
+        assert!(plan.clear_paths);
+        assert!(plan.keep_paths.is_empty());
+        assert!(plan.fail_loud.is_none());
+    }
+
+    #[test]
+    fn plan_keeps_locked_paths_and_fails_loud() {
+        let locked = vec![PathBuf::from("a.ttf"), PathBuf::from("b.ttf")];
+        let plan = plan_session_end_cleanup(100, &locked);
+        assert!(plan.clear_active);
+        assert!(!plan.clear_paths);
+        assert_eq!(plan.keep_paths, locked);
+        let msg = plan.fail_loud.expect("fail-loud");
+        assert!(msg.contains("2 of 100"));
+        assert!(msg.contains("write-locked"));
+    }
+
+    #[test]
+    fn quit_unload_budget_clamps() {
+        assert_eq!(quit_unload_budget_for(0), Duration::from_secs(45));
+        assert_eq!(quit_unload_budget_for(100), Duration::from_secs(45));
+        // ~11k library (Eric): 11_000 * 15ms = 165s — must exceed old 45s floor
+        let eleven_k = quit_unload_budget_for(11_000);
+        assert!(
+            eleven_k > Duration::from_secs(45),
+            "11k paths must get >45s (got {:?})",
+            eleven_k
+        );
+        assert_eq!(eleven_k, Duration::from_secs(165));
+        // 20_000 paths * 15ms = 300s (hits cap)
+        assert_eq!(quit_unload_budget_for(20_000), Duration::from_secs(300));
+        assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn stale_sidecars_clear_after_best_effort_when_unlocked() {
+        // Unit stand-in for startup recovery file clear (GDI unload is Windows-only).
+        let root = temp_root("stale");
+        let fake = root.join("face.ttf");
+        fs::write(&fake, b"\x00\x01\x00\x00").unwrap();
+        save_session_paths_in(&root, &[fake.clone()]);
+        fs::write(session_active_file_in(&root), b"[\"Roboto\"]\n").unwrap();
+        let leftover = load_session_paths_in(&root);
+        assert_eq!(leftover.len(), 1);
+        // No GDI here — probe should see the file as writable, so clear both.
+        let still = filter_still_write_locked(&leftover);
+        assert!(still.is_empty(), "temp file must not be write-locked in tests");
+        clear_session_sidecars_in(&root);
+        assert!(!session_paths_file_in(&root).is_file());
+        assert!(!session_active_file_in(&root).is_file());
+        let _ = fs::remove_dir_all(&root);
     }
 }
