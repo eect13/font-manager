@@ -1104,7 +1104,9 @@ fn pull_fontsource_subset_to_dir(
                     return wrote;
                 }
                 let style = if *italic { "italic" } else { "normal" };
-                let name = sanitize(&format!("{slug}-{subset}-{weight}-{style}.ttf"));
+                // Never embed Fontsource subset token `latin` in on-disk names.
+                // CDN URLs still request the latin (or other) subset; filename matches Google keys.
+                let name = fontsource_face_filename(slug, subset, *weight, style);
                 let path = root.join(&name);
                 if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
                     register_path(&path);
@@ -1995,6 +1997,52 @@ fn google_face_filename(slug: &str, weight: &str, style: &str) -> String {
     sanitize(&format!("{slug}-{weight}-{style}.ttf"))
 }
 
+/// True when a file name embeds a Fontsource `latin` subset token.
+fn filename_has_latin_subset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("-latin-") || lower.contains("-latin.")
+}
+
+/// Fontsource on-disk name. Never includes `latin` in the filename — even when the
+/// CDN subset is latin / japanese-latin. Non-latin script subsets may keep their
+/// subset token (`chinese-hongkong`, …) so CJK packs do not collide.
+fn fontsource_face_filename(slug: &str, subset: &str, weight: u16, style: &str) -> String {
+    let sub = subset.trim().to_ascii_lowercase();
+    if sub.is_empty()
+        || sub == "latin"
+        || sub.starts_with("latin-")
+        || sub.contains("latin")
+        || filename_has_latin_subset(&format!("{slug}-{sub}-{weight}-{style}.ttf"))
+    {
+        return google_face_filename(slug, &weight.to_string(), style);
+    }
+    let name = sanitize(&format!("{slug}-{subset}-{weight}-{style}.ttf"));
+    debug_assert!(
+        !filename_has_latin_subset(&name),
+        "fontsource_face_filename must never emit latin-named files"
+    );
+    name
+}
+
+/// Strip any leftover `*-latin-*` files (legacy Fontsource packs).
+fn purge_latin_named_files(dir: &Path) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for ent in rd.flatten() {
+        let path = ent.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if filename_has_latin_subset(name) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 /// True when `file_name` matches a Google face key for `slug`.
 /// Fontsource names embed a subset (`{slug}-latin-400-normal.ttf`) — never count those
 /// toward Google planned / `.complete`.
@@ -2518,6 +2566,9 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
             wrote = wrote.saturating_add(fs_wrote);
         }
     }
+    // Legacy Fontsource packs used `*-latin-*` names — never leave those on disk.
+    purge_latin_named_files(&root);
+
     // Reconcile with on-disk intact after streaming paths.
     let intact_now = count_intact_faces(&root);
     wrote = intact_now.max(wrote);
@@ -3620,11 +3671,47 @@ mod complete_marker_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn purge_latin_named_files_strips_legacy_packs() {
+        let dir = temp_family_dir("purge-latin-names");
+        let fake = vec![0u8; 512];
+        fs::write(dir.join("roboto-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("roboto-latin-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("roboto-latin-700-italic.ttf"), &fake).unwrap();
+        purge_latin_named_files(&dir);
+        assert!(dir.join("roboto-400-normal.ttf").is_file());
+        assert!(!dir.join("roboto-latin-400-normal.ttf").is_file());
+        assert!(!dir.join("roboto-latin-700-italic.ttf").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
 mod install_path_tests {
+
     use super::*;
+
+    #[test]
+    fn fontsource_face_filename_never_embeds_latin() {
+        assert_eq!(
+            fontsource_face_filename("libre-baskerville", "latin", 400, "normal"),
+            "libre-baskerville-400-normal.ttf"
+        );
+        assert_eq!(
+            fontsource_face_filename("noto-sans-jp", "japanese-latin", 400, "normal"),
+            "noto-sans-jp-400-normal.ttf"
+        );
+        assert!(
+            !filename_has_latin_subset(&fontsource_face_filename(
+                "roboto", "latin-ext", 700, "italic"
+            )),
+            "latin-ext must not put latin in the filename"
+        );
+        // Non-latin script subset may keep its token:
+        let cjk = fontsource_face_filename("chiron-sung-hk", "chinese-hongkong", 400, "normal");
+        assert_eq!(cjk, "chiron-sung-hk-chinese-hongkong-400-normal.ttf");
+        assert!(!filename_has_latin_subset(&cjk));
+    }
 
     #[test]
     fn pick_weights_keeps_all_advertised() {
