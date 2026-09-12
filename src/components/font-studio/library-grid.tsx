@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 import { FontCard } from "./font-card";
 import { UploadsResetDialog } from "./uploads-reset-dialog";
@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { inDesktopShell, isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { primeGooglePreview } from "@/lib/fonts/loader";
 import { loadSystemFonts } from "@/lib/fonts/system-fonts";
-import { getDownloadJob, subscribeDownloadJob } from "@/lib/fonts/os-activate";
 import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
 import type { Collection, FontRecord } from "@/lib/fonts/types";
 
@@ -104,33 +103,11 @@ export function LibraryGrid() {
     };
   }, []);
 
-  // Freeze Activated-scope liveIds (activated[] only) while a download job runs.
-  const downloadBusy = useSyncExternalStore(
-    subscribeDownloadJob,
-    () => {
-      const j = getDownloadJob();
-      return j.running || j.paused;
-    },
-    () => false,
-  );
-  // Activated scope uses activated[] only — pendingActivate is card pulse + Download bar.
-  const frozenLiveRef = useRef<string[] | null>(null);
-  useEffect(() => {
-    if (downloadBusy && scopeNeedsActivated(scope)) {
-      if (!frozenLiveRef.current) {
-        frozenLiveRef.current = activated.slice();
-      }
-    } else {
-      frozenLiveRef.current = null;
-    }
-  }, [downloadBusy, scope, activated]);
+  // Activated scope = live activated[] only (never pendingActivate, never downloadBusy freeze).
   const liveIds = useMemo(() => {
     if (!scopeNeedsActivated(scope)) return EMPTY_IDS;
-    if (downloadBusy) {
-      return frozenLiveRef.current ?? activated;
-    }
     return activated;
-  }, [scope, downloadBusy, activated]);
+  }, [scope, activated]);
 
   const fonts = useMemo(
     () => {

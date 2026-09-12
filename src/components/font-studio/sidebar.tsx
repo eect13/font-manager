@@ -17,7 +17,7 @@ import {
   Monitor,
   FolderOpen,
 } from "lucide-react";
-import { useDeferredValue, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { useDeferredValue, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { LibraryGroups } from "./folder-tree";
 import { GoogleActivateMenuItem, GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
@@ -27,7 +27,6 @@ import { ALL_TAGS, GOOGLE_DIRECTORY, isFontsourceOnly } from "@/lib/fonts/catalo
 import { getCatalogSyncState, subscribeCatalogSync, syncFontCatalog } from "@/lib/fonts/google-api";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
-import { getDownloadJob, subscribeDownloadJob } from "@/lib/fonts/os-activate";
 import { allFonts, filterLibrary, tagsFor, useFontStore } from "@/lib/fonts/store";
 import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
 import type { FontLicense, FontRecord, LibraryFacet, LibraryScope } from "@/lib/fonts/types";
@@ -167,33 +166,8 @@ export function Sidebar({
   const googleFonts = useFontStore((s) => s.googleFonts);
   const systemFonts = useFontStore((s) => s.systemFonts);
   const systemCount = systemFonts.length;
-  // Freeze expensive facet tallies against activated churn while downloads run.
-  const downloadBusy = useSyncExternalStore(
-    subscribeDownloadJob,
-    () => {
-      const j = getDownloadJob();
-      return j.running || j.paused;
-    },
-    () => false,
-  );
-  // Activated scope/badge freeze on activated[] only — pending stays on card pulse + Download bar.
-  const facetLiveRef = useRef<string[] | null>(null);
-  useEffect(() => {
-    if (downloadBusy) {
-      if (!facetLiveRef.current) {
-        facetLiveRef.current = activated.slice();
-      }
-    } else {
-      facetLiveRef.current = null;
-    }
-  }, [downloadBusy, activated]);
-  const facetLiveIds = useMemo(() => {
-    if (downloadBusy) {
-      return facetLiveRef.current ?? activated;
-    }
-    return activated;
-  }, [downloadBusy, activated]);
-  const activatedBadge = downloadBusy ? activated.length : null;
+  // Activated scope/badge = live activated[] only (never pendingActivate, never freeze).
+  const facetLiveIds = activated;
   const counts = useMemo(() => {
     const pool = scope === "system" ? systemFonts : allFonts(localFonts, googleFonts);
     const liveIds = facetLiveIds;
@@ -256,7 +230,7 @@ export function Sidebar({
               onClick={() => go("activated")}
               icon={<Power className="size-4 shrink-0" />}
               label="Activated"
-              count={activatedBadge ?? counts.activated}
+              count={counts.activated}
               mainProps={{ "aria-label": "Activated" }}
               menu={<ActivatedDeactivateMenuItem />}
             />
