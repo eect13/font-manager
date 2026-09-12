@@ -1,6 +1,6 @@
 [package]
 name = "font-manager"
-version = "1.0.146"
+version = "1.0.147"
 description = "Font Manager — browse Google Fonts, activate typefaces for other apps, and inspect glyphs"
 edition = "2021"
 rust-version = "1.77"
@@ -9,7 +9,7 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = { version = "2", features = ["watch"] }
 serde = { version = "1", features = ["derive"] }

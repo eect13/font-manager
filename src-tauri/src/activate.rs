@@ -648,7 +648,25 @@ pub fn session_families(app: AppHandle) -> Result<Vec<String>, String> {
     Ok(load_session_families(&app))
 }
 
+/// One-shot on upgrade to 1.0.147: apply Google-complete honesty to every family
+/// folder. Old verify (trust understated `.expected`) would clear **0** latin packs;
+/// the new rule clears them so Scan/Repair discover previously “complete” lies.
+fn invalidate_google_latin_lies_once(app: &AppHandle) {
+    let Ok(root) = documents_root(app) else {
+        return;
+    };
+    let marker = root.join(".google-complete-honesty-147");
+    if marker.is_file() {
+        return;
+    }
+    for_family_dirs(app, |dir| {
+        verify_complete_marker(dir);
+    });
+    let _ = fs::write(marker, b"1.0.147\n");
+}
+
 pub fn session_begin(app: &AppHandle) {
+    invalidate_google_latin_lies_once(app);
     #[cfg(windows)]
     {
         let leftover = load_session_paths(app);
@@ -827,6 +845,8 @@ const UA_GOOGLEBOT: &str =
 const UA_SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 const UA_CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
+/// Fontsource **static** `@fontsource/{slug}` TTF URLs only.
+/// Never `@fontsource-variable/*` (WOFF) — not an installable desktop source.
 fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, bust: u128) -> Vec<String> {
     let q = if bust == 0 {
         String::new()
@@ -856,6 +876,8 @@ fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, 
     if slug == "noto-emoji" && !italic {
         urls.push("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoEmoji-Regular.ttf".into());
     }
+    // Belt-and-suspenders: never hand callers a variable-package WOFF URL.
+    urls.retain(|u| !u.contains("fontsource-variable"));
     urls
 }
 
@@ -1265,23 +1287,132 @@ fn fetch_google_css_listed(
 }
 
 /// Official fonts.google.com families (bundled directory). catalog:other skips Google CSS.
+/// Accepts display names and slug-shaped folder names (`Libre Baskerville` / `libre-baskerville`).
 fn is_official_google_family(family: &str) -> bool {
-    static DIR: OnceLock<HashSet<String>> = OnceLock::new();
-    let dir = DIR.get_or_init(|| {
+    static DIR: OnceLock<(HashSet<String>, HashSet<String>)> = OnceLock::new();
+    let (by_lower, by_slug) = DIR.get_or_init(|| {
         let raw = include_str!("../../src/lib/fonts/google-directory.json");
-        let mut set = HashSet::new();
+        let mut by_lower = HashSet::new();
+        let mut by_slug = HashSet::new();
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
             if let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
                 for name in arr {
                     if let Some(s) = name.as_str() {
-                        set.insert(s.trim().to_ascii_lowercase());
+                        let t = s.trim();
+                        if t.is_empty() {
+                            continue;
+                        }
+                        by_lower.insert(t.to_ascii_lowercase());
+                        by_slug.insert(slug_family(t));
                     }
                 }
             }
         }
-        set
+        (by_lower, by_slug)
     });
-    dir.contains(&family.trim().to_ascii_lowercase())
+    let key = family.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        return false;
+    }
+    by_lower.contains(&key) || by_slug.contains(&slug_family(family))
+}
+
+#[derive(Clone, Copy)]
+struct GoogleCatalogMeta {
+    floor: usize,
+    variable: bool,
+    italic: bool,
+    weight_lo: u16,
+    weight_hi: u16,
+}
+
+fn google_catalog_meta_maps() -> &'static (HashMap<String, GoogleCatalogMeta>, HashMap<String, GoogleCatalogMeta>) {
+    static META: OnceLock<(HashMap<String, GoogleCatalogMeta>, HashMap<String, GoogleCatalogMeta>)> =
+        OnceLock::new();
+    META.get_or_init(|| {
+        let raw = include_str!("../../src/lib/fonts/google-catalog.json");
+        let mut by_lower = HashMap::new();
+        let mut by_slug = HashMap::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
+                for row in arr {
+                    let Some(row) = row.as_array() else { continue };
+                    if row.len() < 5 {
+                        continue;
+                    }
+                    let Some(name) = row[0].as_str() else { continue };
+                    let weights: Vec<u16> = row[2]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_u64().map(|n| n as u16))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if weights.is_empty() {
+                        continue;
+                    }
+                    let italic = row[3].as_bool().unwrap_or(false);
+                    let variable = row[4].as_bool().unwrap_or(false);
+                    let floor = weights.len().saturating_mul(if italic { 2 } else { 1 });
+                    let t = name.trim();
+                    if t.is_empty() || floor == 0 {
+                        continue;
+                    }
+                    let lo = *weights.iter().min().unwrap_or(&400);
+                    let hi = *weights.iter().max().unwrap_or(&400);
+                    let meta = GoogleCatalogMeta {
+                        floor,
+                        variable,
+                        italic,
+                        weight_lo: lo,
+                        weight_hi: hi,
+                    };
+                    by_lower.insert(t.to_ascii_lowercase(), meta);
+                    by_slug.insert(slug_family(t), meta);
+                }
+            }
+        }
+        (by_lower, by_slug)
+    })
+}
+
+fn google_catalog_meta(family: &str) -> Option<GoogleCatalogMeta> {
+    let (by_lower, by_slug) = google_catalog_meta_maps();
+    let key = family.trim().to_ascii_lowercase();
+    by_lower
+        .get(&key)
+        .or_else(|| by_slug.get(&slug_family(family)))
+        .copied()
+}
+
+/// Offline floor: google-catalog `weights.len() * (2 if italic else 1)`.
+/// Used to catch Fontsource latin packs stamped complete without `.google-planned`.
+fn google_catalog_face_floor(family: &str) -> Option<usize> {
+    google_catalog_meta(family).map(|m| m.floor)
+}
+
+fn google_catalog_is_variable(family: &str) -> bool {
+    google_catalog_meta(family).map(|m| m.variable).unwrap_or(false)
+}
+
+/// CSS axis strings for catalog-variable families (real `min..max` ranges).
+/// Mozilla/Googlebot expand these to installable instance TTFs — never Chrome WOFF2.
+fn variable_axis_specs(family: &str) -> Vec<String> {
+    let meta = google_catalog_meta(family);
+    let (lo, hi, italic) = meta
+        .map(|m| (m.weight_lo, m.weight_hi, m.italic))
+        .unwrap_or((100, 900, true));
+    let mut axes = Vec::new();
+    if italic {
+        axes.push(format!("ital,wght@0,{lo}..{hi};1,{lo}..{hi}"));
+    }
+    axes.push(format!("wght@{lo}..{hi}"));
+    axes
+}
+
+fn listing_is_400_swept(listed: &[(String, String, String)]) -> bool {
+    !listed.is_empty() && listed.iter().all(|(_, w, _)| w == "400")
 }
 
 /// Cap concurrent face streams so bulk Activate cannot buffer ~N×CJK in RAM.
@@ -1463,15 +1594,59 @@ fn bust_needed(dest: &Path) -> bool {
     bulk().bust.load(Ordering::SeqCst) || !dest.exists()
 }
 
+/// For catalog-variable families: try real axis-range CSS first. Mozilla/Googlebot
+/// yield installable instance TTFs covering the range — never Chrome/Safari WOFF2
+/// and never `@fontsource-variable` WOFF. Reject 400-swept listings (some CJK).
+fn discover_variable_google_listing(
+    client: &reqwest::blocking::Client,
+    family: &str,
+) -> Option<Vec<(String, String, String)>> {
+    let axes = variable_axis_specs(family);
+    let uas = [UA_DESKTOP_TTF, UA_GOOGLEBOT];
+    let mut best: Option<Vec<(String, String, String)>> = None;
+    for ua in uas {
+        for axis in &axes {
+            if bulk().cancel.load(Ordering::SeqCst) {
+                return None;
+            }
+            let listed = fetch_google_css_listed(client, family, ua, axis);
+            if listed.is_empty() || listing_is_400_swept(&listed) {
+                continue;
+            }
+            let take = best
+                .as_ref()
+                .map(|b| listed.len() > b.len())
+                .unwrap_or(true);
+            if take {
+                best = Some(listed);
+            }
+            // Prefer first rich variable-axis hit from desktop TTF UA.
+            if best.as_ref().map(|b| b.len()).unwrap_or(0) >= 2 && ua == UA_DESKTOP_TTF {
+                return best;
+            }
+        }
+        if best.as_ref().map(|b| b.len()).unwrap_or(0) >= 2 {
+            return best;
+        }
+    }
+    best
+}
+
 /// Discover the richest Google CSS listing across UA×axis **before** any face download.
-/// Never lets bare family= Regular-400 win over a richer static ital,wght listing.
+/// Catalog-variable families prefer axis-range CSS (installable TTFs) over static /
+/// Fontsource latin packs. Never lets bare family= Regular-400 win over a richer
+/// static ital,wght listing when variable axes are unavailable or 400-swept.
 fn discover_richest_google_listing(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> Vec<(String, String, String)> {
+    if google_catalog_is_variable(family) {
+        if let Some(listed) = discover_variable_google_listing(client, family) {
+            return listed;
+        }
+    }
     let static_axis = static_weight_axis();
-    // Static ital,wght@0|1,w first. Skip variable 100..900 axes — they 400-sweep for some
-    // CJK (Chiron) and must not compete with / dilute the static listing. Bare family= last.
+    // Static ital,wght@0|1,w next. Bare family= last.
     let axes = [
         static_axis.as_str(),
         "",
@@ -1488,11 +1663,7 @@ fn discover_richest_google_listing(
             if listed.is_empty() {
                 continue;
             }
-            // If a non-static axis ever returns only Regular-400, ignore (400-swept).
-            if !axis.is_empty()
-                && axis.contains("100..900")
-                && listed.iter().all(|(_, w, _)| w == "400")
-            {
+            if listing_is_400_swept(&listed) && axis.contains("..") {
                 continue;
             }
             let rank = axis_richness(axis);
@@ -1884,6 +2055,37 @@ fn clear_google_planned(dir: &Path) {
     let _ = fs::remove_file(family_google_planned_marker(dir));
 }
 
+/// After Google lists face keys, drop Fontsource `*-latin-*` / mismatched names so
+/// leftovers cannot clash with `{slug}-{w}-{s}.ttf` or pad counts.
+fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
+    if planned_keys.is_empty() {
+        return;
+    }
+    let planned: HashSet<&str> = planned_keys.iter().map(|s| s.as_str()).collect();
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if name.is_empty() || planned.contains(name) {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        // Keep emoji/color compat sidecars installed alongside Google faces.
+        if lower.contains("-svg.")
+            || lower.contains("-colrv1.")
+            || lower.contains("-compat-")
+        {
+            continue;
+        }
+        unregister_path(&path);
+        intact_forget(&path);
+        let _ = delete_font_file(&path);
+    }
+}
+
 /// Read planned Google face keys from `.google-planned`. Rejects legacy bare-count
 /// bodies (`"18"`) — those cannot prove stamp/verify key parity.
 fn read_google_planned_keys(dir: &Path) -> Option<Vec<String>> {
@@ -1972,13 +2174,62 @@ fn dir_is_complete(dir: &Path) -> bool {
     family_complete_marker(dir).is_file()
 }
 
+/// True when every installable file embeds a Fontsource `-latin-` subset token.
+fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    if files.is_empty() {
+        return false;
+    }
+    files.iter().all(|p| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.to_ascii_lowercase().contains("-latin-"))
+            .unwrap_or(false)
+    })
+}
+
+/// Official Google family whose `.complete` cannot be trusted: no `.google-planned`
+/// key list, only Fontsource `*-latin-*` names, or intact Google face keys below
+/// the google-catalog weights×italic floor (same lie as Libre Baskerville /
+/// Cormorant / Roboto latin packs).
+fn official_google_complete_is_lie(dir: &Path) -> bool {
+    let family = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .trim();
+    if family.is_empty() || !is_official_google_family(family) {
+        return false;
+    }
+    if read_google_planned_keys(dir).is_none() {
+        return true;
+    }
+    if dir_only_latin_fontsource_names(dir) {
+        return true;
+    }
+    let slug = dir_slug_hint(dir);
+    if let Some(floor) = google_catalog_face_floor(family) {
+        if count_intact_google_face_keys(dir, &slug) < floor {
+            return true;
+        }
+    }
+    false
+}
+
 /// Drop lying `.complete` when intact faces are below the expected full set,
 /// or when there is no usable expected face count (legacy bare `"1"` body,
-/// missing/empty/unparsable `.expected`). Keeps Documents files intact — only
-/// the sentinel is removed so Repair appears. New expected-aware stamps
-/// (`.expected` sidecar and/or `.complete` body with count > 1) stay trusted.
+/// missing/empty/unparsable `.expected`). For official Google families, also
+/// clear when there is no `.google-planned`, only `*-latin-*` names, or intact
+/// Google keys are below the catalog weights×italic floor — understated
+/// `.expected` must not keep Activate/Repair from running. Keeps Documents
+/// files intact — only the sentinel is removed so Repair appears.
 fn verify_complete_marker(dir: &Path) {
     if !dir_is_complete(dir) {
+        return;
+    }
+    if official_google_complete_is_lie(dir) {
+        clear_complete_marker(dir);
         return;
     }
     // When `.google-planned` is a real key list, expected = keys.len() — never an
@@ -2191,6 +2442,9 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
             .collect();
         write_google_planned(&root, &keys);
+        // Bust already emptied the folder; non-bust Repair/Activate must still
+        // strip latin / mismatched remnants so they cannot clash with Google keys.
+        purge_unplanned_font_files(&root, &keys);
     } else {
         clear_google_planned(&root);
     }
@@ -3156,6 +3410,113 @@ mod complete_marker_tests {
         );
         let _ = fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn verify_clears_google_latin_pack_without_planned() {
+        // Libre Baskerville latin lie: .complete=.expected=4, only *-latin-*, no .google-planned.
+        let parent = temp_family_dir("libre-lie-parent");
+        let dir = parent.join("Libre Baskerville");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        for name in [
+            "libre-baskerville-latin-400-normal.ttf",
+            "libre-baskerville-latin-400-italic.ttf",
+            "libre-baskerville-latin-700-normal.ttf",
+            "libre-baskerville-latin-700-italic.ttf",
+        ] {
+            fs::write(dir.join(name), &fake).unwrap();
+        }
+        fs::write(dir.join(".expected"), b"4").unwrap();
+        fs::write(dir.join(".complete"), b"4").unwrap();
+        fs::write(dir.join(".fontsource-version"), b"5.0.0").unwrap();
+        assert!(is_official_google_family("Libre Baskerville"));
+        assert!(google_catalog_face_floor("Libre Baskerville").unwrap_or(0) >= 8);
+        assert_eq!(count_intact_faces(&dir), 4);
+        // Old verify would keep this (4 intact >= .expected=4). New rule must clear.
+        verify_complete_marker(&dir);
+        assert!(
+            !family_complete_marker(&dir).is_file(),
+            "Fontsource latin pack without .google-planned must not stay complete"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn verify_keeps_honest_google_planned_at_catalog_floor() {
+        let parent = temp_family_dir("libre-ok-parent");
+        let dir = parent.join("Libre Baskerville");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let floor = google_catalog_face_floor("Libre Baskerville").expect("catalog floor");
+        let weights = [400, 500, 600, 700];
+        let mut keys = Vec::new();
+        for w in weights {
+            for style in ["normal", "italic"] {
+                let name = format!("libre-baskerville-{w}-{style}.ttf");
+                fs::write(dir.join(&name), &fake).unwrap();
+                keys.push(name);
+            }
+        }
+        assert_eq!(keys.len(), floor);
+        fs::write(dir.join(".google-planned"), keys.join("\n").as_bytes()).unwrap();
+        fs::write(dir.join(".expected"), floor.to_string().as_bytes()).unwrap();
+        fs::write(dir.join(".complete"), floor.to_string().as_bytes()).unwrap();
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            "honest Google keys + .google-planned at catalog floor must remain"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn catalog_floor_roboto_and_cormorant() {
+        assert_eq!(google_catalog_face_floor("Roboto"), Some(18));
+        assert_eq!(google_catalog_face_floor("Cormorant"), Some(10));
+        assert_eq!(google_catalog_face_floor("libre-baskerville"), Some(8));
+    }
+
+    #[test]
+    fn catalog_variable_axis_specs_use_weight_span() {
+        assert!(google_catalog_is_variable("Roboto"));
+        assert!(google_catalog_is_variable("Libre Baskerville"));
+        assert!(google_catalog_is_variable("Chiron Sung HK"));
+        let roboto = variable_axis_specs("Roboto");
+        assert!(
+            roboto.iter().any(|a| a.contains("100..900")),
+            "Roboto variable axes must span 100..900: {roboto:?}"
+        );
+        let libre = variable_axis_specs("Libre Baskerville");
+        assert!(
+            libre.iter().any(|a| a.contains("400..700")),
+            "Libre Baskerville variable axes must span catalog weights: {libre:?}"
+        );
+        assert!(listing_is_400_swept(&[
+            ("normal".into(), "400".into(), "https://x/a.ttf".into())
+        ]));
+        assert!(!listing_is_400_swept(&[
+            ("normal".into(), "400".into(), "https://x/a.ttf".into()),
+            ("normal".into(), "700".into(), "https://x/b.ttf".into()),
+        ]));
+    }
+
+    #[test]
+    fn purge_unplanned_strips_latin_keeps_google_keys() {
+        let dir = temp_family_dir("purge-latin");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("libre-baskerville-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("libre-baskerville-latin-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("libre-baskerville-latin-700-italic.ttf"), &fake).unwrap();
+        let keys = vec!["libre-baskerville-400-normal.ttf".into()];
+        purge_unplanned_font_files(&dir, &keys);
+        assert!(dir.join("libre-baskerville-400-normal.ttf").is_file());
+        assert!(!dir.join("libre-baskerville-latin-400-normal.ttf").is_file());
+        assert!(!dir.join("libre-baskerville-latin-700-italic.ttf").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
 }
 
 #[cfg(test)]
