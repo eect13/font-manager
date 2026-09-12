@@ -2190,9 +2190,12 @@ fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
 }
 
 /// Official Google family whose `.complete` cannot be trusted: no `.google-planned`
-/// key list, only Fontsource `*-latin-*` names, or intact Google face keys below
-/// the google-catalog weights×italic floor (same lie as Libre Baskerville /
-/// Cormorant / Roboto latin packs).
+/// key list, only Fontsource `*-latin-*` names, or (no-planned / latin-lie path)
+/// intact Google face keys below the google-catalog weights×italic floor.
+/// When `read_google_planned_keys` succeeds, trust `keys.len()` only — do not
+/// apply the catalog floor (Google CSS often omits edge weights 1/1000, so
+/// planned can be ≪ floor for Sofia Sans / Ysabeau / DM Sans / Nunito / …
+/// without being a latin lie; floor-when-planned caused permanent Repair↔retry).
 fn official_google_complete_is_lie(dir: &Path) -> bool {
     let family = dir
         .file_name()
@@ -2202,9 +2205,11 @@ fn official_google_complete_is_lie(dir: &Path) -> bool {
     if family.is_empty() || !is_official_google_family(family) {
         return false;
     }
-    if read_google_planned_keys(dir).is_none() {
-        return true;
+    // Honest plan present → verify_complete_marker uses keys.len() only.
+    if read_google_planned_keys(dir).is_some() {
+        return dir_only_latin_fontsource_names(dir);
     }
+    // No usable `.google-planned` key list: latin-lie / understated-pack heuristics.
     if dir_only_latin_fontsource_names(dir) {
         return true;
     }
@@ -2214,16 +2219,19 @@ fn official_google_complete_is_lie(dir: &Path) -> bool {
             return true;
         }
     }
-    false
+    // Official Google without a planned key list cannot prove stamp honesty.
+    true
 }
 
 /// Drop lying `.complete` when intact faces are below the expected full set,
 /// or when there is no usable expected face count (legacy bare `"1"` body,
 /// missing/empty/unparsable `.expected`). For official Google families, also
-/// clear when there is no `.google-planned`, only `*-latin-*` names, or intact
-/// Google keys are below the catalog weights×italic floor — understated
-/// `.expected` must not keep Activate/Repair from running. Keeps Documents
-/// files intact — only the sentinel is removed so Repair appears.
+/// clear when there is no `.google-planned`, only `*-latin-*` names, or (when
+/// there is no planned key list) intact Google keys are below the catalog
+/// weights×italic floor — understated `.expected` must not keep Activate/Repair
+/// from running. When `.google-planned` is a real key list, expected =
+/// `keys.len()` only (no catalog floor). Keeps Documents files intact — only
+/// the sentinel is removed so Repair appears.
 fn verify_complete_marker(dir: &Path) {
     if !dir_is_complete(dir) {
         return;
@@ -3466,6 +3474,43 @@ mod complete_marker_tests {
         assert!(
             family_complete_marker(&dir).is_file(),
             "honest Google keys + .google-planned at catalog floor must remain"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn verify_keeps_google_planned_below_catalog_floor() {
+        // Sofia Sans: catalog floor includes edges 1/1000 (22) but Google CSS often
+        // omits them → planned keys ≪ floor. Must NOT clear as latin lie.
+        let parent = temp_family_dir("sofia-planned-below-floor");
+        let dir = parent.join("Sofia Sans");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let floor = google_catalog_face_floor("Sofia Sans").expect("catalog floor");
+        assert!(floor >= 22, "Sofia Sans floor should include 1..1000 edges");
+        // CSS-shaped plan without catalog edges 1 and 1000 (9 weights × italic).
+        let weights = [100, 200, 300, 400, 500, 600, 700, 800, 900];
+        let mut keys = Vec::new();
+        for w in weights {
+            for style in ["normal", "italic"] {
+                let name = format!("sofia-sans-{w}-{style}.ttf");
+                fs::write(dir.join(&name), &fake).unwrap();
+                keys.push(name);
+            }
+        }
+        assert!(keys.len() < floor, "planned must be below catalog floor");
+        fs::write(dir.join(".google-planned"), keys.join("\n").as_bytes()).unwrap();
+        fs::write(dir.join(".expected"), keys.len().to_string().as_bytes()).unwrap();
+        fs::write(dir.join(".complete"), keys.len().to_string().as_bytes()).unwrap();
+        assert!(
+            !official_google_complete_is_lie(&dir),
+            "planned key list below floor must not be treated as a lie"
+        );
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            "honest .google-planned below catalog floor must remain complete"
         );
         let _ = fs::remove_dir_all(&parent);
     }
