@@ -1618,15 +1618,20 @@ fn download_google_variable_ttfs(
                 let dest_name = variable_face_filename(slug, &axes_label, *italic);
                 let dest = root.join(&dest_name);
                 if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&dest) {
+                    // Intact vars from prior installs may still mash id1
+                    // ("Nunito ExtraLight"). Heal name only — keep fvar.
+                    let _ = heal_google_variable_face_file(&dest, family, *italic);
                     register_path(&dest);
                     wrote.push(dest_name);
                     continue;
                 }
                 let url = jsdelivr_google_fonts_url(lic, folder, fname);
                 if let Some(bytes) = fetch_url_ttf(client, &url) {
-                    // Real variable fonts already have correct family names — do not
-                    // rewrite style tables (fvar instances own those).
-                    if write_font_file(&dest, &bytes).is_ok() {
+                    // google/fonts vars often mash default-instance style into
+                    // nameID 1. Rewrite name only (Regular/Italic); preserve fvar.
+                    let patched = crate::namepatch::patch_variable_face(&bytes, family, *italic)
+                        .unwrap_or(bytes);
+                    if write_font_file(&dest, &patched).is_ok() {
                         wrote.push(dest_name);
                     }
                 }
@@ -1665,13 +1670,16 @@ fn download_google_variable_ttfs(
                         continue;
                     }
                     if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&dest) {
+                        let _ = heal_google_variable_face_file(&dest, family, italic);
                         register_path(&dest);
                         wrote.push(dest_name);
                         continue;
                     }
                     let url = jsdelivr_google_fonts_url(lic, folder, &remote);
                     if let Some(bytes) = fetch_url_ttf(client, &url) {
-                        if write_font_file(&dest, &bytes).is_ok() {
+                        let patched = crate::namepatch::patch_variable_face(&bytes, family, italic)
+                            .unwrap_or(bytes);
+                        if write_font_file(&dest, &patched).is_ok() {
                             wrote.push(dest_name);
                         }
                     }
@@ -1688,6 +1696,12 @@ fn download_google_variable_ttfs(
 
 fn is_variable_face_filename(name: &str) -> bool {
     name.to_ascii_lowercase().contains("-variable-")
+}
+
+/// `*-variable-*-italic.ttf` (or ends with `-italic.ttf` after the variable token).
+fn variable_face_filename_is_italic(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("-variable-") && lower.contains("-italic.")
 }
 
 fn dir_has_intact_variable(dir: &Path) -> bool {
@@ -1805,7 +1819,10 @@ fn ensure_catalog_variable_faces(
             && planned_vars.iter().all(|k| ttf_intact(&root.join(k)))
         {
             for name in &planned_vars {
-                let _ = register_family_path(family, &root.join(name));
+                let path = root.join(name);
+                let italic = variable_face_filename_is_italic(name);
+                let _ = heal_google_variable_face_file(&path, family, italic);
+                let _ = register_family_path(family, &path);
             }
             return planned_vars.len();
         }
@@ -1827,7 +1844,10 @@ fn ensure_catalog_variable_faces(
         if !var_files.is_empty() {
             adopt_variable_files_into_plan(&root, &var_files);
             for name in &var_files {
-                let _ = register_family_path(family, &root.join(name));
+                let path = root.join(name);
+                let italic = variable_face_filename_is_italic(name);
+                let _ = heal_google_variable_face_file(&path, family, italic);
+                let _ = register_family_path(family, &path);
             }
             return var_files.len();
         }
@@ -1845,6 +1865,8 @@ fn ensure_catalog_variable_faces(
     for name in &var_files {
         let path = root.join(name);
         if ttf_intact(&path) {
+            let italic = variable_face_filename_is_italic(name);
+            let _ = heal_google_variable_face_file(&path, family, italic);
             let _ = register_family_path(family, &path);
         }
     }
@@ -2155,8 +2177,8 @@ fn parse_google_instance_face_name(slug: &str, filename: &str) -> Option<(String
 }
 
 /// True when Win nameID 1 or 16 is present and differs from the catalog family
-/// (or both are missing). Intact Google instances with mashed "Nunito ExtraLight"
-/// family names need an in-place rewrite.
+/// (or both are missing). Intact Google faces with mashed "Nunito ExtraLight"
+/// family names need an in-place rewrite (statics and vars).
 fn instance_name_needs_heal(font: &[u8], family: &str) -> bool {
     let fam = family.trim();
     if fam.is_empty() {
@@ -2206,8 +2228,31 @@ fn heal_google_instance_face_file(
     write_font_file(path, &patched).is_ok()
 }
 
-/// Walk a family folder and heal mashed Google instance name tables. Skips
-/// `*-variable-*` var TTFs. Returns how many files were rewritten.
+/// Re-patch one intact variable TTF in place when nameID 1/16 ≠ catalog family.
+/// Style becomes Regular or Italic only; `fvar` is preserved by name-table rewrite.
+/// Soft-fails when locked/unreadable.
+fn heal_google_variable_face_file(path: &Path, family: &str, italic: bool) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    if !ttf_magic(&bytes) || bytes.len() < 256 {
+        return false;
+    }
+    if !instance_name_needs_heal(&bytes, family) {
+        return false;
+    }
+    let Some(patched) = crate::namepatch::patch_variable_face(&bytes, family, italic) else {
+        return false;
+    };
+    if patched.as_slice() == bytes.as_slice() {
+        return false;
+    }
+    write_font_file(path, &patched).is_ok()
+}
+
+/// Walk a family folder and heal mashed Google name tables on **instances and
+/// vars** (id1/16 ≠ catalog family). Soft-fail per file when locked. Returns
+/// how many files were rewritten.
 fn heal_google_instance_names_in_dir(dir: &Path, family: &str) -> usize {
     let slug = slug_family(family);
     if slug.is_empty() || !dir.is_dir() {
@@ -2220,12 +2265,19 @@ fn heal_google_instance_names_in_dir(dir: &Path, family: &str) -> usize {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        let Some((weight, style)) = parse_google_instance_face_name(&slug, name) else {
-            continue;
-        };
         if !ttf_intact(&path) {
             continue;
         }
+        if is_variable_face_filename(name) {
+            let italic = variable_face_filename_is_italic(name);
+            if heal_google_variable_face_file(&path, family, italic) {
+                healed += 1;
+            }
+            continue;
+        }
+        let Some((weight, style)) = parse_google_instance_face_name(&slug, name) else {
+            continue;
+        };
         if heal_google_instance_face_file(&path, family, &weight, &style) {
             healed += 1;
         }
@@ -4628,7 +4680,7 @@ mod install_path_tests {
         );
         let path = dir.join("nunito-200-normal.ttf");
         fs::write(&path, &mashed).unwrap();
-        // Variable sibling must not be style-namepatched.
+        // Already-correct var sibling stays a no-op (id1 already catalog family).
         let var_path = dir.join("nunito-variable-wght.ttf");
         let var_bytes = minimal_named_font("Nunito", "Regular");
         fs::write(&var_path, &var_bytes).unwrap();
@@ -4645,9 +4697,66 @@ mod install_path_tests {
         assert_eq!(
             crate::namepatch::read_name_id(&var_after, 1).as_deref(),
             Some("Nunito"),
-            "variable TTF must remain untouched"
+            "already-clean variable TTF must remain untouched"
         );
         // Second pass is a no-op.
+        assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito"), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heal_rewrites_mashed_variable_names_in_place() {
+        let dir = temp_family_dir("heal-var-names");
+        // Skye: Nunito var id1 mashed with ExtraLight; static ExtraLight style stays ExtraLight.
+        let var_mashed = minimal_named_font("Nunito ExtraLight", "Regular");
+        let var_path = dir.join("nunito-variable-wght.ttf");
+        fs::write(&var_path, &var_mashed).unwrap();
+        let var_italic = minimal_named_font("Nunito ExtraLight", "Italic");
+        let var_italic_path = dir.join("nunito-variable-wght-italic.ttf");
+        fs::write(&var_italic_path, &var_italic).unwrap();
+        let static_mashed = minimal_named_font("Nunito ExtraLight", "Regular");
+        let static_path = dir.join("nunito-200-normal.ttf");
+        fs::write(&static_path, &static_mashed).unwrap();
+
+        let n = heal_google_instance_names_in_dir(&dir, "Nunito");
+        assert_eq!(n, 3, "var roman + var italic + ExtraLight instance should heal");
+
+        let var_after = fs::read(&var_path).unwrap();
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_after, 1).as_deref(),
+            Some("Nunito")
+        );
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_after, 2).as_deref(),
+            Some("Regular"),
+            "var roman style must be Regular, not ExtraLight"
+        );
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_after, 16).as_deref(),
+            Some("Nunito")
+        );
+
+        let var_it_after = fs::read(&var_italic_path).unwrap();
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_it_after, 1).as_deref(),
+            Some("Nunito")
+        );
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_it_after, 2).as_deref(),
+            Some("Italic")
+        );
+
+        let static_after = fs::read(&static_path).unwrap();
+        assert_eq!(
+            crate::namepatch::read_name_id(&static_after, 1).as_deref(),
+            Some("Nunito")
+        );
+        assert_eq!(
+            crate::namepatch::read_name_id(&static_after, 2).as_deref(),
+            Some("ExtraLight"),
+            "instance ExtraLight style must stay ExtraLight"
+        );
+
         assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito"), 0);
         let _ = fs::remove_dir_all(&dir);
     }
