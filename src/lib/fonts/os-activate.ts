@@ -386,6 +386,17 @@ function toastSessionRecoveryLocked(locked: number, attempted = 0) {
   });
 }
 
+function toastFontCacheHeld(locked: number, accessDenied = false) {
+  const n = Math.max(locked, accessDenied ? 1 : 0);
+  toast.error(`Font Cache still holding ${n.toLocaleString()} files — retry as admin or reboot`, {
+    description: accessDenied
+      ? "Windows Font Cache service restart needs elevation. Run Font Manager as admin once after Deactivate, or reboot so Documents TTFs unlock."
+      : "svchost (LOCAL SERVICE / Font Cache) is still holding Documents TTFs after Deactivate. Retry Deactivate as admin, or reboot.",
+    duration: 28_000,
+    action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+  });
+}
+
 export async function repairIncompleteFamilies(families: string[] = []): Promise<number> {
   if (!(await inDesktopShell())) return 0;
   void bindDownloadEvents();
@@ -835,6 +846,13 @@ export async function bindDownloadEvents() {
       const locked = p.locked ?? 0;
       if (locked > 0) {
         toastSessionRecoveryLocked(locked, p.attempted ?? 0);
+      }
+    });
+    await listen("font-cache-held", (ev) => {
+      const p = ev.payload as { locked?: number; access_denied?: boolean };
+      const locked = p.locked ?? 0;
+      if (locked > 0 || p.access_denied) {
+        toastFontCacheHeld(locked, !!p.access_denied);
       }
     });
   } catch {

@@ -1,8 +1,10 @@
-# Font Manager **1.0.154**
+# Font Manager **1.0.155**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`.
+
+**1.0.155 unlock.** After Deactivate/Quit, `RemoveFontResourceExW` drains refcounts (loop until 0), then best-effort **Windows Font Cache** service restart so Documents TTFs stop sticking under `svchost`/LOCAL SERVICE — FontBase-or-better, soft-fail toast if elevation is missing. Startup registers ready session families in **parallel** (bounded workers); Activate stays Adobe-visible enumerable (`FR_ENUMERABLE`).
 
 ![Library](screenshots/library.png)
 
