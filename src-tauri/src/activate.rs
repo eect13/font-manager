@@ -1686,6 +1686,171 @@ fn download_google_variable_ttfs(
     wrote
 }
 
+fn is_variable_face_filename(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("-variable-")
+}
+
+fn dir_has_intact_variable(dir: &Path) -> bool {
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    files.iter().any(|p| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| is_variable_face_filename(n) && ttf_intact(p))
+            .unwrap_or(false)
+    })
+}
+
+/// Merge var filenames into planned keys. Vars are listed first (Illustrator/AI
+/// tends to pick earlier faces for axes) but **statics stay** — planned is always
+/// statics + vars, never var-only.
+fn merge_variable_into_planned_keys(existing: &[String], var_files: &[String]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for v in var_files {
+        if !v.is_empty() && !keys.iter().any(|k| k == v) {
+            keys.push(v.clone());
+        }
+    }
+    for k in existing {
+        if !k.is_empty() && !keys.iter().any(|x| x == k) {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
+
+/// Collect intact Google static instance filenames already on disk (for adopting
+/// vars onto a legacy complete folder that lacks a usable `.google-planned`).
+fn collect_intact_google_instance_keys(dir: &Path) -> Vec<String> {
+    let slug = dir_slug_hint(dir);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    let mut out = Vec::new();
+    for p in files {
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) || filename_has_latin_subset(name, &slug) {
+            continue;
+        }
+        if parse_google_instance_face_name(&slug, name).is_some() && ttf_intact(&p) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// When variable TTFs land, fold them into `.google-planned` / expected / complete
+/// **alongside** existing static instance keys — never replace statics with var-only.
+fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
+    if var_files.is_empty() {
+        return;
+    }
+    let existing = read_google_planned_keys(root).unwrap_or_else(|| collect_intact_google_instance_keys(root));
+    let keys = merge_variable_into_planned_keys(&existing, var_files);
+    if keys.is_empty() {
+        return;
+    }
+    write_google_planned(root, &keys);
+    let intact = count_intact_planned_keys(root, &keys);
+    if intact >= keys.len() {
+        mark_family_complete(root, keys.len());
+    } else {
+        write_expected_faces(root, keys.len());
+        // Honest: planned grew to include vars that are not all intact yet.
+        clear_complete_marker(root);
+    }
+}
+
+fn http_download_client() -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(120))
+        .pool_max_idle_per_host(6)
+        .user_agent("FontManager/1.0")
+        .build()
+        .ok()
+}
+
+/// Always pull real `*-variable-*` TTFs for catalog-variable families — including
+/// when the folder is already `.complete` / statics-only. Does **not** bust statics;
+/// registers both. Returns how many var filenames were written or already intact.
+fn ensure_catalog_variable_faces(
+    app: &AppHandle,
+    client: &reqwest::blocking::Client,
+    family: &str,
+) -> usize {
+    if !google_catalog_is_variable(family) {
+        return 0;
+    }
+    let slug = slug_family(family);
+    if slug.is_empty() {
+        return 0;
+    }
+    let Ok(root) = family_dir(app, family) else {
+        return 0;
+    };
+    if !root.is_dir() {
+        let _ = fs::create_dir_all(&root);
+    }
+
+    // Fast path: planned already lists intact vars — adopt is a no-op; register only.
+    if let Some(keys) = read_google_planned_keys(&root) {
+        let planned_vars: Vec<String> = keys
+            .iter()
+            .filter(|k| is_variable_face_filename(k))
+            .cloned()
+            .collect();
+        if !planned_vars.is_empty()
+            && planned_vars.iter().all(|k| ttf_intact(&root.join(k)))
+        {
+            for name in &planned_vars {
+                let _ = register_family_path(family, &root.join(name));
+            }
+            return planned_vars.len();
+        }
+    } else if dir_has_intact_variable(&root) {
+        // Vars on disk but missing from planned (legacy complete) — fold in, no CDN.
+        let mut files = Vec::new();
+        walk_font_files(&root, &mut files);
+        let var_files: Vec<String> = files
+            .iter()
+            .filter_map(|p| {
+                let name = p.file_name()?.to_str()?;
+                if is_variable_face_filename(name) && ttf_intact(p) {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !var_files.is_empty() {
+            adopt_variable_files_into_plan(&root, &var_files);
+            for name in &var_files {
+                let _ = register_family_path(family, &root.join(name));
+            }
+            return var_files.len();
+        }
+    }
+
+    // Missing vars (complete statics-only Nunito, etc.) — fetch without busting statics.
+    let var_files = download_google_variable_ttfs(client, family, &slug, &root);
+    if var_files.is_empty() {
+        return 0;
+    }
+    adopt_variable_files_into_plan(&root, &var_files);
+    // Register vars first; statics stay and are registered by the normal pass.
+    // Windows AddFontResource lists every file; order helps apps that pick the
+    // first face with axes. Statics remain installed as backup — never var-only.
+    for name in &var_files {
+        let path = root.join(name);
+        if ttf_intact(&path) {
+            let _ = register_family_path(family, &path);
+        }
+    }
+    var_files.len()
+}
+
 /// Cap concurrent face streams so bulk Activate cannot buffer ~N×CJK in RAM.
 const FACE_STREAM_SLOTS: usize = 2;
 const MAX_IN_FLIGHT_BYTES: u64 = 96 * 1024 * 1024;
@@ -2181,11 +2346,34 @@ fn install_compat_pack(client: &reqwest::blocking::Client, root: &Path, family: 
     }
 }
 
+/// Register intact faces. For catalog-variable families, register `*-variable-*`
+/// first so Illustrator/AI can pick axes, then static instances as backup.
+fn sort_faces_var_first(files: &mut [PathBuf]) {
+    files.sort_by(|a, b| {
+        let av = a
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(is_variable_face_filename)
+            .unwrap_or(false);
+        let bv = b
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(is_variable_face_filename)
+            .unwrap_or(false);
+        match (av, bv) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.cmp(b),
+        }
+    });
+}
+
 fn register_intact_family(app: &AppHandle, family: &str) -> usize {
     let mut n = 0usize;
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
+        sort_faces_var_first(&mut files);
         for path in files {
             if ttf_intact(&path) {
                 let _ = register_family_path(family, &path);
@@ -2201,6 +2389,7 @@ fn register_intact_new(app: &AppHandle, family: &str) -> usize {
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
+        sort_faces_var_first(&mut files);
         for path in files {
             if ttf_intact(&path) && register_family_path(family, &path) {
                 added += 1;
@@ -2303,8 +2492,15 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     if ready.is_empty() {
         return;
     }
+    // Complete folders still pull missing catalog variable TTFs (no bust) and
+    // heal mashed instance names — Activate used to name-heal only / skip vars.
+    let client = http_download_client();
     let mut n = 0usize;
     for family in ready {
+        if let Some(ref c) = client {
+            ensure_catalog_variable_faces(app, c, family);
+        }
+        heal_family_google_instance_names(app, family);
         n += match index {
             Some(idx) => register_from_index(app, idx, family),
             None => register_intact_family(app, family),
@@ -2900,9 +3096,12 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     let bust = bulk().bust.load(Ordering::SeqCst);
     let existing = register_intact_family(app, family);
     if existing > 0 && !bust && family_is_ready(app, family) {
-        // Complete folders still need name heal for pre-namepatch installs.
+        // Complete folders still need missing catalog variable TTFs (no bust)
+        // and name heal for pre-namepatch installs. Statics stay; vars are added.
+        ensure_catalog_variable_faces(app, client, family);
         heal_family_google_instance_names(app, family);
-        return Ok(existing);
+        let total = register_intact_family(app, family).max(existing);
+        return Ok(total);
     }
     if bust {
         purge_family_files(app, family);
@@ -2937,15 +3136,12 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     wrote = wrote.saturating_add(google_wrote);
     if google_expected > 0 {
         planned = google_expected;
-        let mut keys: Vec<String> = google_listed
+        let instance_keys: Vec<String> = google_listed
             .iter()
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
             .collect();
-        for v in &google_var_files {
-            if !keys.iter().any(|k| k == v) {
-                keys.push(v.clone());
-            }
-        }
+        // Vars first in planned (axes pick), statics retained as backup — never var-only.
+        let keys = merge_variable_into_planned_keys(&instance_keys, &google_var_files);
         write_google_planned(&root, &keys);
         // Only purge leftovers once we have Google bytes on disk — otherwise a
         // failed Google fetch would delete latin remnants and leave the folder empty.
@@ -3144,7 +3340,8 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
-            // Activate of an already-complete family must still heal mashed names.
+            // Already-complete: still pull missing catalog vars (no bust) + heal names.
+            ensure_catalog_variable_faces(&app, &client, &family);
             heal_family_google_instance_names(&app, &family);
             Ok(1usize)
         } else {
@@ -3515,8 +3712,13 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     let app2 = app.clone();
     let ready2 = ready.clone();
     thread::spawn(move || {
+        let client = http_download_client();
         let mut added = 0usize;
         for family in &ready2 {
+            if let Some(ref c) = client {
+                ensure_catalog_variable_faces(&app2, c, family);
+            }
+            heal_family_google_instance_names(&app2, family);
             added += register_intact_new(&app2, family);
             forget_queued(family);
         }
@@ -3555,10 +3757,14 @@ pub fn plan_google_activation(app: AppHandle, families: Vec<String>) -> Result<A
 #[tauri::command]
 pub fn read_family_font(app: AppHandle, family: String, italic: Option<bool>) -> Result<String, String> {
     let want_italic = italic.unwrap_or(false);
+    // Prefer variable faces when present (axes), then static instances as backup.
+    let mut var_hit: Option<PathBuf> = None;
+    let mut static_hit: Option<PathBuf> = None;
     let mut roman = None;
     for dir in family_locations(&app, &family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
+        sort_faces_var_first(&mut files);
         for path in files {
             if !ttf_intact(&path) {
                 continue;
@@ -3568,19 +3774,24 @@ pub fn read_family_font(app: AppHandle, family: String, italic: Option<bool>) ->
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            let is_var = is_variable_face_filename(&name);
             let is_italic = name.contains("italic") || name.contains("oblique");
-            if want_italic && is_italic {
-                return Ok(path.to_string_lossy().into_owned());
-            }
-            if !want_italic && !is_italic {
-                return Ok(path.to_string_lossy().into_owned());
+            let style_ok = if want_italic { is_italic } else { !is_italic };
+            if style_ok {
+                if is_var && var_hit.is_none() {
+                    var_hit = Some(path.clone());
+                } else if !is_var && static_hit.is_none() {
+                    static_hit = Some(path.clone());
+                }
             }
             if roman.is_none() {
                 roman = Some(path);
             }
         }
     }
-    roman
+    var_hit
+        .or(static_hit)
+        .or(roman)
         .map(|p| p.to_string_lossy().into_owned())
         .ok_or_else(|| "no font file on disk".into())
 }
@@ -3617,10 +3828,14 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
 }
 
 /// Re-fetch families that have partial faces (no `.complete`).
+/// Complete catalog-variable folders missing `*-variable-*` get vars added in place
+/// (no full bust); incomplete families still go through Retry/bust.
 #[tauri::command]
 pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
     let mut targets = Vec::new();
     let mut healed = 0usize;
+    let mut var_ensured = 0usize;
+    let client = http_download_client();
     if families.is_empty() {
         for_family_dirs(&app, |dir| {
             verify_complete_marker(dir);
@@ -3629,11 +3844,15 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
                     targets.push(name.to_string());
                 }
             } else if dir_is_complete(dir) {
-                // Complete Google folders: name-heal mashed instance faces in place
-                // (Illustrator will not fix "Nunito ExtraLight" via Repair alone otherwise).
+                // Complete Google folders: name-heal + pull missing catalog vars (no bust).
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     if is_official_google_family(name) {
                         healed = healed.saturating_add(heal_google_instance_names_in_dir(dir, name));
+                        if let Some(ref c) = client {
+                            var_ensured = var_ensured.saturating_add(ensure_catalog_variable_faces(
+                                &app, c, name,
+                            ));
+                        }
                     }
                 }
             }
@@ -3644,14 +3863,19 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
                 targets.push(family);
             } else {
                 healed = healed.saturating_add(heal_family_google_instance_names(&app, &family));
+                if let Some(ref c) = client {
+                    var_ensured = var_ensured.saturating_add(ensure_catalog_variable_faces(
+                        &app, c, &family,
+                    ));
+                }
             }
         }
     }
     if targets.is_empty() {
-        return Ok(healed);
+        return Ok(healed.saturating_add(var_ensured));
     }
     let n = retry_google_downloads(app, targets)?;
-    Ok(n.saturating_add(healed))
+    Ok(n.saturating_add(healed).saturating_add(var_ensured))
 }
 
 #[tauri::command]
@@ -4442,6 +4666,109 @@ mod install_path_tests {
             ("normal".into(), "200".into(), "https://x/a.ttf".into()),
             ("normal".into(), "300".into(), "https://x/b.ttf".into()),
         ]));
+    }
+
+    #[test]
+    fn merge_variable_into_planned_keeps_statics_and_lists_vars_first() {
+        let statics = vec![
+            "nunito-200-normal.ttf".into(),
+            "nunito-400-normal.ttf".into(),
+        ];
+        let vars = vec![
+            "nunito-variable-wght.ttf".into(),
+            "nunito-variable-wght-italic.ttf".into(),
+        ];
+        let keys = merge_variable_into_planned_keys(&statics, &vars);
+        assert_eq!(
+            keys,
+            vec![
+                "nunito-variable-wght.ttf",
+                "nunito-variable-wght-italic.ttf",
+                "nunito-200-normal.ttf",
+                "nunito-400-normal.ttf",
+            ]
+        );
+        // Dedup: existing var already in statics list should not duplicate.
+        let mixed = vec![
+            "nunito-variable-wght.ttf".into(),
+            "nunito-400-normal.ttf".into(),
+        ];
+        let keys2 = merge_variable_into_planned_keys(&mixed, &vars);
+        assert_eq!(keys2.iter().filter(|k| k.contains("-variable-")).count(), 2);
+        assert!(keys2.iter().any(|k| k == "nunito-400-normal.ttf"));
+        assert!(
+            !keys2.iter().any(|k| k.contains("-variable-") && keys2.iter().filter(|x| *x == k).count() > 1),
+            "no duplicate var keys"
+        );
+    }
+
+    #[test]
+    fn adopt_variable_into_plan_on_statics_only_complete_folder() {
+        let parent = temp_family_dir("adopt-var");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let var_roman = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        fs::write(dir.join(var_roman), &fake).unwrap();
+        // Legacy complete: statics planned only (the bug — 16 static, 0 variable).
+        write_google_planned(&dir, &[inst.into()]);
+        mark_family_complete(&dir, 1);
+        assert!(dir_has_intact_variable(&dir));
+        adopt_variable_files_into_plan(&dir, &[var_roman.into()]);
+        let keys = read_google_planned_keys(&dir).expect("planned keys");
+        assert!(
+            keys.iter().any(|k| k == var_roman),
+            "planned must include variable after adopt: {keys:?}"
+        );
+        assert!(
+            keys.iter().any(|k| k == inst),
+            "planned must keep static instance: {keys:?}"
+        );
+        assert_eq!(keys[0], var_roman, "var listed first");
+        assert!(dir_is_complete(&dir), "complete when all planned intact");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn complete_folder_without_var_is_detected_as_missing_catalog_variable() {
+        let parent = temp_family_dir("missing-var-detect");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("nunito-400-normal.ttf"), &fake).unwrap();
+        assert!(google_catalog_is_variable("Nunito"));
+        assert!(!dir_has_intact_variable(&dir));
+        // After a var file appears, detector flips.
+        fs::write(dir.join("nunito-variable-wght.ttf"), &fake).unwrap();
+        assert!(dir_has_intact_variable(&dir));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn sort_faces_var_first_orders_variable_ahead_of_statics() {
+        let mut files = vec![
+            PathBuf::from("nunito-400-normal.ttf"),
+            PathBuf::from("nunito-variable-wght.ttf"),
+            PathBuf::from("nunito-200-normal.ttf"),
+            PathBuf::from("nunito-variable-wght-italic.ttf"),
+        ];
+        sort_faces_var_first(&mut files);
+        let names: Vec<_> = files
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|s| s.to_str()))
+            .collect();
+        assert!(
+            names[0].contains("-variable-") && names[1].contains("-variable-"),
+            "vars first: {names:?}"
+        );
+        assert!(
+            !names[2].contains("-variable-") && !names[3].contains("-variable-"),
+            "statics after: {names:?}"
+        );
     }
 
     #[test]
