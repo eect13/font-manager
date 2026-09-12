@@ -10,3 +10,6 @@
 - Continue latin-remnant heal for legacy `*-latin-*` packs already on disk (new installs since 1.0.148 do not write latin filenames).
 
 ## Notes
+
+- Shipped in 1.0.149.
+
