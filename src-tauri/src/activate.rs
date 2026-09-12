@@ -856,17 +856,23 @@ fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, 
     let style = if italic { "italic" } else { "normal" };
     let ver = version.trim().trim_start_matches('v');
     let pin = if ver.is_empty() { "latest" } else { ver };
-    let mut urls = vec![
-        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@{pin}/{subset}-{weight}-{style}.ttf{q}"),
-        format!("https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
-        format!("https://unpkg.com/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
-    ];
+    // Prefer @latest before a pinned jsDelivr fontsource tag — pinned tags often
+    // return HTTP 400 while @latest serves the face (Syne Italic, Open Sauce, …).
+    let mut urls = Vec::new();
     if pin != "latest" {
-        urls.insert(
-            1,
-            format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/{subset}-{weight}-{style}.ttf{q}"),
-        );
+        urls.push(format!(
+            "https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/{subset}-{weight}-{style}.ttf{q}"
+        ));
     }
+    urls.push(format!(
+        "https://cdn.jsdelivr.net/fontsource/fonts/{slug}@{pin}/{subset}-{weight}-{style}.ttf{q}"
+    ));
+    urls.push(format!(
+        "https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"
+    ));
+    urls.push(format!(
+        "https://unpkg.com/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"
+    ));
     if slug == "noto-color-emoji" {
         return vec![
             format!("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf{q}"),
@@ -947,10 +953,35 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weig
     Err(last)
 }
 
+/// Map Fontsource API `styles` strings to download flags (`false`=normal, `true`=italic).
+/// Never invents normal when the package is italic-only (e.g. Syne Italic).
+fn fontsource_styles_from_meta(style_names: &[String]) -> Vec<bool> {
+    let has_normal = style_names.iter().any(|s| s.eq_ignore_ascii_case("normal"));
+    let has_italic = style_names.iter().any(|s| s.eq_ignore_ascii_case("italic"));
+    let mut out = Vec::new();
+    if has_normal {
+        out.push(false);
+    }
+    if has_italic {
+        out.push(true);
+    }
+    if out.is_empty() {
+        out.push(false);
+    }
+    out
+}
+
+/// Missing-package fast path: first-subset 400-normal 404, and no italic faces planned.
+/// Italic-only families must not abort here — they never schedule normal, and dual-style
+/// packs should keep trying italic after a normal miss.
+fn fontsource_abort_on_normal_404(styles: &[bool], first_subset: bool, weight: u16, italic: bool) -> bool {
+    first_subset && weight == 400 && !italic && !styles.iter().any(|s| *s)
+}
+
 fn fontsource_meta(
     client: &reqwest::blocking::Client,
     slug: &str,
-) -> Option<(Vec<String>, Vec<u16>, bool, String)> {
+) -> Option<(Vec<String>, Vec<u16>, Vec<bool>, String)> {
     let url = format!("https://api.fontsource.org/v1/fonts/{slug}");
     let text = client.get(&url).send().ok()?.text().ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -973,11 +1004,16 @@ fn fontsource_meta(
         })
         .filter(|w| !w.is_empty())
         .unwrap_or_else(|| vec![400]);
-    let italic = v
+    let style_names: Vec<String> = v
         .get("styles")
         .and_then(|s| s.as_array())
-        .map(|arr| arr.iter().any(|x| x.as_str() == Some("italic")))
-        .unwrap_or(false);
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let styles = fontsource_styles_from_meta(&style_names);
     let version = v
         .get("version")
         .and_then(|x| x.as_str())
@@ -985,7 +1021,7 @@ fn fontsource_meta(
         .trim()
         .trim_start_matches('v')
         .to_string();
-    Some((subsets, weights, italic, version))
+    Some((subsets, weights, styles, version))
 }
 
 fn is_cjk_subset(name: &str) -> bool {
@@ -1116,10 +1152,8 @@ fn pull_fontsource_subset_to_dir(
                 match fetch_ttf_to_file(client, slug, version, *weight, *italic, subset, &path) {
                     Ok(()) => wrote += 1,
                     Err(err) if err.starts_with("404") => {
-                        if subset == subsets.first().map(|s| s.as_str()).unwrap_or("")
-                            && *weight == 400
-                            && !*italic
-                        {
+                        let first = subset == subsets.first().map(|s| s.as_str()).unwrap_or("");
+                        if fontsource_abort_on_normal_404(styles, first, *weight, *italic) {
                             return wrote;
                         }
                     }
@@ -1225,16 +1259,48 @@ fn parse_css_faces(css: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// Hard cap for a single TTF/OTF body (jsDelivr var files included). Prevents
+/// unbounded RAM when a CDN returns a huge or non-font payload.
+const MAX_TTF_FETCH_BYTES: usize = 32 * 1024 * 1024;
+
 fn fetch_url_ttf(client: &reqwest::blocking::Client, url: &str) -> Option<Vec<u8>> {
     if bulk().cancel.load(Ordering::SeqCst) {
         return None;
     }
-    let resp = client.get(url).send().ok()?;
-    if !resp.status().is_success() {
+    let host = host_label(url);
+    if !circuit_allow(host) {
         return None;
     }
-    let bytes = resp.bytes().ok()?;
+    let resp = match client.get(url).send() {
+        Ok(r) => r,
+        Err(_) => {
+            circuit_failure(host);
+            return None;
+        }
+    };
+    if !resp.status().is_success() {
+        if resp.status().as_u16() >= 500 {
+            circuit_failure(host);
+        }
+        return None;
+    }
+    if let Some(cl) = resp.content_length() {
+        if cl as usize > MAX_TTF_FETCH_BYTES {
+            return None;
+        }
+    }
+    let bytes = match resp.bytes() {
+        Ok(b) => b,
+        Err(_) => {
+            circuit_failure(host);
+            return None;
+        }
+    };
+    if bytes.len() > MAX_TTF_FETCH_BYTES {
+        return None;
+    }
     if ttf_magic(&bytes) && bytes.len() >= 256 {
+        circuit_success(host);
         Some(bytes.to_vec())
     } else {
         None
@@ -1415,6 +1481,209 @@ fn variable_axis_specs(family: &str) -> Vec<String> {
 
 fn listing_is_400_swept(listed: &[(String, String, String)]) -> bool {
     !listed.is_empty() && listed.iter().all(|(_, w, _)| w == "400")
+}
+
+/// True when a CSS weight token is a range (`200-1000` from `font-weight: 200 1000`).
+/// Discrete instance keys are a single integer (`400`).
+fn weight_token_is_range(weight: &str) -> bool {
+    let parts: Vec<&str> = weight.split('-').filter(|p| !p.is_empty()).collect();
+    parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn listing_has_only_range_weights(listed: &[(String, String, String)]) -> bool {
+    !listed.is_empty() && listed.iter().all(|(_, w, _)| weight_token_is_range(w))
+}
+
+/// google/fonts repo folder candidates: compact (`librebaskerville`) then slug (`libre-baskerville`).
+fn google_fonts_repo_folders(family: &str) -> Vec<String> {
+    let compact: String = family
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let slug = slug_family(family);
+    let mut out = Vec::new();
+    if !compact.is_empty() {
+        out.push(compact);
+    }
+    if !slug.is_empty() && !out.iter().any(|s| s == &slug) {
+        out.push(slug);
+    }
+    out
+}
+
+fn google_fonts_pascal(family: &str) -> String {
+    family.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+}
+
+/// On-disk name for a real variable TTF from google/fonts (never latin / never WOFF).
+fn variable_face_filename(slug: &str, axes: &str, italic: bool) -> String {
+    let axes_tok = axes
+        .replace(',', "-")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>();
+    let axes_tok = axes_tok.trim_matches('-');
+    if italic {
+        sanitize(&format!("{slug}-variable-{axes_tok}-italic.ttf"))
+    } else {
+        sanitize(&format!("{slug}-variable-{axes_tok}.ttf"))
+    }
+}
+
+fn parse_metadata_pb_axes_and_files(meta: &str) -> (Vec<String>, Vec<(String, bool)>) {
+    // filenames like Nunito[wght].ttf / Roboto[wdth,wght].ttf / Nunito-Italic[wght].ttf
+    let mut files: Vec<(String, bool)> = Vec::new();
+    let mut axes_order: Vec<String> = Vec::new();
+    for line in meta.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("tag:") {
+            let tag = rest.trim().trim_matches('"').trim();
+            if !tag.is_empty() && !axes_order.iter().any(|a| a == tag) {
+                axes_order.push(tag.to_string());
+            }
+        }
+        if let Some(rest) = t.strip_prefix("filename:") {
+            let name = rest.trim().trim_matches('"').trim();
+            if name.contains('[') && name.to_ascii_lowercase().ends_with(".ttf") {
+                let italic = name.to_ascii_lowercase().contains("-italic[")
+                    || name.to_ascii_lowercase().contains("-italic.");
+                files.push((name.to_string(), italic));
+            }
+        }
+    }
+    (axes_order, files)
+}
+
+fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> String {
+    // Bracket axes must be percent-encoded for jsDelivr.
+    let enc: String = filename
+        .chars()
+        .map(|c| match c {
+            '[' => "%5B".to_string(),
+            ']' => "%5D".to_string(),
+            ' ' => "%20".to_string(),
+            _ => c.to_string(),
+        })
+        .collect();
+    format!("https://cdn.jsdelivr.net/gh/google/fonts@main/{license}/{folder}/{enc}")
+}
+
+/// Download real variable TTFs from google/fonts via jsDelivr (never @fontsource-variable WOFF).
+/// Returns on-disk filenames that were written or already intact.
+fn download_google_variable_ttfs(
+    client: &reqwest::blocking::Client,
+    family: &str,
+    slug: &str,
+    root: &Path,
+) -> Vec<String> {
+    if !google_catalog_is_variable(family) {
+        return Vec::new();
+    }
+    let licenses = ["ofl", "apache", "ufl"];
+    let folders = google_fonts_repo_folders(family);
+    let pascal = google_fonts_pascal(family);
+
+    // 1) Prefer METADATA.pb filenames + axes.
+    for lic in licenses {
+        for folder in &folders {
+            if bulk().cancel.load(Ordering::SeqCst) {
+                return Vec::new();
+            }
+            let meta_url = format!(
+                "https://cdn.jsdelivr.net/gh/google/fonts@main/{lic}/{folder}/METADATA.pb"
+            );
+            let Ok(resp) = client.get(&meta_url).send() else { continue };
+            if !resp.status().is_success() {
+                continue;
+            }
+            let Ok(text) = resp.text() else { continue };
+            if text.len() < 16 || !text.contains("filename:") {
+                continue;
+            }
+            let (axes, files) = parse_metadata_pb_axes_and_files(&text);
+            if files.is_empty() {
+                continue;
+            }
+            let mut wrote = Vec::new();
+            for (fname, italic) in &files {
+                let axes_label = if !axes.is_empty() {
+                    axes.join(",")
+                } else if let Some(start) = fname.find('[') {
+                    let end = fname.find(']').unwrap_or(fname.len());
+                    fname[start + 1..end].to_string()
+                } else {
+                    "wght".into()
+                };
+                let dest_name = variable_face_filename(slug, &axes_label, *italic);
+                let dest = root.join(&dest_name);
+                if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&dest) {
+                    register_path(&dest);
+                    wrote.push(dest_name);
+                    continue;
+                }
+                let url = jsdelivr_google_fonts_url(lic, folder, fname);
+                if let Some(bytes) = fetch_url_ttf(client, &url) {
+                    // Real variable fonts already have correct family names — do not
+                    // rewrite style tables (fvar instances own those).
+                    if write_font_file(&dest, &bytes).is_ok() {
+                        wrote.push(dest_name);
+                    }
+                }
+            }
+            if !wrote.is_empty() {
+                return wrote;
+            }
+            // METADATA found but TTFs missing — try next folder/license.
+        }
+    }
+
+    // 2) Fallback: try common axis filename patterns across license dirs.
+    let axis_patterns = [
+        "wght",
+        "wdth,wght",
+        "opsz,wght",
+        "wght,wdth",
+        "CASL,CRSV,MONO,slnt,wght",
+    ];
+    let mut wrote = Vec::new();
+    for lic in licenses {
+        for folder in &folders {
+            for axes in axis_patterns {
+                if bulk().cancel.load(Ordering::SeqCst) {
+                    return wrote;
+                }
+                for italic in [false, true] {
+                    let remote = if italic {
+                        format!("{pascal}-Italic[{axes}].ttf")
+                    } else {
+                        format!("{pascal}[{axes}].ttf")
+                    };
+                    let dest_name = variable_face_filename(slug, axes, italic);
+                    let dest = root.join(&dest_name);
+                    if wrote.iter().any(|w| w == &dest_name) {
+                        continue;
+                    }
+                    if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&dest) {
+                        register_path(&dest);
+                        wrote.push(dest_name);
+                        continue;
+                    }
+                    let url = jsdelivr_google_fonts_url(lic, folder, &remote);
+                    if let Some(bytes) = fetch_url_ttf(client, &url) {
+                        if write_font_file(&dest, &bytes).is_ok() {
+                            wrote.push(dest_name);
+                        }
+                    }
+                }
+                // If we got a roman var file for this axes pattern, stop trying other axes.
+                if wrote.iter().any(|w| w.contains("-variable-") && !w.contains("-italic")) {
+                    return wrote;
+                }
+            }
+        }
+    }
+    wrote
 }
 
 /// Cap concurrent face streams so bulk Activate cannot buffer ~N×CJK in RAM.
@@ -1644,7 +1913,12 @@ fn discover_richest_google_listing(
 ) -> Vec<(String, String, String)> {
     if google_catalog_is_variable(family) {
         if let Some(listed) = discover_variable_google_listing(client, family) {
-            return listed;
+            // Axis-range CSS sometimes yields `font-weight: 200 1000` → key `200-1000`
+            // (2 faces) instead of discrete static instances. Prefer discrete static
+            // multi-face listing for planned keys; real var TTFs download separately.
+            if !listing_has_only_range_weights(&listed) {
+                return listed;
+            }
         }
     }
     let static_axis = static_weight_axis();
@@ -1688,10 +1962,128 @@ fn discover_richest_google_listing(
     best
 }
 
-/// Stream listed TTF URLs to `root`. Caps in-flight streams/bytes so CJK cannot OOM.
-/// Returns (written_or_intact count, listed expected count).
+
+/// Parse Google instance on-disk name `{slug}-{weight}-{style}.ttf`.
+/// Style is `normal` or `italic`. Skips `*-variable-*` and latin subset names.
+fn parse_google_instance_face_name(slug: &str, filename: &str) -> Option<(String, String)> {
+    let lower = filename.to_ascii_lowercase();
+    if !(lower.ends_with(".ttf") || lower.ends_with(".otf")) {
+        return None;
+    }
+    if lower.contains("-variable-") || lower.contains("-latin-") || lower.contains("-latin.") {
+        return None;
+    }
+    let stem = lower.rsplit_once('.').map(|(s, _)| s).unwrap_or(&lower);
+    let prefix = format!("{}-", slug.to_ascii_lowercase());
+    let rest = stem.strip_prefix(&prefix)?;
+    if let Some(w) = rest.strip_suffix("-normal") {
+        if !w.is_empty() {
+            return Some((w.to_string(), "normal".into()));
+        }
+    }
+    if let Some(w) = rest.strip_suffix("-italic") {
+        if !w.is_empty() {
+            return Some((w.to_string(), "italic".into()));
+        }
+    }
+    None
+}
+
+/// True when Win nameID 1 or 16 is present and differs from the catalog family
+/// (or both are missing). Intact Google instances with mashed "Nunito ExtraLight"
+/// family names need an in-place rewrite.
+fn instance_name_needs_heal(font: &[u8], family: &str) -> bool {
+    let fam = family.trim();
+    if fam.is_empty() {
+        return false;
+    }
+    let id1 = crate::namepatch::read_name_id(font, 1);
+    let id16 = crate::namepatch::read_name_id(font, 16);
+    if let Some(ref s) = id1 {
+        if s != fam {
+            return true;
+        }
+    }
+    if let Some(ref s) = id16 {
+        if s != fam {
+            return true;
+        }
+    }
+    id1.is_none() && id16.is_none()
+}
+
+/// Re-patch one intact Google CSS instance face in place when nameID 1/16 ≠ family.
+/// Soft-fails on locked/unreadable files (returns false — never panics / half-writes
+/// beyond `write_font_file`'s usual delete+write path).
+fn heal_google_instance_face_file(
+    path: &Path,
+    family: &str,
+    weight: &str,
+    css_style: &str,
+) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    if !ttf_magic(&bytes) || bytes.len() < 256 {
+        return false;
+    }
+    if !instance_name_needs_heal(&bytes, family) {
+        return false;
+    }
+    let Some(patched) =
+        crate::namepatch::patch_google_instance_face(&bytes, family, weight, css_style)
+    else {
+        return false;
+    };
+    if patched.as_slice() == bytes.as_slice() {
+        return false;
+    }
+    write_font_file(path, &patched).is_ok()
+}
+
+/// Walk a family folder and heal mashed Google instance name tables. Skips
+/// `*-variable-*` var TTFs. Returns how many files were rewritten.
+fn heal_google_instance_names_in_dir(dir: &Path, family: &str) -> usize {
+    let slug = slug_family(family);
+    if slug.is_empty() || !dir.is_dir() {
+        return 0;
+    }
+    let mut healed = 0usize;
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    for path in files {
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some((weight, style)) = parse_google_instance_face_name(&slug, name) else {
+            continue;
+        };
+        if !ttf_intact(&path) {
+            continue;
+        }
+        if heal_google_instance_face_file(&path, family, &weight, &style) {
+            healed += 1;
+        }
+    }
+    healed
+}
+
+fn heal_family_google_instance_names(app: &AppHandle, family: &str) -> usize {
+    if !is_official_google_family(family) {
+        return 0;
+    }
+    let mut n = 0usize;
+    for dir in family_locations(app, family) {
+        n = n.saturating_add(heal_google_instance_names_in_dir(&dir, family));
+    }
+    n
+}
+
+/// Fetch listed Google CSS instance TTFs to `root`, patching name tables for
+/// Illustrator-friendly family/style split. Returns (written_or_intact, expected).
 fn download_listed_faces_to_dir(
     client: &reqwest::blocking::Client,
+    family: &str,
     slug: &str,
     root: &Path,
     listed: Vec<(String, String, String)>,
@@ -1700,45 +2092,37 @@ fn download_listed_faces_to_dir(
     if listed.is_empty() {
         return (0, 0);
     }
-    // Serialize nested face parallelism: bulk already runs DOWNLOAD_WORKERS families.
-    // Nested FACE_STREAM_SLOTS×DOWNLOAD_WORKERS threads contended on 2 permits and
-    // previously timed out (~30s) → silent face loss. One face stream per family;
-    // global FaceStreamPermit still caps cross-family concurrency.
-    let workers = 1usize;
-    let jobs = Arc::new(Mutex::new(listed));
-    let wrote = Arc::new(AtomicUsize::new(0));
-    let mut joins = Vec::with_capacity(workers);
-    for _ in 0..workers {
-        let client = client.clone();
-        let jobs = jobs.clone();
-        let wrote = wrote.clone();
-        let slug = slug.to_string();
-        let root = root.to_path_buf();
-        joins.push(thread::spawn(move || loop {
-            if bulk().cancel.load(Ordering::SeqCst) {
-                return;
-            }
-            let next = jobs.lock().ok().and_then(|mut q| {
-                if q.is_empty() {
-                    None
-                } else {
-                    Some(q.remove(0))
-                }
-            });
-            let Some((style, weight, url)) = next else {
-                return;
-            };
-            let name = sanitize(&format!("{slug}-{weight}-{style}.ttf"));
-            let path = root.join(name);
-            if stream_url_to_font_file(&client, &url, &path).ok() {
-                wrote.fetch_add(1, Ordering::SeqCst);
-            }
-        }));
+    // One face at a time per family (bulk already parallelizes families). Buffer
+    // bytes so we can patch nameID 1/2/4/16/17 before write — stream-only path
+    // cannot rewrite the name table.
+    let mut wrote = 0usize;
+    for (style, weight, url) in listed {
+        if bulk().cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        let name = google_face_filename(slug, &weight, &style);
+        let path = root.join(&name);
+        if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
+            // Intact faces from prior installs may still carry mashed nameID 1/16
+            // ("Nunito ExtraLight"). Re-patch in place so Repair/Activate heals
+            // complete folders without a full re-download.
+            let _ = heal_google_instance_face_file(&path, family, &weight, &style);
+            register_path(&path);
+            wrote += 1;
+            continue;
+        }
+        let Some(bytes) = fetch_url_ttf(client, &url) else {
+            continue;
+        };
+        let patched = crate::namepatch::patch_google_instance_face(
+            &bytes, family, &weight, &style,
+        )
+        .unwrap_or(bytes);
+        if write_font_file(&path, &patched).is_ok() {
+            wrote += 1;
+        }
     }
-    for j in joins {
-        let _ = j.join();
-    }
-    (wrote.load(Ordering::SeqCst), expected)
+    (wrote, expected)
 }
 
 /// Google-first install path: discover richest listing, then stream faces to disk.
@@ -1748,16 +2132,20 @@ fn fetch_google_family_faces_to_dir(
     family: &str,
     slug: &str,
     root: &Path,
-) -> (usize, Vec<(String, String, String)>) {
+) -> (usize, Vec<(String, String, String)>, Vec<String>) {
     if !is_official_google_family(family) {
-        return (0, Vec::new());
+        return (0, Vec::new(), Vec::new());
     }
     let listed = discover_richest_google_listing(client, family);
-    if listed.is_empty() {
-        return (0, Vec::new());
-    }
-    let (wrote, _expected) = download_listed_faces_to_dir(client, slug, root, listed.clone());
-    (wrote, listed)
+    let (inst_wrote, _) = if listed.is_empty() {
+        (0, 0)
+    } else {
+        download_listed_faces_to_dir(client, family, slug, root, listed.clone())
+    };
+    // Catalog-variable: ALSO pull real variable TTFs from google/fonts (jsDelivr).
+    let var_files = download_google_variable_ttfs(client, family, slug, root);
+    let wrote = inst_wrote.saturating_add(var_files.len());
+    (wrote, listed, var_files)
 }
 
 fn needs_compat_pack(slug: &str) -> bool {
@@ -2132,7 +2520,8 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
             continue;
         }
         let lower = name.to_ascii_lowercase();
-        // Keep emoji/color compat sidecars installed alongside Google faces.
+        // Keep emoji/color compat sidecars. Variable TTFs stay only when planned
+        // (do not keep forever-unplanned `*-variable-*` leftovers).
         if lower.contains("-svg.")
             || lower.contains("-colrv1.")
             || lower.contains("-compat-")
@@ -2489,6 +2878,8 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     let bust = bulk().bust.load(Ordering::SeqCst);
     let existing = register_intact_family(app, family);
     if existing > 0 && !bust && family_is_ready(app, family) {
+        // Complete folders still need name heal for pre-namepatch installs.
+        heal_family_google_instance_names(app, family);
         return Ok(existing);
     }
     if bust {
@@ -2503,20 +2894,42 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
 
     // Google desktop TTFs first (official families): discover richest listing, then stream
     // to disk (no full-family RAM buffer). Fontsource only when Google listed nothing.
-    let (google_wrote, google_listed) =
+    let (google_wrote, mut google_listed, mut google_var_files) =
         fetch_google_family_faces_to_dir(client, family, &slug, &root);
-    let google_expected = google_listed.len();
+    // If Google CSS listed faces but nothing intact landed, do NOT purge latin
+    // remnants into an empty folder and abort — clear the plan so Fontsource can
+    // fill (or a later Repair can retry Google). Partial Google writes keep the plan.
+    if !google_listed.is_empty() && google_wrote == 0 {
+        let keys_probe: Vec<String> = google_listed
+            .iter()
+            .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
+            .chain(google_var_files.iter().cloned())
+            .collect();
+        if count_intact_planned_keys(&root, &keys_probe) == 0 {
+            google_listed.clear();
+            google_var_files.clear();
+        }
+    }
+    let google_instance_expected = google_listed.len();
+    let google_expected = google_instance_expected.saturating_add(google_var_files.len());
     wrote = wrote.saturating_add(google_wrote);
     if google_expected > 0 {
         planned = google_expected;
-        let keys: Vec<String> = google_listed
+        let mut keys: Vec<String> = google_listed
             .iter()
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
             .collect();
+        for v in &google_var_files {
+            if !keys.iter().any(|k| k == v) {
+                keys.push(v.clone());
+            }
+        }
         write_google_planned(&root, &keys);
-        // Bust already emptied the folder; non-bust Repair/Activate must still
-        // strip latin / mismatched remnants so they cannot clash with Google keys.
-        purge_unplanned_font_files(&root, &keys);
+        // Only purge leftovers once we have Google bytes on disk — otherwise a
+        // failed Google fetch would delete latin remnants and leave the folder empty.
+        if google_wrote > 0 || count_intact_planned_keys(&root, &keys) > 0 {
+            purge_unplanned_font_files(&root, &keys);
+        }
     } else {
         clear_google_planned(&root);
     }
@@ -2526,19 +2939,18 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     // Fontsource when Google listed nothing.
     let need_fontsource = google_expected == 0;
     if need_fontsource {
-        if let Some((all_subsets, weights, has_italic, fs_ver)) = fontsource_meta(client, &slug) {
+        if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();
             let mut subsets = pick_subsets(&all_subsets);
             if subsets.is_empty() {
                 subsets.push("latin".into());
             }
             let weights = pick_fontsource_weights(&weights);
-            let styles: &[bool] = if slug.contains("emoji") {
-                &[false]
-            } else if has_italic {
-                &[false, true]
+            // Use advertised styles only — never invent normal for italic-only packages.
+            let styles: Vec<bool> = if slug.contains("emoji") {
+                vec![false]
             } else {
-                &[false]
+                meta_styles
             };
             let fs_expected = subsets.len().saturating_mul(weights.len()).saturating_mul(styles.len());
             if google_expected == 0 {
@@ -2547,7 +2959,7 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
             // When Google listed a rich set, keep that expected count for .complete honesty.
             // FS may still fill supplemental files, but *-latin-* never counts toward Google planned.
             let fs_wrote = pull_fontsource_subset_to_dir(
-                client, &slug, &version, &subsets, &weights, styles, &root,
+                client, &slug, &version, &subsets, &weights, &styles, &root,
             );
             // CJK honesty: metadata listed chinese-* but FS only dropped latin → do not
             // claim a Fontsource expected set when Google also wrote nothing.
@@ -2566,8 +2978,12 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
             wrote = wrote.saturating_add(fs_wrote);
         }
     }
-    // Legacy Fontsource packs used `*-latin-*` names — never leave those on disk.
-    purge_latin_named_files(&root);
+    // Legacy Fontsource packs used `*-latin-*` names — strip when we have a
+    // replacement set (Google wrote, or Fontsource-only path). Never strip when
+    // Google listed then failed with zero writes — that left folders empty (1.0.148+).
+    if google_wrote > 0 || google_expected == 0 {
+        purge_latin_named_files(&root);
+    }
 
     // Reconcile with on-disk intact after streaming paths.
     let intact_now = count_intact_faces(&root);
@@ -2605,7 +3021,18 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     // Gate .complete on Google face keys when Google planned the set — never let
     // Fontsource *-latin-* extras stamp complete over missing Google faces.
     let intact_for_complete = if google_expected > 0 {
-        count_intact_google_listed_keys(&root, &slug, &google_listed)
+        // Count instance faces + variable files from the planned key list.
+        if let Some(keys) = read_google_planned_keys(&root) {
+            count_intact_planned_keys(&root, &keys)
+        } else {
+            count_intact_google_listed_keys(&root, &slug, &google_listed)
+                .saturating_add(
+                    google_var_files
+                        .iter()
+                        .filter(|n| ttf_intact(&root.join(n)))
+                        .count(),
+                )
+        }
     } else {
         count_intact_faces(&root)
     };
@@ -2691,6 +3118,8 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
+            // Activate of an already-complete family must still heal mashed names.
+            heal_family_google_instance_names(&app, &family);
             Ok(1usize)
         } else {
             download_family(&app, &client, &family)
@@ -3165,6 +3594,7 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
 #[tauri::command]
 pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
     let mut targets = Vec::new();
+    let mut healed = 0usize;
     if families.is_empty() {
         for_family_dirs(&app, |dir| {
             verify_complete_marker(dir);
@@ -3172,19 +3602,30 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     targets.push(name.to_string());
                 }
+            } else if dir_is_complete(dir) {
+                // Complete Google folders: name-heal mashed instance faces in place
+                // (Illustrator will not fix "Nunito ExtraLight" via Repair alone otherwise).
+                if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
+                    if is_official_google_family(name) {
+                        healed = healed.saturating_add(heal_google_instance_names_in_dir(dir, name));
+                    }
+                }
             }
         });
     } else {
         for family in families {
             if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
                 targets.push(family);
+            } else {
+                healed = healed.saturating_add(heal_family_google_instance_names(&app, &family));
             }
         }
     }
     if targets.is_empty() {
-        return Ok(0);
+        return Ok(healed);
     }
-    retry_google_downloads(app, targets)
+    let n = retry_google_downloads(app, targets)?;
+    Ok(n.saturating_add(healed))
 }
 
 #[tauri::command]
@@ -3690,6 +4131,253 @@ mod complete_marker_tests {
 mod install_path_tests {
 
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_family_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fm-install-{}-{}-{}",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn variable_planned_filenames_not_purged() {
+        let dir = temp_family_dir("purge-var");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let var_roman = "nunito-variable-wght.ttf";
+        let var_italic = "nunito-variable-wght-italic.ttf";
+        let inst = "nunito-200-normal.ttf";
+        fs::write(dir.join(var_roman), &fake).unwrap();
+        fs::write(dir.join(var_italic), &fake).unwrap();
+        fs::write(dir.join(inst), &fake).unwrap();
+        fs::write(dir.join("nunito-latin-400-normal.ttf"), &fake).unwrap();
+        let keys = vec![
+            inst.into(),
+            var_roman.into(),
+            var_italic.into(),
+        ];
+        purge_unplanned_font_files(&dir, &keys);
+        assert!(dir.join(var_roman).is_file(), "variable roman must stay");
+        assert!(dir.join(var_italic).is_file(), "variable italic must stay");
+        assert!(dir.join(inst).is_file(), "instance must stay");
+        assert!(!dir.join("nunito-latin-400-normal.ttf").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unplanned_variable_filenames_are_purged() {
+        let dir = temp_family_dir("purge-unplanned-var");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let stale_var = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        fs::write(dir.join(stale_var), &fake).unwrap();
+        purge_unplanned_font_files(&dir, &[inst.into()]);
+        assert!(dir.join(inst).is_file());
+        assert!(
+            !dir.join(stale_var).is_file(),
+            "unplanned *-variable-* must not linger forever"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_google_instance_face_name_splits_weight_style() {
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-200-normal.ttf"),
+            Some(("200".into(), "normal".into()))
+        );
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-200-1000-italic.ttf"),
+            Some(("200-1000".into(), "italic".into()))
+        );
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-variable-wght.ttf"),
+            None
+        );
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-latin-400-normal.ttf"),
+            None
+        );
+    }
+
+    /// Minimal sfnt with Win name 1/2/4/6/16/17 for heal tests.
+    fn minimal_named_font(family: &str, style: &str) -> Vec<u8> {
+        fn utf16_be(s: &str) -> Vec<u8> {
+            s.encode_utf16().flat_map(u16::to_be_bytes).collect()
+        }
+        fn checksum(data: &[u8]) -> u32 {
+            let mut sum = 0u32;
+            let mut i = 0;
+            while i + 4 <= data.len() {
+                sum = sum.wrapping_add(u32::from_be_bytes([
+                    data[i], data[i + 1], data[i + 2], data[i + 3],
+                ]));
+                i += 4;
+            }
+            sum
+        }
+        let full = if style.eq_ignore_ascii_case("Regular") {
+            family.to_string()
+        } else {
+            format!("{family} {style}")
+        };
+        let ps: String = format!(
+            "{}-{}",
+            family.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>(),
+            style.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
+        );
+        let ids = [
+            (1u16, family),
+            (2, style),
+            (4, full.as_str()),
+            (6, ps.as_str()),
+            (16, family),
+            (17, style),
+        ];
+        let mut strings = Vec::new();
+        let mut recs = Vec::new();
+        for (id, text) in ids {
+            let data = utf16_be(text);
+            let off = strings.len() as u16;
+            recs.extend_from_slice(&3u16.to_be_bytes());
+            recs.extend_from_slice(&1u16.to_be_bytes());
+            recs.extend_from_slice(&0x0409u16.to_be_bytes());
+            recs.extend_from_slice(&id.to_be_bytes());
+            recs.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            recs.extend_from_slice(&off.to_be_bytes());
+            strings.extend_from_slice(&data);
+        }
+        let string_offset = (6 + ids.len() * 12) as u16;
+        let mut name = Vec::new();
+        name.extend_from_slice(&0u16.to_be_bytes());
+        name.extend_from_slice(&(ids.len() as u16).to_be_bytes());
+        name.extend_from_slice(&string_offset.to_be_bytes());
+        name.extend_from_slice(&recs);
+        name.extend_from_slice(&strings);
+        while name.len() % 4 != 0 {
+            name.push(0);
+        }
+        let mut head = vec![0u8; 54];
+        head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+        let mut font = Vec::new();
+        font.extend_from_slice(&0x00010000u32.to_be_bytes());
+        font.extend_from_slice(&2u16.to_be_bytes());
+        font.extend_from_slice(&32u16.to_be_bytes());
+        font.extend_from_slice(&1u16.to_be_bytes());
+        font.extend_from_slice(&0u16.to_be_bytes());
+        let head_off = 12 + 2 * 16;
+        font.extend_from_slice(b"head");
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&(head_off as u32).to_be_bytes());
+        font.extend_from_slice(&(head.len() as u32).to_be_bytes());
+        let name_off = head_off + head.len();
+        font.extend_from_slice(b"name");
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&(name_off as u32).to_be_bytes());
+        font.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        font.extend_from_slice(&head);
+        font.extend_from_slice(&name);
+        let head_cs = checksum(&font[head_off..head_off + head.len()]);
+        font[12 + 4..12 + 8].copy_from_slice(&head_cs.to_be_bytes());
+        let name_cs = checksum(&font[name_off..name_off + name.len()]);
+        font[12 + 16 + 4..12 + 16 + 8].copy_from_slice(&name_cs.to_be_bytes());
+        // Pad to satisfy ttf_intact length floor (256).
+        if font.len() < 256 {
+            font.resize(256, 0);
+        }
+        font
+    }
+
+    #[test]
+    fn heal_rewrites_mashed_instance_names_in_place() {
+        let dir = temp_family_dir("heal-names");
+        let mashed = minimal_named_font("Nunito ExtraLight", "Regular");
+        assert_eq!(
+            crate::namepatch::read_name_id(&mashed, 1).as_deref(),
+            Some("Nunito ExtraLight")
+        );
+        let path = dir.join("nunito-200-normal.ttf");
+        fs::write(&path, &mashed).unwrap();
+        // Variable sibling must not be style-namepatched.
+        let var_path = dir.join("nunito-variable-wght.ttf");
+        let var_bytes = minimal_named_font("Nunito", "Regular");
+        fs::write(&var_path, &var_bytes).unwrap();
+
+        let n = heal_google_instance_names_in_dir(&dir, "Nunito");
+        assert_eq!(n, 1, "exactly one instance face should heal");
+        let healed = fs::read(&path).unwrap();
+        assert_eq!(crate::namepatch::read_name_id(&healed, 1).as_deref(), Some("Nunito"));
+        assert_eq!(
+            crate::namepatch::read_name_id(&healed, 2).as_deref(),
+            Some("ExtraLight")
+        );
+        let var_after = fs::read(&var_path).unwrap();
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_after, 1).as_deref(),
+            Some("Nunito"),
+            "variable TTF must remain untouched"
+        );
+        // Second pass is a no-op.
+        assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito"), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn weight_range_tokens_detected_for_variable_css() {
+        assert!(weight_token_is_range("200-1000"));
+        assert!(weight_token_is_range("100-900"));
+        assert!(!weight_token_is_range("400"));
+        assert!(!weight_token_is_range("700"));
+        assert!(listing_has_only_range_weights(&[
+            ("normal".into(), "200-1000".into(), "https://x/a.ttf".into()),
+            ("italic".into(), "200-1000".into(), "https://x/b.ttf".into()),
+        ]));
+        assert!(!listing_has_only_range_weights(&[
+            ("normal".into(), "200".into(), "https://x/a.ttf".into()),
+            ("normal".into(), "300".into(), "https://x/b.ttf".into()),
+        ]));
+    }
+
+    #[test]
+    fn variable_face_filename_is_sanitize_friendly() {
+        assert_eq!(
+            variable_face_filename("nunito", "wght", false),
+            "nunito-variable-wght.ttf"
+        );
+        assert_eq!(
+            variable_face_filename("nunito", "wght", true),
+            "nunito-variable-wght-italic.ttf"
+        );
+        assert_eq!(
+            variable_face_filename("roboto", "wdth,wght", false),
+            "roboto-variable-wdth-wght.ttf"
+        );
+        assert!(!variable_face_filename("nunito", "wght", false).contains("latin"));
+    }
+
+    #[test]
+    fn latin_filename_never_emitted_by_google_or_fontsource_helpers() {
+        assert!(!filename_has_latin_subset(&google_face_filename("nunito", "200", "normal")));
+        assert!(!filename_has_latin_subset(&fontsource_face_filename(
+            "nunito", "latin", 200, "normal"
+        )));
+        assert!(!filename_has_latin_subset(&variable_face_filename(
+            "nunito", "wght", false
+        )));
+    }
 
     #[test]
     fn fontsource_face_filename_never_embeds_latin() {
@@ -3720,6 +4408,65 @@ mod install_path_tests {
     }
 
     #[test]
+    fn fontsource_styles_italic_only_does_not_invent_normal() {
+        // Syne Italic: API styles=["italic"] only — must not schedule 400-normal.
+        let styles = fontsource_styles_from_meta(&["italic".into()]);
+        assert_eq!(styles, vec![true]);
+        let expected = 1usize; // 1 subset × 1 weight × 1 style
+        assert_eq!(
+            expected,
+            1usize.saturating_mul(1).saturating_mul(styles.len())
+        );
+    }
+
+    #[test]
+    fn fontsource_styles_normal_and_italic() {
+        let styles = fontsource_styles_from_meta(&["normal".into(), "italic".into()]);
+        assert_eq!(styles, vec![false, true]);
+    }
+
+    #[test]
+    fn fontsource_styles_normal_only() {
+        let styles = fontsource_styles_from_meta(&["normal".into()]);
+        assert_eq!(styles, vec![false]);
+    }
+
+    #[test]
+    fn fontsource_abort_skips_italic_only_and_dual_style() {
+        // Italic-only: never abort on a normal miss (normal is not scheduled).
+        assert!(!fontsource_abort_on_normal_404(&[true], true, 400, false));
+        // Dual-style: keep going after 400-normal 404 so italic can download.
+        assert!(!fontsource_abort_on_normal_404(&[false, true], true, 400, false));
+        // Normal-only missing package: fast abort.
+        assert!(fontsource_abort_on_normal_404(&[false], true, 400, false));
+        // Non-first subset / non-400 / italic miss: never abort.
+        assert!(!fontsource_abort_on_normal_404(&[false], false, 400, false));
+        assert!(!fontsource_abort_on_normal_404(&[false], true, 700, false));
+        assert!(!fontsource_abort_on_normal_404(&[false, true], true, 400, true));
+    }
+
+    #[test]
+    fn ttf_urls_prefers_latest_before_pinned() {
+        let urls = ttf_urls("syne-italic", "2.76", 400, true, "latin", 0);
+        assert!(
+            urls[0].contains("@latest/"),
+            "first URL must be @latest, got {}",
+            urls[0]
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("@2.76/")),
+            "pinned version should still be tried after @latest"
+        );
+        let latest_only = ttf_urls("syne-italic", "", 400, true, "latin", 0);
+        assert!(latest_only[0].contains("@latest/"));
+        assert_eq!(
+            latest_only.iter().filter(|u| u.contains("cdn.jsdelivr.net/fontsource")).count(),
+            1,
+            "empty pin must not duplicate @latest"
+        );
+    }
+
+    #[test]
     fn pick_subsets_prefers_cjk_over_latin() {
         let all = vec![
             "latin".into(),
@@ -3728,6 +4475,21 @@ mod install_path_tests {
         ];
         let got = pick_subsets(&all);
         assert_eq!(got, vec!["chinese-hongkong".to_string()]);
+    }
+
+    #[test]
+    fn parse_css_joins_range_weight_tokens() {
+        let css = r#"
+@font-face {
+  font-family: 'Nunito';
+  font-style: normal;
+  font-weight: 200 1000;
+  src: url(https://example.com/nunito.ttf);
+}
+"#;
+        let faces = parse_css_faces(css);
+        assert_eq!(faces.len(), 1);
+        assert_eq!(faces[0].1, "200-1000");
     }
 
     #[test]
