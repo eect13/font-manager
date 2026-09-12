@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 import { FontCard } from "./font-card";
 import { UploadsResetDialog } from "./uploads-reset-dialog";
@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { inDesktopShell, isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { primeGooglePreview } from "@/lib/fonts/loader";
 import { loadSystemFonts } from "@/lib/fonts/system-fonts";
-import { getDownloadJob, subscribeDownloadJob } from "@/lib/fonts/os-activate";
 import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
 import type { Collection, FontRecord } from "@/lib/fonts/types";
 
@@ -68,7 +67,6 @@ export function LibraryGrid() {
   const customTags = useFontStore((s) => s.customTags);
   const preview = useFontStore((s) => s.preview);
   const activated = useFontStore((s) => s.activated);
-  const pendingActivate = useFontStore((s) => s.pendingActivate);
   const favorites = useFontStore((s) => (s.scope === "favorites" ? s.favorites : EMPTY_IDS));
   const collections = useFontStore((s) =>
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
@@ -105,38 +103,11 @@ export function LibraryGrid() {
     };
   }, []);
 
-  // Freeze Activated-scope liveIds while a download job runs — useDeferredValue alone still
-  // recomputes from thrashing pendingActivate/activated on every ready tick.
-  const downloadBusy = useSyncExternalStore(
-    subscribeDownloadJob,
-    () => {
-      const j = getDownloadJob();
-      return j.running || j.paused;
-    },
-    () => false,
-  );
-  const frozenLiveRef = useRef<string[] | null>(null);
-  useEffect(() => {
-    if (downloadBusy && scopeNeedsActivated(scope)) {
-      if (!frozenLiveRef.current) {
-        frozenLiveRef.current = pendingActivate.length
-          ? [...activated, ...pendingActivate]
-          : activated.slice();
-      }
-    } else {
-      frozenLiveRef.current = null;
-    }
-  }, [downloadBusy, scope, activated, pendingActivate]);
+  // Activated scope = live activated[] only (never pendingActivate, never downloadBusy freeze).
   const liveIds = useMemo(() => {
     if (!scopeNeedsActivated(scope)) return EMPTY_IDS;
-    if (downloadBusy) {
-      return (
-        frozenLiveRef.current ??
-        (pendingActivate.length ? [...activated, ...pendingActivate] : activated)
-      );
-    }
-    return pendingActivate.length ? [...activated, ...pendingActivate] : activated;
-  }, [scope, downloadBusy, activated, pendingActivate]);
+    return activated;
+  }, [scope, activated]);
 
   const fonts = useMemo(
     () => {
