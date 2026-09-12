@@ -10,4 +10,3 @@
 - Continue latin-remnant heal for legacy `*-latin-*` packs already on disk (new installs since 1.0.148 do not write latin filenames).
 
 ## Notes
-- Do not pack until Skye re-critiques the tip after P0a residual fix.
