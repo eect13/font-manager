@@ -2055,13 +2055,24 @@ fn clear_google_planned(dir: &Path) {
     let _ = fs::remove_file(family_google_planned_marker(dir));
 }
 
-/// After Google lists face keys, drop Fontsource `*-latin-*` / mismatched names so
-/// leftovers cannot clash with `{slug}-{w}-{s}.ttf` or pad counts.
+/// After Google lists face keys, drop **all** leftovers not in that exact key list:
+/// Fontsource `*-latin-*`, other subset packs, and duplicate google-shaped files
+/// from prior static/partial installs. Never keep a `*-latin-*` name even if it
+/// somehow appears in `planned_keys` (latin must never be a Google face key).
+/// Compat emoji/color sidecars (`-svg.`, `-colrv1.`, `-compat-`) are retained.
 fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
     if planned_keys.is_empty() {
         return;
     }
-    let planned: HashSet<&str> = planned_keys.iter().map(|s| s.as_str()).collect();
+    let planned: HashSet<&str> = planned_keys
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|n| {
+            let lower = n.to_ascii_lowercase();
+            // Belt: planned keys must never include Fontsource latin subset names.
+            !lower.contains("-latin-") && !lower.contains("-latin.")
+        })
+        .collect();
     let mut files = Vec::new();
     walk_font_files(dir, &mut files);
     for path in files {
@@ -2069,7 +2080,7 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        if name.is_empty() || planned.contains(name) {
+        if name.is_empty() {
             continue;
         }
         let lower = name.to_ascii_lowercase();
@@ -2078,6 +2089,11 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
             || lower.contains("-colrv1.")
             || lower.contains("-compat-")
         {
+            continue;
+        }
+        // Always strip Fontsource latin subset packs on Google re-download.
+        let is_latin = lower.contains("-latin-") || lower.contains("-latin.");
+        if !is_latin && planned.contains(name) {
             continue;
         }
         unregister_path(&path);
@@ -3559,6 +3575,48 @@ mod complete_marker_tests {
         assert!(dir.join("libre-baskerville-400-normal.ttf").is_file());
         assert!(!dir.join("libre-baskerville-latin-400-normal.ttf").is_file());
         assert!(!dir.join("libre-baskerville-latin-700-italic.ttf").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_unplanned_strips_all_latin_and_duplicate_unplanned() {
+        // Google re-download must remove EVERY *-latin-* plus prior static duplicates
+        // not in the new planned key list — not merely a subset of latin pads.
+        let dir = temp_family_dir("purge-dupes");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let keep = "inter-100-900-normal.ttf";
+        fs::write(dir.join(keep), &fake).unwrap();
+        // Prior static google-shaped faces (unplanned after variable listing).
+        fs::write(dir.join("inter-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("inter-700-italic.ttf"), &fake).unwrap();
+        // Fontsource latin pads (all must go).
+        fs::write(dir.join("inter-latin-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("inter-latin-700-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("inter-latin-400-italic.ttf"), &fake).unwrap();
+        // Non-latin subset pack + odd duplicate name.
+        fs::write(dir.join("inter-cyrillic-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("Inter-Regular.ttf"), &fake).unwrap();
+        // Compat sidecar must remain.
+        fs::write(dir.join("inter-compat-outline.ttf"), &fake).unwrap();
+        let keys = vec![keep.into(), "inter-latin-400-normal.ttf".into()]; // latin in planned must still die
+        purge_unplanned_font_files(&dir, &keys);
+        assert!(dir.join(keep).is_file(), "planned google key must stay");
+        assert!(dir.join("inter-compat-outline.ttf").is_file(), "compat sidecar must stay");
+        for gone in [
+            "inter-400-normal.ttf",
+            "inter-700-italic.ttf",
+            "inter-latin-400-normal.ttf",
+            "inter-latin-700-normal.ttf",
+            "inter-latin-400-italic.ttf",
+            "inter-cyrillic-400-normal.ttf",
+            "Inter-Regular.ttf",
+        ] {
+            assert!(
+                !dir.join(gone).is_file(),
+                "{gone} must be purged on Google re-download"
+            );
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
