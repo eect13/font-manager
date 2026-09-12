@@ -298,18 +298,20 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
 
 function notifyCatalog(result: CatalogSyncResult, force: boolean) {
   if (result.skipped) return;
+  const exclusive = GOOGLE_FONTS.filter((f) => f.catalog === "other").length;
+  const summary = `Catalog ${result.count.toLocaleString()} (Google ${GOOGLE_DIRECTORY.size.toLocaleString()} · Fontsource exclusive ${exclusive.toLocaleString()})`;
   if (result.added > 0) {
     toast.success(
       `Catalog updated — ${result.added.toLocaleString()} new typeface${result.added === 1 ? "" : "s"}`,
       {
-        description: `${result.count.toLocaleString()} families. Google drawer is fonts.google.com (${GOOGLE_DIRECTORY.size.toLocaleString()}), not Fontsource's type flag. Files on disk are unchanged.`,
+        description: `${summary}. Files on disk are unchanged.`,
       },
     );
     return;
   }
   if (force) {
     toast.message("Catalog is current", {
-      description: `${result.count.toLocaleString()} typefaces. TTF files are unchanged — Retry a family to pull a new package.`,
+      description: `${summary}. TTF files are unchanged — Retry a family to pull a new package.`,
     });
   }
 }

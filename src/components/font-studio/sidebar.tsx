@@ -23,7 +23,7 @@ import { LibraryGroups } from "./folder-tree";
 import { GoogleActivateMenuItem, GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
 import { SidebarRow } from "./sidebar-row";
 import { HelpTip } from "./help-tip";
-import { ALL_TAGS, isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
+import { ALL_TAGS, GOOGLE_DIRECTORY, isFontsourceOnly } from "@/lib/fonts/catalog";
 import { getCatalogSyncState, subscribeCatalogSync, syncFontCatalog } from "@/lib/fonts/google-api";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
@@ -157,7 +157,6 @@ export function Sidebar({
   const setFacet = useFontStore((s) => s.setFacet);
   const favoriteCount = useFontStore((s) => s.favorites.length);
   const activated = useFontStore((s) => s.activated);
-  const pendingActivate = useFontStore((s) => s.pendingActivate);
   const favorites = useFontStore((s) => s.favorites);
   const collections = useFontStore((s) => s.collections);
   const customTags = useFontStore((s) => s.customTags);
@@ -168,7 +167,7 @@ export function Sidebar({
   const googleFonts = useFontStore((s) => s.googleFonts);
   const systemFonts = useFontStore((s) => s.systemFonts);
   const systemCount = systemFonts.length;
-  // Freeze expensive facet tallies against pendingActivate/activated churn while downloads run.
+  // Freeze expensive facet tallies against activated churn while downloads run.
   const downloadBusy = useSyncExternalStore(
     subscribeDownloadJob,
     () => {
@@ -177,31 +176,24 @@ export function Sidebar({
     },
     () => false,
   );
+  // Activated scope/badge freeze on activated[] only — pending stays on card pulse + Download bar.
   const facetLiveRef = useRef<string[] | null>(null);
   useEffect(() => {
     if (downloadBusy) {
       if (!facetLiveRef.current) {
-        facetLiveRef.current = pendingActivate.length
-          ? [...activated, ...pendingActivate]
-          : activated.slice();
+        facetLiveRef.current = activated.slice();
       }
     } else {
       facetLiveRef.current = null;
     }
-  }, [downloadBusy, activated, pendingActivate]);
+  }, [downloadBusy, activated]);
   const facetLiveIds = useMemo(() => {
     if (downloadBusy) {
-      // First busy frame (before effect) uses current live set; later ticks keep the freeze.
-      return (
-        facetLiveRef.current ??
-        (pendingActivate.length ? [...activated, ...pendingActivate] : activated)
-      );
+      return facetLiveRef.current ?? activated;
     }
-    return pendingActivate.length ? [...activated, ...pendingActivate] : activated;
-  }, [downloadBusy, activated, pendingActivate]);
-  const activatedBadge = downloadBusy
-    ? activated.length + pendingActivate.length
-    : null;
+    return activated;
+  }, [downloadBusy, activated]);
+  const activatedBadge = downloadBusy ? activated.length : null;
   const counts = useMemo(() => {
     const pool = scope === "system" ? systemFonts : allFonts(localFonts, googleFonts);
     const liveIds = facetLiveIds;
@@ -218,10 +210,8 @@ export function Sidebar({
     const current = tallyFonts(viewed, customTags);
     const on = new Set(liveIds);
     let fontsource = 0;
-    let gfonts = 0;
     for (const font of googleFonts) {
       if (isFontsourceOnly(font)) fontsource += 1;
-      else if (isGoogleCatalog(font)) gfonts += 1;
     }
     return {
       license: licenses.license,
@@ -231,7 +221,8 @@ export function Sidebar({
       italic: current.italic,
       activated: allFonts(localFonts, googleFonts).filter((font) => on.has(font.id)).length,
       fontsource,
-      gfonts,
+      // Official fonts.google.com drawer — never GOOGLE_FONTS / Fontsource length.
+      gfonts: GOOGLE_DIRECTORY.size,
     };
   }, [localFonts, googleFonts, systemFonts, scope, deferredQuery, facet, favorites, facetLiveIds, collections, customTags]);
 

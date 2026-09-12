@@ -68,7 +68,6 @@ export function LibraryGrid() {
   const customTags = useFontStore((s) => s.customTags);
   const preview = useFontStore((s) => s.preview);
   const activated = useFontStore((s) => s.activated);
-  const pendingActivate = useFontStore((s) => s.pendingActivate);
   const favorites = useFontStore((s) => (s.scope === "favorites" ? s.favorites : EMPTY_IDS));
   const collections = useFontStore((s) =>
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
@@ -105,8 +104,7 @@ export function LibraryGrid() {
     };
   }, []);
 
-  // Freeze Activated-scope liveIds while a download job runs — useDeferredValue alone still
-  // recomputes from thrashing pendingActivate/activated on every ready tick.
+  // Freeze Activated-scope liveIds (activated[] only) while a download job runs.
   const downloadBusy = useSyncExternalStore(
     subscribeDownloadJob,
     () => {
@@ -115,28 +113,24 @@ export function LibraryGrid() {
     },
     () => false,
   );
+  // Activated scope uses activated[] only — pendingActivate is card pulse + Download bar.
   const frozenLiveRef = useRef<string[] | null>(null);
   useEffect(() => {
     if (downloadBusy && scopeNeedsActivated(scope)) {
       if (!frozenLiveRef.current) {
-        frozenLiveRef.current = pendingActivate.length
-          ? [...activated, ...pendingActivate]
-          : activated.slice();
+        frozenLiveRef.current = activated.slice();
       }
     } else {
       frozenLiveRef.current = null;
     }
-  }, [downloadBusy, scope, activated, pendingActivate]);
+  }, [downloadBusy, scope, activated]);
   const liveIds = useMemo(() => {
     if (!scopeNeedsActivated(scope)) return EMPTY_IDS;
     if (downloadBusy) {
-      return (
-        frozenLiveRef.current ??
-        (pendingActivate.length ? [...activated, ...pendingActivate] : activated)
-      );
+      return frozenLiveRef.current ?? activated;
     }
-    return pendingActivate.length ? [...activated, ...pendingActivate] : activated;
-  }, [scope, downloadBusy, activated, pendingActivate]);
+    return activated;
+  }, [scope, downloadBusy, activated]);
 
   const fonts = useMemo(
     () => {
