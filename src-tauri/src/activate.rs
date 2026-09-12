@@ -1225,16 +1225,48 @@ fn parse_css_faces(css: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// Hard cap for a single TTF/OTF body (jsDelivr var files included). Prevents
+/// unbounded RAM when a CDN returns a huge or non-font payload.
+const MAX_TTF_FETCH_BYTES: usize = 32 * 1024 * 1024;
+
 fn fetch_url_ttf(client: &reqwest::blocking::Client, url: &str) -> Option<Vec<u8>> {
     if bulk().cancel.load(Ordering::SeqCst) {
         return None;
     }
-    let resp = client.get(url).send().ok()?;
-    if !resp.status().is_success() {
+    let host = host_label(url);
+    if !circuit_allow(host) {
         return None;
     }
-    let bytes = resp.bytes().ok()?;
+    let resp = match client.get(url).send() {
+        Ok(r) => r,
+        Err(_) => {
+            circuit_failure(host);
+            return None;
+        }
+    };
+    if !resp.status().is_success() {
+        if resp.status().as_u16() >= 500 {
+            circuit_failure(host);
+        }
+        return None;
+    }
+    if let Some(cl) = resp.content_length() {
+        if cl as usize > MAX_TTF_FETCH_BYTES {
+            return None;
+        }
+    }
+    let bytes = match resp.bytes() {
+        Ok(b) => b,
+        Err(_) => {
+            circuit_failure(host);
+            return None;
+        }
+    };
+    if bytes.len() > MAX_TTF_FETCH_BYTES {
+        return None;
+    }
     if ttf_magic(&bytes) && bytes.len() >= 256 {
+        circuit_success(host);
         Some(bytes.to_vec())
     } else {
         None
@@ -1896,6 +1928,123 @@ fn discover_richest_google_listing(
     best
 }
 
+
+/// Parse Google instance on-disk name `{slug}-{weight}-{style}.ttf`.
+/// Style is `normal` or `italic`. Skips `*-variable-*` and latin subset names.
+fn parse_google_instance_face_name(slug: &str, filename: &str) -> Option<(String, String)> {
+    let lower = filename.to_ascii_lowercase();
+    if !(lower.ends_with(".ttf") || lower.ends_with(".otf")) {
+        return None;
+    }
+    if lower.contains("-variable-") || lower.contains("-latin-") || lower.contains("-latin.") {
+        return None;
+    }
+    let stem = lower.rsplit_once('.').map(|(s, _)| s).unwrap_or(&lower);
+    let prefix = format!("{}-", slug.to_ascii_lowercase());
+    let rest = stem.strip_prefix(&prefix)?;
+    if let Some(w) = rest.strip_suffix("-normal") {
+        if !w.is_empty() {
+            return Some((w.to_string(), "normal".into()));
+        }
+    }
+    if let Some(w) = rest.strip_suffix("-italic") {
+        if !w.is_empty() {
+            return Some((w.to_string(), "italic".into()));
+        }
+    }
+    None
+}
+
+/// True when Win nameID 1 or 16 is present and differs from the catalog family
+/// (or both are missing). Intact Google instances with mashed "Nunito ExtraLight"
+/// family names need an in-place rewrite.
+fn instance_name_needs_heal(font: &[u8], family: &str) -> bool {
+    let fam = family.trim();
+    if fam.is_empty() {
+        return false;
+    }
+    let id1 = crate::namepatch::read_name_id(font, 1);
+    let id16 = crate::namepatch::read_name_id(font, 16);
+    if let Some(ref s) = id1 {
+        if s != fam {
+            return true;
+        }
+    }
+    if let Some(ref s) = id16 {
+        if s != fam {
+            return true;
+        }
+    }
+    id1.is_none() && id16.is_none()
+}
+
+/// Re-patch one intact Google CSS instance face in place when nameID 1/16 ≠ family.
+/// Soft-fails on locked/unreadable files (returns false — never panics / half-writes
+/// beyond `write_font_file`'s usual delete+write path).
+fn heal_google_instance_face_file(
+    path: &Path,
+    family: &str,
+    weight: &str,
+    css_style: &str,
+) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    if !ttf_magic(&bytes) || bytes.len() < 256 {
+        return false;
+    }
+    if !instance_name_needs_heal(&bytes, family) {
+        return false;
+    }
+    let Some(patched) =
+        crate::namepatch::patch_google_instance_face(&bytes, family, weight, css_style)
+    else {
+        return false;
+    };
+    if patched.as_slice() == bytes.as_slice() {
+        return false;
+    }
+    write_font_file(path, &patched).is_ok()
+}
+
+/// Walk a family folder and heal mashed Google instance name tables. Skips
+/// `*-variable-*` var TTFs. Returns how many files were rewritten.
+fn heal_google_instance_names_in_dir(dir: &Path, family: &str) -> usize {
+    let slug = slug_family(family);
+    if slug.is_empty() || !dir.is_dir() {
+        return 0;
+    }
+    let mut healed = 0usize;
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    for path in files {
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some((weight, style)) = parse_google_instance_face_name(&slug, name) else {
+            continue;
+        };
+        if !ttf_intact(&path) {
+            continue;
+        }
+        if heal_google_instance_face_file(&path, family, &weight, &style) {
+            healed += 1;
+        }
+    }
+    healed
+}
+
+fn heal_family_google_instance_names(app: &AppHandle, family: &str) -> usize {
+    if !is_official_google_family(family) {
+        return 0;
+    }
+    let mut n = 0usize;
+    for dir in family_locations(app, family) {
+        n = n.saturating_add(heal_google_instance_names_in_dir(&dir, family));
+    }
+    n
+}
+
 /// Fetch listed Google CSS instance TTFs to `root`, patching name tables for
 /// Illustrator-friendly family/style split. Returns (written_or_intact, expected).
 fn download_listed_faces_to_dir(
@@ -1920,6 +2069,10 @@ fn download_listed_faces_to_dir(
         let name = google_face_filename(slug, &weight, &style);
         let path = root.join(&name);
         if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
+            // Intact faces from prior installs may still carry mashed nameID 1/16
+            // ("Nunito ExtraLight"). Re-patch in place so Repair/Activate heals
+            // complete folders without a full re-download.
+            let _ = heal_google_instance_face_file(&path, family, &weight, &style);
             register_path(&path);
             wrote += 1;
             continue;
@@ -2333,11 +2486,11 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
             continue;
         }
         let lower = name.to_ascii_lowercase();
-        // Keep emoji/color compat sidecars and real variable TTFs alongside Google faces.
+        // Keep emoji/color compat sidecars. Variable TTFs stay only when planned
+        // (do not keep forever-unplanned `*-variable-*` leftovers).
         if lower.contains("-svg.")
             || lower.contains("-colrv1.")
             || lower.contains("-compat-")
-            || lower.contains("-variable-")
         {
             continue;
         }
@@ -2691,6 +2844,8 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     let bust = bulk().bust.load(Ordering::SeqCst);
     let existing = register_intact_family(app, family);
     if existing > 0 && !bust && family_is_ready(app, family) {
+        // Complete folders still need name heal for pre-namepatch installs.
+        heal_family_google_instance_names(app, family);
         return Ok(existing);
     }
     if bust {
@@ -2930,6 +3085,8 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
+            // Activate of an already-complete family must still heal mashed names.
+            heal_family_google_instance_names(&app, &family);
             Ok(1usize)
         } else {
             download_family(&app, &client, &family)
@@ -3404,6 +3561,7 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
 #[tauri::command]
 pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
     let mut targets = Vec::new();
+    let mut healed = 0usize;
     if families.is_empty() {
         for_family_dirs(&app, |dir| {
             verify_complete_marker(dir);
@@ -3411,19 +3569,30 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     targets.push(name.to_string());
                 }
+            } else if dir_is_complete(dir) {
+                // Complete Google folders: name-heal mashed instance faces in place
+                // (Illustrator will not fix "Nunito ExtraLight" via Repair alone otherwise).
+                if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
+                    if is_official_google_family(name) {
+                        healed = healed.saturating_add(heal_google_instance_names_in_dir(dir, name));
+                    }
+                }
             }
         });
     } else {
         for family in families {
             if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
                 targets.push(family);
+            } else {
+                healed = healed.saturating_add(heal_family_google_instance_names(&app, &family));
             }
         }
     }
     if targets.is_empty() {
-        return Ok(0);
+        return Ok(healed);
     }
-    retry_google_downloads(app, targets)
+    let n = retry_google_downloads(app, targets)?;
+    Ok(n.saturating_add(healed))
 }
 
 #[tauri::command]
@@ -3970,6 +4139,166 @@ mod install_path_tests {
         assert!(dir.join(var_italic).is_file(), "variable italic must stay");
         assert!(dir.join(inst).is_file(), "instance must stay");
         assert!(!dir.join("nunito-latin-400-normal.ttf").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unplanned_variable_filenames_are_purged() {
+        let dir = temp_family_dir("purge-unplanned-var");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let stale_var = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        fs::write(dir.join(stale_var), &fake).unwrap();
+        purge_unplanned_font_files(&dir, &[inst.into()]);
+        assert!(dir.join(inst).is_file());
+        assert!(
+            !dir.join(stale_var).is_file(),
+            "unplanned *-variable-* must not linger forever"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_google_instance_face_name_splits_weight_style() {
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-200-normal.ttf"),
+            Some(("200".into(), "normal".into()))
+        );
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-200-1000-italic.ttf"),
+            Some(("200-1000".into(), "italic".into()))
+        );
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-variable-wght.ttf"),
+            None
+        );
+        assert_eq!(
+            parse_google_instance_face_name("nunito", "nunito-latin-400-normal.ttf"),
+            None
+        );
+    }
+
+    /// Minimal sfnt with Win name 1/2/4/6/16/17 for heal tests.
+    fn minimal_named_font(family: &str, style: &str) -> Vec<u8> {
+        fn utf16_be(s: &str) -> Vec<u8> {
+            s.encode_utf16().flat_map(u16::to_be_bytes).collect()
+        }
+        fn checksum(data: &[u8]) -> u32 {
+            let mut sum = 0u32;
+            let mut i = 0;
+            while i + 4 <= data.len() {
+                sum = sum.wrapping_add(u32::from_be_bytes([
+                    data[i], data[i + 1], data[i + 2], data[i + 3],
+                ]));
+                i += 4;
+            }
+            sum
+        }
+        let full = if style.eq_ignore_ascii_case("Regular") {
+            family.to_string()
+        } else {
+            format!("{family} {style}")
+        };
+        let ps: String = format!(
+            "{}-{}",
+            family.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>(),
+            style.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
+        );
+        let ids = [
+            (1u16, family),
+            (2, style),
+            (4, full.as_str()),
+            (6, ps.as_str()),
+            (16, family),
+            (17, style),
+        ];
+        let mut strings = Vec::new();
+        let mut recs = Vec::new();
+        for (id, text) in ids {
+            let data = utf16_be(text);
+            let off = strings.len() as u16;
+            recs.extend_from_slice(&3u16.to_be_bytes());
+            recs.extend_from_slice(&1u16.to_be_bytes());
+            recs.extend_from_slice(&0x0409u16.to_be_bytes());
+            recs.extend_from_slice(&id.to_be_bytes());
+            recs.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            recs.extend_from_slice(&off.to_be_bytes());
+            strings.extend_from_slice(&data);
+        }
+        let string_offset = (6 + ids.len() * 12) as u16;
+        let mut name = Vec::new();
+        name.extend_from_slice(&0u16.to_be_bytes());
+        name.extend_from_slice(&(ids.len() as u16).to_be_bytes());
+        name.extend_from_slice(&string_offset.to_be_bytes());
+        name.extend_from_slice(&recs);
+        name.extend_from_slice(&strings);
+        while name.len() % 4 != 0 {
+            name.push(0);
+        }
+        let mut head = vec![0u8; 54];
+        head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+        let mut font = Vec::new();
+        font.extend_from_slice(&0x00010000u32.to_be_bytes());
+        font.extend_from_slice(&2u16.to_be_bytes());
+        font.extend_from_slice(&32u16.to_be_bytes());
+        font.extend_from_slice(&1u16.to_be_bytes());
+        font.extend_from_slice(&0u16.to_be_bytes());
+        let head_off = 12 + 2 * 16;
+        font.extend_from_slice(b"head");
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&(head_off as u32).to_be_bytes());
+        font.extend_from_slice(&(head.len() as u32).to_be_bytes());
+        let name_off = head_off + head.len();
+        font.extend_from_slice(b"name");
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&(name_off as u32).to_be_bytes());
+        font.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        font.extend_from_slice(&head);
+        font.extend_from_slice(&name);
+        let head_cs = checksum(&font[head_off..head_off + head.len()]);
+        font[12 + 4..12 + 8].copy_from_slice(&head_cs.to_be_bytes());
+        let name_cs = checksum(&font[name_off..name_off + name.len()]);
+        font[12 + 16 + 4..12 + 16 + 8].copy_from_slice(&name_cs.to_be_bytes());
+        // Pad to satisfy ttf_intact length floor (256).
+        if font.len() < 256 {
+            font.resize(256, 0);
+        }
+        font
+    }
+
+    #[test]
+    fn heal_rewrites_mashed_instance_names_in_place() {
+        let dir = temp_family_dir("heal-names");
+        let mashed = minimal_named_font("Nunito ExtraLight", "Regular");
+        assert_eq!(
+            crate::namepatch::read_name_id(&mashed, 1).as_deref(),
+            Some("Nunito ExtraLight")
+        );
+        let path = dir.join("nunito-200-normal.ttf");
+        fs::write(&path, &mashed).unwrap();
+        // Variable sibling must not be style-namepatched.
+        let var_path = dir.join("nunito-variable-wght.ttf");
+        let var_bytes = minimal_named_font("Nunito", "Regular");
+        fs::write(&var_path, &var_bytes).unwrap();
+
+        let n = heal_google_instance_names_in_dir(&dir, "Nunito");
+        assert_eq!(n, 1, "exactly one instance face should heal");
+        let healed = fs::read(&path).unwrap();
+        assert_eq!(crate::namepatch::read_name_id(&healed, 1).as_deref(), Some("Nunito"));
+        assert_eq!(
+            crate::namepatch::read_name_id(&healed, 2).as_deref(),
+            Some("ExtraLight")
+        );
+        let var_after = fs::read(&var_path).unwrap();
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_after, 1).as_deref(),
+            Some("Nunito"),
+            "variable TTF must remain untouched"
+        );
+        // Second pass is a no-op.
+        assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito"), 0);
         let _ = fs::remove_dir_all(&dir);
     }
 
