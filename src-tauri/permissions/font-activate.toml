@@ -16,6 +16,7 @@ commands.allow = [
   "remove_library_file",
   "start_google_downloads",
   "retry_google_downloads",
+  "repair_incomplete_families",
   "skip_google_failures",
   "cancel_google_downloads",
   "pause_google_downloads",

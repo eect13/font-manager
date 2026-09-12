@@ -1970,7 +1970,7 @@ fn parse_google_instance_face_name(slug: &str, filename: &str) -> Option<(String
     if !(lower.ends_with(".ttf") || lower.ends_with(".otf")) {
         return None;
     }
-    if lower.contains("-variable-") || lower.contains("-latin-") || lower.contains("-latin.") {
+    if lower.contains("-variable-") || filename_has_latin_subset(filename, slug) {
         return None;
     }
     let stem = lower.rsplit_once('.').map(|(s, _)| s).unwrap_or(&lower);
@@ -2385,10 +2385,28 @@ fn google_face_filename(slug: &str, weight: &str, style: &str) -> String {
     sanitize(&format!("{slug}-{weight}-{style}.ttf"))
 }
 
-/// True when a file name embeds a Fontsource `latin` subset token.
-fn filename_has_latin_subset(name: &str) -> bool {
+/// True when a file name embeds a Fontsource `latin` subset token **after** the
+/// family slug. Raw `contains("-latin-")` false-positives on slugs that embed
+/// the word (e.g. `m-plus-code-latin`, `anek-latin`).
+fn filename_has_latin_subset(name: &str, slug: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.contains("-latin-") || lower.contains("-latin.")
+    let slug = slug.trim().to_ascii_lowercase();
+    if slug.is_empty() {
+        return false;
+    }
+    let stem = lower
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(lower.as_str());
+    let Some(rest) = stem
+        .strip_prefix(slug.as_str())
+        .and_then(|s| s.strip_prefix('-'))
+    else {
+        return false;
+    };
+    // Subset segment after slug only: `{slug}-latin-…`, `{slug}-japanese-latin-…`,
+    // or edge `{slug}-latin-latin-…`. Never match "latin" inside the slug itself.
+    rest.split('-').any(|seg| seg == "latin")
 }
 
 /// Fontsource on-disk name. Never includes `latin` in the filename — even when the
@@ -2400,13 +2418,13 @@ fn fontsource_face_filename(slug: &str, subset: &str, weight: u16, style: &str) 
         || sub == "latin"
         || sub.starts_with("latin-")
         || sub.contains("latin")
-        || filename_has_latin_subset(&format!("{slug}-{sub}-{weight}-{style}.ttf"))
+        || filename_has_latin_subset(&format!("{slug}-{sub}-{weight}-{style}.ttf"), slug)
     {
         return google_face_filename(slug, &weight.to_string(), style);
     }
     let name = sanitize(&format!("{slug}-{subset}-{weight}-{style}.ttf"));
     debug_assert!(
-        !filename_has_latin_subset(&name),
+        !filename_has_latin_subset(&name, slug),
         "fontsource_face_filename must never emit latin-named files"
     );
     name
@@ -2414,6 +2432,7 @@ fn fontsource_face_filename(slug: &str, subset: &str, weight: u16, style: &str) 
 
 /// Strip any leftover `*-latin-*` files (legacy Fontsource packs).
 fn purge_latin_named_files(dir: &Path) {
+    let slug = dir_slug_hint(dir);
     let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
@@ -2425,7 +2444,7 @@ fn purge_latin_named_files(dir: &Path) {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if filename_has_latin_subset(name) {
+        if filename_has_latin_subset(name, &slug) {
             let _ = fs::remove_file(&path);
         }
     }
@@ -2445,8 +2464,8 @@ fn is_google_face_key(file_name: &str, slug: &str) -> bool {
     else {
         return false;
     };
-    // Explicit: never count *-latin-* (or latin- prefix after slug) toward Google planned.
-    if rest.contains("-latin-") || rest.starts_with("latin-") {
+    // Explicit: never count Fontsource latin subset packs toward Google planned.
+    if filename_has_latin_subset(file_name, slug) {
         return false;
     }
     let mut parts: Vec<&str> = rest.split('-').collect();
@@ -2500,13 +2519,15 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
     if planned_keys.is_empty() {
         return;
     }
+    let slug = dir_slug_hint(dir);
     let planned: HashSet<&str> = planned_keys
         .iter()
         .map(|s| s.as_str())
         .filter(|n| {
-            let lower = n.to_ascii_lowercase();
             // Belt: planned keys must never include Fontsource latin subset names.
-            !lower.contains("-latin-") && !lower.contains("-latin.")
+            // Slug-aware — do not drop real Google faces for families like
+            // m-plus-code-latin / anek-latin.
+            !filename_has_latin_subset(n, &slug)
         })
         .collect();
     let mut files = Vec::new();
@@ -2529,7 +2550,7 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
             continue;
         }
         // Always strip Fontsource latin subset packs on Google re-download.
-        let is_latin = lower.contains("-latin-") || lower.contains("-latin.");
+        let is_latin = filename_has_latin_subset(name, &slug);
         if !is_latin && planned.contains(name) {
             continue;
         }
@@ -2629,6 +2650,7 @@ fn dir_is_complete(dir: &Path) -> bool {
 
 /// True when every installable file embeds a Fontsource `-latin-` subset token.
 fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
+    let slug = dir_slug_hint(dir);
     let mut files = Vec::new();
     walk_font_files(dir, &mut files);
     if files.is_empty() {
@@ -2637,7 +2659,7 @@ fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
     files.iter().all(|p| {
         p.file_name()
             .and_then(|s| s.to_str())
-            .map(|n| n.to_ascii_lowercase().contains("-latin-"))
+            .map(|n| filename_has_latin_subset(n, &slug))
             .unwrap_or(false)
     })
 }
@@ -2971,7 +2993,11 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
                     .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()))
                     .filter(|n| n.contains(&slug))
                     .collect();
-                if !fs_names.is_empty() && fs_names.iter().all(|n| n.contains("-latin-")) {
+                if !fs_names.is_empty()
+                    && fs_names
+                        .iter()
+                        .all(|n| filename_has_latin_subset(n, &slug))
+                {
                     planned = 0;
                 }
             }
@@ -4056,7 +4082,9 @@ mod complete_marker_tests {
 
     #[test]
     fn purge_unplanned_strips_latin_keeps_google_keys() {
-        let dir = temp_family_dir("purge-latin");
+        let parent = temp_family_dir("purge-latin");
+        let dir = parent.join("Libre Baskerville");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         fs::write(dir.join("libre-baskerville-400-normal.ttf"), &fake).unwrap();
@@ -4067,14 +4095,16 @@ mod complete_marker_tests {
         assert!(dir.join("libre-baskerville-400-normal.ttf").is_file());
         assert!(!dir.join("libre-baskerville-latin-400-normal.ttf").is_file());
         assert!(!dir.join("libre-baskerville-latin-700-italic.ttf").is_file());
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn purge_unplanned_strips_all_latin_and_duplicate_unplanned() {
         // Google re-download must remove EVERY *-latin-* plus prior static duplicates
         // not in the new planned key list — not merely a subset of latin pads.
-        let dir = temp_family_dir("purge-dupes");
+        let parent = temp_family_dir("purge-dupes");
+        let dir = parent.join("Inter");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         let keep = "inter-100-900-normal.ttf";
@@ -4109,12 +4139,14 @@ mod complete_marker_tests {
                 "{gone} must be purged on Google re-download"
             );
         }
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn purge_latin_named_files_strips_legacy_packs() {
-        let dir = temp_family_dir("purge-latin-names");
+        let parent = temp_family_dir("purge-latin-names");
+        let dir = parent.join("Roboto");
+        fs::create_dir_all(&dir).unwrap();
         let fake = vec![0u8; 512];
         fs::write(dir.join("roboto-400-normal.ttf"), &fake).unwrap();
         fs::write(dir.join("roboto-latin-400-normal.ttf"), &fake).unwrap();
@@ -4123,7 +4155,50 @@ mod complete_marker_tests {
         assert!(dir.join("roboto-400-normal.ttf").is_file());
         assert!(!dir.join("roboto-latin-400-normal.ttf").is_file());
         assert!(!dir.join("roboto-latin-700-italic.ttf").is_file());
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn purge_latin_named_files_keeps_slug_embedded_latin() {
+        // P0b: family slug embeds "latin" — Google faces must not be purged.
+        let parent = temp_family_dir("purge-slug-latin");
+        let dir = parent.join("M PLUS Code Latin");
+        fs::create_dir_all(&dir).unwrap();
+        let fake = vec![0u8; 512];
+        fs::write(dir.join("m-plus-code-latin-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("m-plus-code-latin-700-italic.ttf"), &fake).unwrap();
+        // True Fontsource subset pad (double latin) must still go.
+        fs::write(dir.join("m-plus-code-latin-latin-400-normal.ttf"), &fake).unwrap();
+        purge_latin_named_files(&dir);
+        assert!(
+            dir.join("m-plus-code-latin-400-normal.ttf").is_file(),
+            "slug-embedded latin must NOT be treated as subset"
+        );
+        assert!(dir.join("m-plus-code-latin-700-italic.ttf").is_file());
+        assert!(
+            !dir.join("m-plus-code-latin-latin-400-normal.ttf").is_file(),
+            "real {{slug}}-latin-* subset pack must still purge"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn purge_unplanned_keeps_slug_embedded_latin_google_keys() {
+        let parent = temp_family_dir("purge-anek");
+        let dir = parent.join("Anek Latin");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let keep = "anek-latin-400-normal.ttf";
+        fs::write(dir.join(keep), &fake).unwrap();
+        fs::write(dir.join("anek-latin-latin-400-normal.ttf"), &fake).unwrap();
+        purge_unplanned_font_files(&dir, &[keep.into()]);
+        assert!(
+            dir.join(keep).is_file(),
+            "planned Google face for anek-latin must stay"
+        );
+        assert!(!dir.join("anek-latin-latin-400-normal.ttf").is_file());
+        let _ = fs::remove_dir_all(&parent);
     }
 }
 
@@ -4152,7 +4227,9 @@ mod install_path_tests {
 
     #[test]
     fn variable_planned_filenames_not_purged() {
-        let dir = temp_family_dir("purge-var");
+        let parent = temp_family_dir("purge-var");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         let var_roman = "nunito-variable-wght.ttf";
@@ -4172,12 +4249,14 @@ mod install_path_tests {
         assert!(dir.join(var_italic).is_file(), "variable italic must stay");
         assert!(dir.join(inst).is_file(), "instance must stay");
         assert!(!dir.join("nunito-latin-400-normal.ttf").is_file());
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn unplanned_variable_filenames_are_purged() {
-        let dir = temp_family_dir("purge-unplanned-var");
+        let parent = temp_family_dir("purge-unplanned-var");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         let inst = "nunito-400-normal.ttf";
@@ -4190,7 +4269,7 @@ mod install_path_tests {
             !dir.join(stale_var).is_file(),
             "unplanned *-variable-* must not linger forever"
         );
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
@@ -4209,6 +4288,20 @@ mod install_path_tests {
         );
         assert_eq!(
             parse_google_instance_face_name("nunito", "nunito-latin-400-normal.ttf"),
+            None
+        );
+        assert_eq!(
+            parse_google_instance_face_name(
+                "m-plus-code-latin",
+                "m-plus-code-latin-400-normal.ttf"
+            ),
+            Some(("400".into(), "normal".into()))
+        );
+        assert_eq!(
+            parse_google_instance_face_name(
+                "m-plus-code-latin",
+                "m-plus-code-latin-latin-400-normal.ttf"
+            ),
             None
         );
     }
@@ -4370,13 +4463,55 @@ mod install_path_tests {
 
     #[test]
     fn latin_filename_never_emitted_by_google_or_fontsource_helpers() {
-        assert!(!filename_has_latin_subset(&google_face_filename("nunito", "200", "normal")));
-        assert!(!filename_has_latin_subset(&fontsource_face_filename(
-            "nunito", "latin", 200, "normal"
-        )));
-        assert!(!filename_has_latin_subset(&variable_face_filename(
-            "nunito", "wght", false
-        )));
+        assert!(!filename_has_latin_subset(
+            &google_face_filename("nunito", "200", "normal"),
+            "nunito"
+        ));
+        assert!(!filename_has_latin_subset(
+            &fontsource_face_filename("nunito", "latin", 200, "normal"),
+            "nunito"
+        ));
+        assert!(!filename_has_latin_subset(
+            &variable_face_filename("nunito", "wght", false),
+            "nunito"
+        ));
+    }
+
+    #[test]
+    fn filename_has_latin_subset_slug_aware() {
+        // Family slug embeds "latin" — Google face is NOT a Fontsource subset pack.
+        assert!(
+            !filename_has_latin_subset(
+                "m-plus-code-latin-400-normal.ttf",
+                "m-plus-code-latin"
+            ),
+            "m-plus-code-latin-400-normal must NOT be latin-subset"
+        );
+        assert!(!filename_has_latin_subset(
+            "anek-latin-700-italic.ttf",
+            "anek-latin"
+        ));
+        // True Fontsource subset after a normal slug.
+        assert!(
+            filename_has_latin_subset("roboto-latin-400-normal.ttf", "roboto"),
+            "roboto-latin-400-normal must BE latin-subset"
+        );
+        // Edge: real subset token after a slug that itself ends in latin.
+        assert!(
+            filename_has_latin_subset(
+                "m-plus-code-latin-latin-400-normal.ttf",
+                "m-plus-code-latin"
+            ),
+            "m-plus-code-latin-latin-400-normal must BE latin-subset"
+        );
+        assert!(filename_has_latin_subset(
+            "roboto-latin-ext-400-normal.ttf",
+            "roboto"
+        ));
+        assert!(filename_has_latin_subset(
+            "noto-sans-jp-japanese-latin-400-normal.ttf",
+            "noto-sans-jp"
+        ));
     }
 
     #[test]
@@ -4390,15 +4525,16 @@ mod install_path_tests {
             "noto-sans-jp-400-normal.ttf"
         );
         assert!(
-            !filename_has_latin_subset(&fontsource_face_filename(
-                "roboto", "latin-ext", 700, "italic"
-            )),
+            !filename_has_latin_subset(
+                &fontsource_face_filename("roboto", "latin-ext", 700, "italic"),
+                "roboto"
+            ),
             "latin-ext must not put latin in the filename"
         );
         // Non-latin script subset may keep its token:
         let cjk = fontsource_face_filename("chiron-sung-hk", "chinese-hongkong", 400, "normal");
         assert_eq!(cjk, "chiron-sung-hk-chinese-hongkong-400-normal.ttf");
-        assert!(!filename_has_latin_subset(&cjk));
+        assert!(!filename_has_latin_subset(&cjk, "chiron-sung-hk"));
     }
 
     #[test]
