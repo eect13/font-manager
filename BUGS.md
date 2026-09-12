@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.152
+- **Variable namepatch**: stop skipping `*-variable-*`. google/fonts vars (Nunito, Cormorant Garamond, …) mash default-instance style into nameID 1 (`Nunito ExtraLight`); Illustrator keys id1. Patch on var download write, `ensure_catalog_variable_faces`, and Repair/Activate heal: id1/16 = catalog family, id2/17 = Regular or Italic. Name table only — `fvar` preserved. Statics still prefer-var-first with statics as backup (no regress from 1.0.151).
+- **Library-wide heal** covers mashed id1 on instances **and** vars (soft-fail if locked).
+
 ## Fixed in tip / 1.0.151
 - **P0a** ACL: `repair_incomplete_families` allowlisted in `font-activate.toml` so Repair works in the installed app.
 - **P0b** Latin subset purge is slug-aware: detect Fontsource `latin` token only after the family slug (no raw `contains("-latin-")`). Families whose slug embeds "latin" (`m-plus-code-latin`, `anek-latin`) keep Google faces; true `{slug}-latin-*` packs still purge.
@@ -10,7 +14,7 @@
 - Download real variable TTFs from google/fonts (jsDelivr) alongside static CSS instances.
 - Illustrator family naming: patch Google instances to family "Nunito" + style "ExtraLight".
 - Prefer discrete static multi-face listing when variable CSS only yields range weights (`200-1000`); do not purge latin remnants into an empty folder when Google fetch writes nothing.
-- Heal mashed nameID 1/16 on **intact/complete** Google instance faces (Repair/Activate rewrite in place; skip `*-variable-*`). Soft-fail when files are locked.
+- Heal mashed nameID 1/16 on **intact/complete** Google instance faces (Repair/Activate rewrite in place; vars skipped until 1.0.152). Soft-fail when files are locked.
 - `fetch_url_ttf`: CDN circuit + 32MB size cap (jsDelivr var fetches included). Unplanned `*-variable-*` no longer exempt from purge.
 
 ## Fixed in 1.0.149
@@ -26,4 +30,4 @@
 
 ## Notes
 
-- Tip is 1.0.151 (unreleased pack — ask before NSIS).
+- Tip is 1.0.152 (unreleased pack — ask before NSIS).

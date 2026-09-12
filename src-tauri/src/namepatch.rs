@@ -5,6 +5,12 @@
 //! nameID 2 = "Regular". Illustrator then lists the family as "Nunito ExtraLight".
 //! Instance installs set family (1/16) to the catalog name and style (2/17) to
 //! ExtraLight / Bold Italic / etc.
+//!
+//! Real google/fonts **variable** TTFs can mash the same way (Nunito[wght].ttf
+//! ships id1 = "Nunito ExtraLight", id2 = Regular, id16 = Nunito). Illustrator
+//! keys nameID 1, so we also rewrite var name tables: 1/16 = catalog family,
+//! 2/17 = Regular or Italic. Only the `name` table is replaced — `fvar` and
+//! other variable tables stay intact.
 
 fn u16b(data: &[u8], off: usize) -> Option<u16> {
     Some(u16::from_be_bytes([*data.get(off)?, *data.get(off + 1)?]))
@@ -343,8 +349,7 @@ pub fn patch_family_name(font: &[u8], family: &str) -> Option<Vec<u8>> {
 
 /// Patch Google CSS **static instance** TTFs for Illustrator-friendly naming:
 /// nameID 1/16 = catalog family, nameID 2/17 = style, nameID 4 = "Family Style".
-/// Do **not** use this on real variable fonts from google/fonts (they already
-/// carry correct family names).
+/// For variable fonts use [`patch_variable_face`] (style must be Regular/Italic).
 pub fn patch_instance_names(font: &[u8], family: &str, style: &str) -> Option<Vec<u8>> {
     if font.len() < 12 || family.trim().is_empty() || style.trim().is_empty() {
         return None;
@@ -365,6 +370,28 @@ pub fn patch_google_instance_face(
     let w = parse_face_weight_token(weight_token);
     let style = ot_style_name(w, italic);
     patch_instance_names(font, family, &style)
+}
+
+/// Patch a real variable TTF for Illustrator-friendly naming without touching
+/// `fvar` / STAT / axis tables. Style is only Regular or Italic (never ExtraLight
+/// mashed into the family from the default instance).
+pub fn patch_variable_face(font: &[u8], family: &str, italic: bool) -> Option<Vec<u8>> {
+    let style = if italic { "Italic" } else { "Regular" };
+    patch_instance_names(font, family, style)
+}
+
+/// True when the sfnt directory lists table tag `tag` (e.g. b"fvar").
+pub fn has_table(font: &[u8], tag: &[u8; 4]) -> bool {
+    let Some(num) = u16b(font, 4).map(|n| n as usize) else {
+        return false;
+    };
+    for i in 0..num {
+        let dir = 12 + i * 16;
+        if font.get(dir..dir + 4) == Some(tag.as_slice()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Read a Windows (plat 3) name record as UTF-16BE string (test / debug helper).
@@ -489,5 +516,116 @@ mod tests {
         assert_eq!(read_name_id(&patched, 2).as_deref(), Some("ExtraLight"));
         assert_eq!(read_name_id(&patched, 17).as_deref(), Some("ExtraLight"));
         assert_eq!(read_name_id(&patched, 4).as_deref(), Some("Nunito ExtraLight"));
+    }
+
+    /// Minimal sfnt with head + name + a stub `fvar` so we can assert the tag survives.
+    fn minimal_var_font(family: &str, style: &str) -> Vec<u8> {
+        let full = full_name(family, style);
+        let ps = postscript_name(family, style);
+        let ids = [
+            (1u16, family),
+            (2, style),
+            (4, full.as_str()),
+            (6, ps.as_str()),
+            (16, family),
+            (17, style),
+        ];
+        let mut strings = Vec::new();
+        let mut recs = Vec::new();
+        for (id, text) in ids {
+            let data = utf16_be(text);
+            let off = strings.len() as u16;
+            recs.extend_from_slice(&3u16.to_be_bytes());
+            recs.extend_from_slice(&1u16.to_be_bytes());
+            recs.extend_from_slice(&0x0409u16.to_be_bytes());
+            recs.extend_from_slice(&id.to_be_bytes());
+            recs.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            recs.extend_from_slice(&off.to_be_bytes());
+            strings.extend_from_slice(&data);
+        }
+        let string_offset = (6 + ids.len() * 12) as u16;
+        let mut name = Vec::new();
+        name.extend_from_slice(&0u16.to_be_bytes());
+        name.extend_from_slice(&(ids.len() as u16).to_be_bytes());
+        name.extend_from_slice(&string_offset.to_be_bytes());
+        name.extend_from_slice(&recs);
+        name.extend_from_slice(&strings);
+        while name.len() % 4 != 0 {
+            name.push(0);
+        }
+
+        let mut head = vec![0u8; 54];
+        head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+
+        // Stub fvar: just enough bytes to keep the tag in the directory.
+        let fvar = vec![0u8; 16];
+
+        let mut font = Vec::new();
+        font.extend_from_slice(&0x00010000u32.to_be_bytes());
+        font.extend_from_slice(&3u16.to_be_bytes()); // numTables
+        font.extend_from_slice(&32u16.to_be_bytes());
+        font.extend_from_slice(&1u16.to_be_bytes());
+        font.extend_from_slice(&0u16.to_be_bytes());
+
+        // Directory must be alphabetical: fvar, head, name
+        let dir_base = 12;
+        let fvar_off = dir_base + 3 * 16;
+        let head_off = fvar_off + fvar.len();
+        let name_off = head_off + head.len();
+
+        font.extend_from_slice(b"fvar");
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&(fvar_off as u32).to_be_bytes());
+        font.extend_from_slice(&(fvar.len() as u32).to_be_bytes());
+
+        font.extend_from_slice(b"head");
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&(head_off as u32).to_be_bytes());
+        font.extend_from_slice(&(head.len() as u32).to_be_bytes());
+
+        font.extend_from_slice(b"name");
+        font.extend_from_slice(&0u32.to_be_bytes());
+        font.extend_from_slice(&(name_off as u32).to_be_bytes());
+        font.extend_from_slice(&(name.len() as u32).to_be_bytes());
+
+        font.extend_from_slice(&fvar);
+        font.extend_from_slice(&head);
+        font.extend_from_slice(&name);
+
+        let fvar_cs = checksum(&font[fvar_off..fvar_off + fvar.len()]);
+        font[dir_base + 4..dir_base + 8].copy_from_slice(&fvar_cs.to_be_bytes());
+        let head_cs = checksum(&font[head_off..head_off + head.len()]);
+        font[dir_base + 16 + 4..dir_base + 16 + 8].copy_from_slice(&head_cs.to_be_bytes());
+        let name_cs = checksum(&font[name_off..name_off + name.len()]);
+        font[dir_base + 32 + 4..dir_base + 32 + 8].copy_from_slice(&name_cs.to_be_bytes());
+        font
+    }
+
+    #[test]
+    fn patch_variable_clears_mashed_extralight_family_keeps_fvar() {
+        // Skye: Nunito[wght].ttf id1="Nunito ExtraLight", id2=Regular, id16=Nunito.
+        let font = minimal_var_font("Nunito ExtraLight", "Regular");
+        assert!(has_table(&font, b"fvar"));
+        assert_eq!(read_name_id(&font, 1).as_deref(), Some("Nunito ExtraLight"));
+        let patched = patch_variable_face(&font, "Nunito", false).unwrap();
+        assert_eq!(read_name_id(&patched, 1).as_deref(), Some("Nunito"));
+        assert_eq!(read_name_id(&patched, 16).as_deref(), Some("Nunito"));
+        assert_eq!(read_name_id(&patched, 2).as_deref(), Some("Regular"));
+        assert_eq!(read_name_id(&patched, 17).as_deref(), Some("Regular"));
+        assert!(
+            has_table(&patched, b"fvar"),
+            "variable patch must preserve fvar table tag"
+        );
+    }
+
+    #[test]
+    fn patch_variable_italic_sets_italic_style() {
+        let font = minimal_var_font("Cormorant Garamond Light", "Italic");
+        let patched = patch_variable_face(&font, "Cormorant Garamond", true).unwrap();
+        assert_eq!(read_name_id(&patched, 1).as_deref(), Some("Cormorant Garamond"));
+        assert_eq!(read_name_id(&patched, 2).as_deref(), Some("Italic"));
+        assert_eq!(read_name_id(&patched, 16).as_deref(), Some("Cormorant Garamond"));
+        assert_eq!(read_name_id(&patched, 17).as_deref(), Some("Italic"));
+        assert!(has_table(&patched, b"fvar"));
     }
 }
