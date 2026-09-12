@@ -235,6 +235,15 @@ mod winfont {
         N.get_or_init(|| AtomicU32::new(0))
     }
 
+    /// Process-wide lock for AddFontResourceExW / RemoveFontResourceExW only.
+    /// Parallel session register (≤6 families) may walk disk concurrently; GDI
+    /// Add/Remove must not overlap (Skye P1 — intermittent missed Adds / rare
+    /// GDI weirdness on ~11k-path restore).
+    fn gdi_api() -> &'static Mutex<()> {
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+    }
+
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
     }
@@ -243,13 +252,15 @@ mod winfont {
     const REMOVE_DRAIN_MAX: u32 = 32;
 
     /// Drain GDI refcount: call RemoveFontResourceExW (same flags as Add) until
-    /// it returns 0 — MS docs / FontBase-style. Not just a double-Remove.
+    /// it returns 0 — MS docs / FontBase-style drain loop. Not just a double-Remove.
+    /// Serialized behind `gdi_api()` so parallel register cannot overlap Removes.
     fn remove_one(path: &Path) -> bool {
         if is_windows_fonts_path(path) {
             return false;
         }
         let w = wide(path);
         let mut any = false;
+        let _gdi = gdi_api().lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             for _ in 0..REMOVE_DRAIN_MAX {
                 let n = RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
@@ -310,7 +321,11 @@ mod winfont {
         let w = wide(path);
         // Add only. Crash leftovers are Remove'd in session_begin from
         // .session-paths.txt. Remove-then-Add here doubled GDI on every boot.
-        let n = unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) };
+        // Hold gdi_api across Add so parallel family workers never overlap GDI.
+        let n = {
+            let _gdi = gdi_api().lock().unwrap_or_else(|e| e.into_inner());
+            unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) }
+        };
         in_gdi().fetch_sub(1, Ordering::SeqCst);
         if unloading().load(Ordering::SeqCst) {
             if n > 0 {
@@ -470,9 +485,11 @@ mod winfont {
 
     // --- Windows Font Cache (svchost / LOCAL SERVICE) unlock -----------------
     // After enumerable Remove, Font Cache often keeps Documents TTF handles.
-    // Best-effort SCM restart beats HWND_BROADCAST for unlock; fail-soft if
-    // not elevated. Do NOT wipe %WINDIR%\ServiceProfiles\...\FontCache here —
-    // service restart first; dir wipe is last-resort and left unimplemented.
+    // Best-effort SCM restart beats HWND_BROADCAST for unlock; soft-fail
+    // AccessDenied may still need admin once. Unlock is proven only after
+    // WRITE_OK on Eric's box — do not treat soft-fail as FontBase-or-better.
+    // Do NOT wipe %WINDIR%\ServiceProfiles\...\FontCache here — service
+    // restart first; dir wipe is last-resort and left unimplemented.
 
     #[link(name = "advapi32")]
     extern "system" {
@@ -527,7 +544,6 @@ mod winfont {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FontCacheRestartOutcome {
         Restarted,
-        AlreadyStoppedStarted,
         AccessDenied,
         OpenFailed,
         StopTimedOut,
@@ -672,8 +688,7 @@ mod winfont {
             }
             let outcome = restart_one_font_cache_service(name, per);
             match outcome {
-                FontCacheRestartOutcome::Restarted
-                | FontCacheRestartOutcome::AlreadyStoppedStarted => {
+                FontCacheRestartOutcome::Restarted => {
                     any_restarted = true;
                 }
                 FontCacheRestartOutcome::AccessDenied => access_denied = true,
@@ -3048,8 +3063,9 @@ fn sort_faces_var_first(files: &mut [PathBuf]) {
 }
 
 /// Bounded-parallel session register. `register` already skips paths in the
-/// in-process loaded set (no double-Add). Workers share AppHandle; GDI Add runs
-/// outside the loaded-set mutex so Adds overlap across families.
+/// in-process loaded set (no double-Add). Workers share AppHandle; family walk /
+/// file I/O stay parallel, but GDI Add/Remove is serialized on `winfont::gdi_api`
+/// so Adds never overlap across families (Skye P1).
 #[allow(dead_code)] // session_begin Windows path
 fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -> (usize, Vec<String>) {
     if ready_targets.is_empty() {
@@ -6334,6 +6350,18 @@ mod session_sidecar_tests {
         assert_eq!(session_register_workers(1), 1);
         assert_eq!(session_register_workers(3), 3);
         assert_eq!(session_register_workers(100), 6);
+    }
+
+    /// Documents Skye P1: ≤6 parallel `register_intact_family` workers may walk
+    /// disk concurrently, but AddFontResourceExW / RemoveFontResourceExW must
+    /// not overlap — see `winfont::gdi_api` (Windows). This test only anchors
+    /// the worker bound that made overlapping Adds a risk on ~11k-path restore.
+    #[test]
+    fn parallel_session_register_caps_workers_for_gdi_safety() {
+        assert!(
+            session_register_workers(11_000) <= 6,
+            "session register workers must stay ≤6 so GDI serialization stays bounded"
+        );
     }
 
     #[test]

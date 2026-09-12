@@ -4,7 +4,7 @@ FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`.
 
-**1.0.155 unlock.** After Deactivate/Quit, `RemoveFontResourceExW` drains refcounts (loop until 0), then best-effort **Windows Font Cache** service restart so Documents TTFs stop sticking under `svchost`/LOCAL SERVICE — FontBase-or-better, soft-fail toast if elevation is missing. Startup registers ready session families in **parallel** (bounded workers); Activate stays Adobe-visible enumerable (`FR_ENUMERABLE`).
+**1.0.155 unlock.** After Deactivate/Quit, `RemoveFontResourceExW` drains refcounts (loop until 0), then best-effort **Windows Font Cache** service restart so Documents TTFs stop sticking under `svchost`/LOCAL SERVICE. Soft-fail AccessDenied may still need admin once; unlock is proven only after WRITE_OK on a real Windows box. Startup registers ready session families in **parallel** (bounded workers; GDI Add/Remove serialized process-wide); Activate stays Adobe-visible enumerable (`FR_ENUMERABLE`).
 
 ![Library](screenshots/library.png)
 
