@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.155
+- **Font Cache unlock after Deactivate/Quit**: drain `RemoveFontResourceExW` until return 0 (same enumerable flags as Add), then best-effort SCM restart of `FontCache` (+ `FontCache3.0.0.0` when present). Soft-fail AccessDenied may still need admin once — toast `Font Cache still holding N files — retry as admin or reboot`. Unlock proven only after WRITE_OK on Eric's box (not claimed FontBase-or-better). No HWND_BROADCAST on quit; restart budget capped (~8s) so Quit does not hang Explorer.
+- **Faster startup**: `session_begin` parallelizes `register_intact_family` across ready session families (bounded ≤6 workers). Family walk/file I/O parallel; **GDI Add/Remove serialized** process-wide (`winfont::gdi_api`) so overlapping Adds cannot miss registrations on ~11k-path restore. Still recovers stale sidecars first; Activate remains enumerable (not FR_PRIVATE).
+
 ## Fixed in tip / 1.0.154
 - **Session unload on quit**: `session_end` always `RemoveFontResourceExW`s registered paths, then clears `.session-paths.txt` + `.session-active.json` when write-locks are gone. Partial unload fail-loud (`eprintln` remaining lock count) and keeps remaining paths for next-boot recovery. Quit watchdog budget ~15ms/path clamped 45s–300s so ~11k-face unload + set_len probe can finish (was 3ms→45s floor).
 - **Startup stale recovery**: if sidecars remain from crash/quit-without-unload, unload leftover paths then clear (or keep locked leftovers + fail-loud). Locked leftovers also emit a **startup toast** (`session-recovery`) so the in-app UI surfaces the problem, not only stderr. UI hydrate/Activate restores the live session afterward.
@@ -38,4 +42,4 @@
 
 ## Notes
 
-- Tip is 1.0.154 (unreleased pack — ask before NSIS).
+- Tip is 1.0.155 (unreleased pack — ask before NSIS).

@@ -235,22 +235,42 @@ mod winfont {
         N.get_or_init(|| AtomicU32::new(0))
     }
 
+    /// Process-wide lock for AddFontResourceExW / RemoveFontResourceExW only.
+    /// Parallel session register (≤6 families) may walk disk concurrently; GDI
+    /// Add/Remove must not overlap (Skye P1 — intermittent missed Adds / rare
+    /// GDI weirdness on ~11k-path restore).
+    fn gdi_api() -> &'static Mutex<()> {
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+    }
+
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
     }
 
+    /// Cap so a stuck font driver cannot hang Quit/Deactivate.
+    const REMOVE_DRAIN_MAX: u32 = 32;
+
+    /// Drain GDI refcount: call RemoveFontResourceExW (same flags as Add) until
+    /// it returns 0 — MS docs / FontBase-style drain loop. Not just a double-Remove.
+    /// Serialized behind `gdi_api()` so parallel register cannot overlap Removes.
     fn remove_one(path: &Path) -> bool {
         if is_windows_fonts_path(path) {
             return false;
         }
         let w = wide(path);
+        let mut any = false;
+        let _gdi = gdi_api().lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
-            // Match live unregister: one Remove can leave a refcount so Explorer
-            // still sees "in use". Second Remove is a no-op when already gone.
-            let a = RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
-            let b = RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
-            a != 0 || b != 0
+            for _ in 0..REMOVE_DRAIN_MAX {
+                let n = RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
+                if n == 0 {
+                    break;
+                }
+                any = true;
+            }
         }
+        any
     }
 
     pub fn begin_unload() {
@@ -301,7 +321,11 @@ mod winfont {
         let w = wide(path);
         // Add only. Crash leftovers are Remove'd in session_begin from
         // .session-paths.txt. Remove-then-Add here doubled GDI on every boot.
-        let n = unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) };
+        // Hold gdi_api across Add so parallel family workers never overlap GDI.
+        let n = {
+            let _gdi = gdi_api().lock().unwrap_or_else(|e| e.into_inner());
+            unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) }
+        };
         in_gdi().fetch_sub(1, Ordering::SeqCst);
         if unloading().load(Ordering::SeqCst) {
             if n > 0 {
@@ -354,14 +378,9 @@ mod winfont {
         if let Ok(mut g) = loaded().lock() {
             g.remove(path);
         }
-        let w = wide(path);
-        unsafe {
-            // Always Remove, even if this process did not Add — crash leftover
-            // or a path that never entered `loaded` still locks DeleteFile.
-            // Second Remove drops a leftover refcount; a miss is a no-op.
-            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
-            RemoveFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut());
-        }
+        // Always Remove (drain-until-zero), even if this process did not Add —
+        // crash leftover or a path that never entered `loaded` still locks DeleteFile.
+        let _ = remove_one(path);
         dirty().store(true, Ordering::SeqCst);
     }
 
@@ -415,9 +434,10 @@ mod winfont {
     }
 
     /// Drain this process's Adds plus leftover paths from a previous incomplete
-    /// quit. Always double-Remove (same as live unregister). Local GdiFlush only
-    /// on the quit path — HWND_BROADCAST WM_FONTCHANGE can re-lock Documents
-    /// files in Explorer. Live Deactivate may still broadcast.
+    /// quit. RemoveFontResourceExW loops until 0 (refcount drain). Local GdiFlush
+    /// only on the quit path — HWND_BROADCAST WM_FONTCHANGE can re-lock Documents
+    /// files in Explorer. Live Deactivate may still broadcast; FontCache service
+    /// restart runs after this (see restart_font_cache_service).
     pub fn unload_paths(extra: Vec<PathBuf>, broadcast: bool) -> UnloadStats {
         let mut paths = loaded()
             .lock()
@@ -461,6 +481,236 @@ mod winfont {
             attempted,
             removed_ok,
         }
+    }
+
+    // --- Windows Font Cache (svchost / LOCAL SERVICE) unlock -----------------
+    // After enumerable Remove, Font Cache often keeps Documents TTF handles.
+    // Best-effort SCM restart beats HWND_BROADCAST for unlock; soft-fail
+    // AccessDenied may still need admin once. Unlock is proven only after
+    // WRITE_OK on Eric's box — do not treat soft-fail as FontBase-or-better.
+    // Do NOT wipe %WINDIR%\ServiceProfiles\...\FontCache here — service
+    // restart first; dir wipe is last-resort and left unimplemented.
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn OpenSCManagerW(
+            lpMachineName: *const u16,
+            lpDatabaseName: *const u16,
+            dwDesiredAccess: u32,
+        ) -> isize;
+        fn OpenServiceW(
+            hSCManager: isize,
+            lpServiceName: *const u16,
+            dwDesiredAccess: u32,
+        ) -> isize;
+        fn CloseServiceHandle(hSCObject: isize) -> i32;
+        fn ControlService(hService: isize, dwControl: u32, lpServiceStatus: *mut ServiceStatus) -> i32;
+        fn StartServiceW(
+            hService: isize,
+            dwNumServiceArgs: u32,
+            lpServiceArgVectors: *const *const u16,
+        ) -> i32;
+        fn QueryServiceStatus(hService: isize, lpServiceStatus: *mut ServiceStatus) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLastError() -> u32;
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct ServiceStatus {
+        dw_service_type: u32,
+        dw_current_state: u32,
+        dw_controls_accepted: u32,
+        dw_win32_exit_code: u32,
+        dw_service_specific_exit_code: u32,
+        dw_check_point: u32,
+        dw_wait_hint: u32,
+    }
+
+    const SC_MANAGER_CONNECT: u32 = 0x0001;
+    const SERVICE_QUERY_STATUS: u32 = 0x0004;
+    const SERVICE_START: u32 = 0x0010;
+    const SERVICE_STOP: u32 = 0x0020;
+    const SERVICE_CONTROL_STOP: u32 = 0x0000_0001;
+    const SERVICE_STOPPED: u32 = 0x0000_0001;
+    const SERVICE_RUNNING: u32 = 0x0000_0004;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    const ERROR_SERVICE_NOT_ACTIVE: u32 = 1062;
+    const ERROR_SERVICE_DOES_NOT_EXIST: u32 = 1060;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FontCacheRestartOutcome {
+        Restarted,
+        AccessDenied,
+        OpenFailed,
+        StopTimedOut,
+        StartTimedOut,
+        NotFound,
+    }
+
+    fn wide_z(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn wait_service_state(svc: isize, want: u32, deadline: Instant) -> bool {
+        let mut status = ServiceStatus {
+            dw_service_type: 0,
+            dw_current_state: 0,
+            dw_controls_accepted: 0,
+            dw_win32_exit_code: 0,
+            dw_service_specific_exit_code: 0,
+            dw_check_point: 0,
+            dw_wait_hint: 0,
+        };
+        while Instant::now() < deadline {
+            let ok = unsafe { QueryServiceStatus(svc, &mut status) };
+            if ok == 0 {
+                return false;
+            }
+            if status.dw_current_state == want {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    fn restart_one_font_cache_service(name: &str, budget: Duration) -> FontCacheRestartOutcome {
+        let start = Instant::now();
+        let scm = unsafe {
+            OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT)
+        };
+        if scm == 0 {
+            let err = unsafe { GetLastError() };
+            return if err == ERROR_ACCESS_DENIED {
+                FontCacheRestartOutcome::AccessDenied
+            } else {
+                FontCacheRestartOutcome::OpenFailed
+            };
+        }
+        let access = SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP;
+        let name_w = wide_z(name);
+        let svc = unsafe { OpenServiceW(scm, name_w.as_ptr(), access) };
+        if svc == 0 {
+            let err = unsafe { GetLastError() };
+            unsafe {
+                CloseServiceHandle(scm);
+            }
+            return match err {
+                ERROR_ACCESS_DENIED => FontCacheRestartOutcome::AccessDenied,
+                ERROR_SERVICE_DOES_NOT_EXIST => FontCacheRestartOutcome::NotFound,
+                _ => FontCacheRestartOutcome::OpenFailed,
+            };
+        }
+
+        let mut status = ServiceStatus {
+            dw_service_type: 0,
+            dw_current_state: 0,
+            dw_controls_accepted: 0,
+            dw_win32_exit_code: 0,
+            dw_service_specific_exit_code: 0,
+            dw_check_point: 0,
+            dw_wait_hint: 0,
+        };
+        let _ = unsafe { QueryServiceStatus(svc, &mut status) };
+
+        let stop_deadline = start + budget / 2;
+        if status.dw_current_state != SERVICE_STOPPED {
+            let ctrl = unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) };
+            if ctrl == 0 {
+                let err = unsafe { GetLastError() };
+                if err == ERROR_ACCESS_DENIED {
+                    unsafe {
+                        CloseServiceHandle(svc);
+                        CloseServiceHandle(scm);
+                    }
+                    return FontCacheRestartOutcome::AccessDenied;
+                }
+                let _ = err == ERROR_SERVICE_NOT_ACTIVE;
+            }
+            if !wait_service_state(svc, SERVICE_STOPPED, stop_deadline) {
+                let _ = unsafe { QueryServiceStatus(svc, &mut status) };
+                if status.dw_current_state != SERVICE_STOPPED {
+                    unsafe {
+                        CloseServiceHandle(svc);
+                        CloseServiceHandle(scm);
+                    }
+                    return FontCacheRestartOutcome::StopTimedOut;
+                }
+            }
+        }
+
+        let remaining = budget.saturating_sub(start.elapsed());
+        let start_deadline = Instant::now() + remaining.max(Duration::from_millis(500));
+        let started = unsafe { StartServiceW(svc, 0, std::ptr::null()) };
+        if started == 0 {
+            let err = unsafe { GetLastError() };
+            if err == ERROR_ACCESS_DENIED {
+                unsafe {
+                    CloseServiceHandle(svc);
+                    CloseServiceHandle(scm);
+                }
+                return FontCacheRestartOutcome::AccessDenied;
+            }
+        }
+        let ok = wait_service_state(svc, SERVICE_RUNNING, start_deadline);
+        unsafe {
+            CloseServiceHandle(svc);
+            CloseServiceHandle(scm);
+        }
+        if ok {
+            FontCacheRestartOutcome::Restarted
+        } else {
+            FontCacheRestartOutcome::StartTimedOut
+        }
+    }
+
+    /// Time-bounded FontCache (+ WPF FontCache3) restart. Never blocks beyond `budget`.
+    pub fn restart_font_cache_service(budget: Duration) -> FontCacheRestartOutcome {
+        let overall = Instant::now();
+        let names = super::font_cache_service_names();
+        let mut worst = FontCacheRestartOutcome::NotFound;
+        let mut any_restarted = false;
+        let mut access_denied = false;
+        let n = names.len().max(1);
+        for name in names {
+            let elapsed = overall.elapsed();
+            if elapsed >= budget {
+                break;
+            }
+            let remaining = budget - elapsed;
+            let per = (budget / n as u32).min(remaining);
+            if per.is_zero() {
+                break;
+            }
+            let outcome = restart_one_font_cache_service(name, per);
+            match outcome {
+                FontCacheRestartOutcome::Restarted => {
+                    any_restarted = true;
+                }
+                FontCacheRestartOutcome::AccessDenied => access_denied = true,
+                FontCacheRestartOutcome::NotFound => {}
+                other => {
+                    if matches!(
+                        worst,
+                        FontCacheRestartOutcome::NotFound
+                            | FontCacheRestartOutcome::OpenFailed
+                    ) {
+                        worst = other;
+                    }
+                }
+            }
+        }
+        if access_denied && !any_restarted {
+            return FontCacheRestartOutcome::AccessDenied;
+        }
+        if any_restarted {
+            return FontCacheRestartOutcome::Restarted;
+        }
+        worst
     }
 }
 
@@ -620,6 +870,40 @@ pub fn quit_unload_budget_for(path_count: usize) -> Duration {
     Duration::from_millis(ms)
 }
 
+/// SCM service names to best-effort restart after Deactivate/Quit unload.
+/// `FontCache` = Windows Font Cache Service (svchost / LOCAL SERVICE).
+/// `FontCache3.0.0.0` = WPF Font Cache when present.
+pub fn font_cache_service_names() -> &'static [&'static str] {
+    &["FontCache", "FontCache3.0.0.0"]
+}
+
+/// Hard cap for FontCache STOP+START so Quit never deadlocks Explorer.
+pub fn font_cache_restart_budget() -> Duration {
+    Duration::from_secs(8)
+}
+
+/// When to schedule a FontCache flush after Removes.
+/// Quit and live Deactivate both flush when we attempted any unload; quit path
+/// must stay inside `font_cache_restart_budget()` (no HWND_BROADCAST).
+pub fn plan_font_cache_flush(attempted_removes: usize) -> bool {
+    attempted_removes > 0
+}
+
+/// Toast / eprintln copy when Documents TTFs stay locked after flush attempt.
+pub fn font_cache_held_message(locked: usize) -> String {
+    format!(
+        "Font Cache still holding {} files — retry as admin or reboot",
+        locked
+    )
+}
+
+/// Bounded workers for session_begin register_intact_family parallelism.
+pub fn session_register_workers(family_count: usize) -> usize {
+    const MAX: usize = 6;
+    const MIN: usize = 1;
+    family_count.clamp(MIN, MAX)
+}
+
 /// Decision after best-effort unload: clear sidecars on success; on partial
 /// failure keep remaining locked paths for next-boot recovery and fail loud.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -647,9 +931,10 @@ fn plan_session_end_cleanup(
             clear_paths: false,
             keep_paths: still_locked.to_vec(),
             fail_loud: Some(format!(
-                "Font Manager: session unload incomplete — {} of {} paths still write-locked (fontdrvhost/Adobe?). Next launch will retry RemoveFontResourceExW; or Deactivate-all / reboot then Repair.",
+                "Font Manager: session unload incomplete — {} of {} paths still write-locked (Font Cache/svchost, fontdrvhost, or Adobe?). {} Next launch will retry RemoveFontResourceExW; or Deactivate-all as admin / reboot then Repair.",
                 still_locked.len(),
-                attempted.max(still_locked.len())
+                attempted.max(still_locked.len()),
+                font_cache_held_message(still_locked.len())
             )),
         }
     }
@@ -857,6 +1142,29 @@ fn emit_session_recovery_toast(app: &AppHandle, locked: usize, attempted: usize)
     });
 }
 
+/// Payload when Font Cache still holds Documents TTFs after Deactivate flush.
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
+struct FontCacheHeldNotice {
+    locked: usize,
+    access_denied: bool,
+    message: String,
+}
+
+#[allow(dead_code)] // unload_now Windows path
+fn emit_font_cache_held_toast(app: &AppHandle, locked: usize, access_denied: bool) {
+    if locked == 0 && !access_denied {
+        return;
+    }
+    let locked_n = locked.max(if access_denied { 1 } else { 0 });
+    let notice = FontCacheHeldNotice {
+        locked: locked_n,
+        access_denied,
+        message: font_cache_held_message(locked_n),
+    };
+    let _ = app.emit("font-cache-held", &notice);
+}
+
 /// Recover crash/quit-without-unload leftovers before any fresh Add.
 /// Unloads `.session-paths.txt`, then clears sidecars after best-effort unload
 /// when locks are gone; otherwise keeps remaining locked paths and fail-loud
@@ -875,15 +1183,19 @@ fn recover_stale_session(app: &AppHandle) {
         }
         if !leftover.is_empty() {
             let stats = winfont::unload_paths(leftover.clone(), false);
+            if plan_font_cache_flush(stats.attempted) {
+                let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
+            }
             let still = filter_still_write_locked(&leftover);
             if still.is_empty() {
                 clear_session_paths_in(&root);
             } else {
                 save_session_paths_in(&root, &still);
                 eprintln!(
-                    "Font Manager: startup session recovery — {} path(s) still write-locked after Remove (attempted {}). Deactivate-all or reboot, then Repair.",
+                    "Font Manager: startup session recovery — {} path(s) still write-locked after Remove+FontCache (attempted {}). {} Deactivate-all as admin or reboot, then Repair.",
                     still.len(),
-                    stats.attempted
+                    stats.attempted,
+                    font_cache_held_message(still.len())
                 );
                 emit_session_recovery_toast(app, still.len(), stats.attempted.max(still.len()));
             }
@@ -909,19 +1221,14 @@ pub fn session_begin(app: &AppHandle) {
     {
         recover_stale_session(app);
         // Targeted dirs only — do not walk all of Documents before the UI is up.
+        // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
-        let mut files = 0usize;
-        let mut ready = Vec::new();
-        for family in &families {
-            if !family_is_ready(app, family) {
-                continue;
-            }
-            let k = register_intact_family(app, family);
-            if k > 0 {
-                files += k;
-                ready.push(family.clone());
-            }
-        }
+        let ready_targets: Vec<String> = families
+            .iter()
+            .filter(|family| family_is_ready(app, family))
+            .cloned()
+            .collect();
+        let (files, ready) = register_ready_families_parallel(app, &ready_targets);
         if files > 0 {
             save_session_paths(app, &winfont::snapshot_loaded());
             notify_fonts_changed();
@@ -967,8 +1274,24 @@ pub fn session_end(app: &AppHandle) {
         save_session_paths(app, &extra);
         let attempted = extra.len();
         // No WM_FONTCHANGE on quit — broadcast can re-lock family folders in
-        // Explorer. Double-Remove + local GdiFlush is enough for DeleteFile.
+        // Explorer. Drain-Remove + local GdiFlush, then time-bounded FontCache
+        // service restart so svchost/LOCAL SERVICE drops Documents handles.
         let stats = winfont::unload_paths(extra.clone(), false);
+        if plan_font_cache_flush(stats.attempted.max(attempted)) {
+            let outcome = winfont::restart_font_cache_service(font_cache_restart_budget());
+            if matches!(
+                outcome,
+                winfont::FontCacheRestartOutcome::AccessDenied
+                    | winfont::FontCacheRestartOutcome::StopTimedOut
+                    | winfont::FontCacheRestartOutcome::StartTimedOut
+                    | winfont::FontCacheRestartOutcome::OpenFailed
+            ) {
+                eprintln!(
+                    "Font Manager: FontCache restart on quit: {:?} (soft-fail; unlock may need admin/reboot)",
+                    outcome
+                );
+            }
+        }
         let still = filter_still_write_locked(&extra);
         let plan = plan_session_end_cleanup(attempted.max(stats.attempted), &still);
         if let Some(msg) = &plan.fail_loud {
@@ -2739,6 +3062,73 @@ fn sort_faces_var_first(files: &mut [PathBuf]) {
     });
 }
 
+/// Bounded-parallel session register. `register` already skips paths in the
+/// in-process loaded set (no double-Add). Workers share AppHandle; family walk /
+/// file I/O stay parallel, but GDI Add/Remove is serialized on `winfont::gdi_api`
+/// so Adds never overlap across families (Skye P1).
+#[allow(dead_code)] // session_begin Windows path
+fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -> (usize, Vec<String>) {
+    if ready_targets.is_empty() {
+        return (0, Vec::new());
+    }
+    let workers = session_register_workers(ready_targets.len());
+    if workers <= 1 || ready_targets.len() <= 1 {
+        let mut files = 0usize;
+        let mut ready = Vec::new();
+        for family in ready_targets {
+            let k = register_intact_family(app, family);
+            if k > 0 {
+                files += k;
+                ready.push(family.clone());
+            }
+        }
+        return (files, ready);
+    }
+    let queue = Arc::new(Mutex::new(VecDeque::from(ready_targets.to_vec())));
+    let results: Arc<Mutex<Vec<(String, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut joins = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let app = app.clone();
+        let queue = queue.clone();
+        let results = results.clone();
+        joins.push(thread::spawn(move || {
+            loop {
+                let next = queue
+                    .lock()
+                    .ok()
+                    .and_then(|mut q| q.pop_front());
+                let Some(family) = next else {
+                    break;
+                };
+                let k = register_intact_family(&app, &family);
+                if k > 0 {
+                    if let Ok(mut g) = results.lock() {
+                        g.push((family, k));
+                    }
+                }
+            }
+        }));
+    }
+    for j in joins {
+        let _ = j.join();
+    }
+    let pairs = results.lock().map(|g| g.clone()).unwrap_or_default();
+    let mut files = 0usize;
+    let mut ready = Vec::with_capacity(pairs.len());
+    for (family, k) in pairs {
+        files += k;
+        ready.push(family);
+    }
+    // Stable-ish order: match session list order when possible.
+    ready.sort_by_key(|a| {
+        ready_targets
+            .iter()
+            .position(|t| t.eq_ignore_ascii_case(a))
+            .unwrap_or(usize::MAX)
+    });
+    (files, ready)
+}
+
 fn register_intact_family(app: &AppHandle, family: &str) -> usize {
     let mut n = 0usize;
     for dir in family_locations(app, family) {
@@ -3984,7 +4374,11 @@ pub fn register_font_path(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn flush_font_cache() -> Result<(), String> {
     #[cfg(windows)]
-    winfont::flush_cache();
+    {
+        winfont::flush_local();
+        let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
+        winfont::flush_cache();
+    }
     Ok(())
 }
 
@@ -3995,31 +4389,52 @@ fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
     let mut n = 0u32;
     #[cfg(windows)]
     let loaded = winfont::snapshot_loaded();
+    #[cfg(windows)]
+    let mut unloaded_paths: Vec<PathBuf> = Vec::new();
     for family in families {
         let t = family.trim();
         if t.is_empty() {
             continue;
         }
-        let mut k = unregister_family_session(t);
         #[cfg(windows)]
-        if k == 0 {
-            let keys: Vec<String> = alias_keys(t);
-            for path in &loaded {
-                if winfont::is_windows_fonts_path(path) {
-                    continue;
+        {
+            // Capture paths before unregister drains by_family / loaded.
+            // Prefer family map; fall back to loaded parent-name match.
+            let before = winfont::snapshot_loaded();
+            let mut k = unregister_family_session(t);
+            if k == 0 {
+                let keys: Vec<String> = alias_keys(t);
+                for path in &loaded {
+                    if winfont::is_windows_fonts_path(path) {
+                        continue;
+                    }
+                    let parent = path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    if keys.iter().any(|akey| parent.eq_ignore_ascii_case(akey)) {
+                        unloaded_paths.push(path.clone());
+                        unregister_path(path);
+                        k += 1;
+                    }
                 }
-                let parent = path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                if keys.iter().any(|key| parent.eq_ignore_ascii_case(key)) {
-                    unregister_path(path);
-                    k += 1;
+            } else {
+                // Paths that left loaded for this family.
+                let after: HashSet<PathBuf> = winfont::snapshot_loaded().into_iter().collect();
+                for path in before {
+                    if !after.contains(&path) {
+                        unloaded_paths.push(path);
+                    }
                 }
             }
+            n += k;
         }
-        n += k;
+        #[cfg(not(windows))]
+        {
+            let k = unregister_family_session(t);
+            n += k;
+        }
         forget_queued(t);
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.insert(t.to_lowercase());
@@ -4027,9 +4442,32 @@ fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
     }
     session_remove(app, families);
     if n > 0 {
-        notify_fonts_changed();
+        gdi_flush_local();
         #[cfg(windows)]
-        save_session_paths(app, &winfont::snapshot_loaded());
+        {
+            let access_denied = if plan_font_cache_flush(unloaded_paths.len().max(n as usize)) {
+                let outcome = winfont::restart_font_cache_service(font_cache_restart_budget());
+                matches!(outcome, winfont::FontCacheRestartOutcome::AccessDenied)
+            } else {
+                false
+            };
+            // Live Deactivate: notify apps after cache restart so WM_FONTCHANGE
+            // does not immediately re-pinch Documents handles in Font Cache.
+            notify_fonts_changed();
+            let still = filter_still_write_locked(&unloaded_paths);
+            if !still.is_empty() || access_denied {
+                eprintln!(
+                    "Font Manager: {}",
+                    font_cache_held_message(still.len().max(if access_denied { 1 } else { 0 }))
+                );
+                emit_font_cache_held_toast(app, still.len(), access_denied);
+            }
+            save_session_paths(app, &winfont::snapshot_loaded());
+        }
+        #[cfg(not(windows))]
+        {
+            notify_fonts_changed();
+        }
     }
     n
 }
@@ -5874,5 +6312,63 @@ mod session_sidecar_tests {
         assert!(!session_paths_file_in(&root).is_file());
         assert!(!session_active_file_in(&root).is_file());
         let _ = fs::remove_dir_all(&root);
+    }
+
+
+    #[test]
+    fn font_cache_service_names_include_fontcache() {
+        let names = font_cache_service_names();
+        assert!(names.contains(&"FontCache"));
+        assert!(names.contains(&"FontCache3.0.0.0"));
+        assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn font_cache_restart_budget_is_time_bounded() {
+        let b = font_cache_restart_budget();
+        assert!(b >= Duration::from_secs(2));
+        assert!(b <= Duration::from_secs(15), "quit must not hang on FontCache restart");
+    }
+
+    #[test]
+    fn plan_font_cache_flush_only_when_removes_attempted() {
+        assert!(!plan_font_cache_flush(0));
+        assert!(plan_font_cache_flush(1));
+        assert!(plan_font_cache_flush(50));
+    }
+
+    #[test]
+    fn font_cache_held_message_matches_product_copy() {
+        let msg = font_cache_held_message(7);
+        assert!(msg.contains("Font Cache still holding 7 files"));
+        assert!(msg.contains("retry as admin or reboot"));
+    }
+
+    #[test]
+    fn session_register_workers_bounded() {
+        assert_eq!(session_register_workers(0), 1);
+        assert_eq!(session_register_workers(1), 1);
+        assert_eq!(session_register_workers(3), 3);
+        assert_eq!(session_register_workers(100), 6);
+    }
+
+    /// Documents Skye P1: ≤6 parallel `register_intact_family` workers may walk
+    /// disk concurrently, but AddFontResourceExW / RemoveFontResourceExW must
+    /// not overlap — see `winfont::gdi_api` (Windows). This test only anchors
+    /// the worker bound that made overlapping Adds a risk on ~11k-path restore.
+    #[test]
+    fn parallel_session_register_caps_workers_for_gdi_safety() {
+        assert!(
+            session_register_workers(11_000) <= 6,
+            "session register workers must stay ≤6 so GDI serialization stays bounded"
+        );
+    }
+
+    #[test]
+    fn plan_fail_loud_mentions_font_cache() {
+        let locked = vec![PathBuf::from("a.ttf")];
+        let plan = plan_session_end_cleanup(10, &locked);
+        let msg = plan.fail_loud.expect("fail-loud");
+        assert!(msg.contains("Font Cache still holding 1 files"));
     }
 }
