@@ -856,17 +856,23 @@ fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, 
     let style = if italic { "italic" } else { "normal" };
     let ver = version.trim().trim_start_matches('v');
     let pin = if ver.is_empty() { "latest" } else { ver };
-    let mut urls = vec![
-        format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@{pin}/{subset}-{weight}-{style}.ttf{q}"),
-        format!("https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
-        format!("https://unpkg.com/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"),
-    ];
+    // Prefer @latest before a pinned jsDelivr fontsource tag — pinned tags often
+    // return HTTP 400 while @latest serves the face (Syne Italic, Open Sauce, …).
+    let mut urls = Vec::new();
     if pin != "latest" {
-        urls.insert(
-            1,
-            format!("https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/{subset}-{weight}-{style}.ttf{q}"),
-        );
+        urls.push(format!(
+            "https://cdn.jsdelivr.net/fontsource/fonts/{slug}@latest/{subset}-{weight}-{style}.ttf{q}"
+        ));
     }
+    urls.push(format!(
+        "https://cdn.jsdelivr.net/fontsource/fonts/{slug}@{pin}/{subset}-{weight}-{style}.ttf{q}"
+    ));
+    urls.push(format!(
+        "https://cdn.jsdelivr.net/npm/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"
+    ));
+    urls.push(format!(
+        "https://unpkg.com/@fontsource/{slug}/files/{slug}-{subset}-{weight}-{style}.ttf{q}"
+    ));
     if slug == "noto-color-emoji" {
         return vec![
             format!("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf{q}"),
@@ -947,10 +953,35 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weig
     Err(last)
 }
 
+/// Map Fontsource API `styles` strings to download flags (`false`=normal, `true`=italic).
+/// Never invents normal when the package is italic-only (e.g. Syne Italic).
+fn fontsource_styles_from_meta(style_names: &[String]) -> Vec<bool> {
+    let has_normal = style_names.iter().any(|s| s.eq_ignore_ascii_case("normal"));
+    let has_italic = style_names.iter().any(|s| s.eq_ignore_ascii_case("italic"));
+    let mut out = Vec::new();
+    if has_normal {
+        out.push(false);
+    }
+    if has_italic {
+        out.push(true);
+    }
+    if out.is_empty() {
+        out.push(false);
+    }
+    out
+}
+
+/// Missing-package fast path: first-subset 400-normal 404, and no italic faces planned.
+/// Italic-only families must not abort here — they never schedule normal, and dual-style
+/// packs should keep trying italic after a normal miss.
+fn fontsource_abort_on_normal_404(styles: &[bool], first_subset: bool, weight: u16, italic: bool) -> bool {
+    first_subset && weight == 400 && !italic && !styles.iter().any(|s| *s)
+}
+
 fn fontsource_meta(
     client: &reqwest::blocking::Client,
     slug: &str,
-) -> Option<(Vec<String>, Vec<u16>, bool, String)> {
+) -> Option<(Vec<String>, Vec<u16>, Vec<bool>, String)> {
     let url = format!("https://api.fontsource.org/v1/fonts/{slug}");
     let text = client.get(&url).send().ok()?.text().ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -973,11 +1004,16 @@ fn fontsource_meta(
         })
         .filter(|w| !w.is_empty())
         .unwrap_or_else(|| vec![400]);
-    let italic = v
+    let style_names: Vec<String> = v
         .get("styles")
         .and_then(|s| s.as_array())
-        .map(|arr| arr.iter().any(|x| x.as_str() == Some("italic")))
-        .unwrap_or(false);
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let styles = fontsource_styles_from_meta(&style_names);
     let version = v
         .get("version")
         .and_then(|x| x.as_str())
@@ -985,7 +1021,7 @@ fn fontsource_meta(
         .trim()
         .trim_start_matches('v')
         .to_string();
-    Some((subsets, weights, italic, version))
+    Some((subsets, weights, styles, version))
 }
 
 fn is_cjk_subset(name: &str) -> bool {
@@ -1116,10 +1152,8 @@ fn pull_fontsource_subset_to_dir(
                 match fetch_ttf_to_file(client, slug, version, *weight, *italic, subset, &path) {
                     Ok(()) => wrote += 1,
                     Err(err) if err.starts_with("404") => {
-                        if subset == subsets.first().map(|s| s.as_str()).unwrap_or("")
-                            && *weight == 400
-                            && !*italic
-                        {
+                        let first = subset == subsets.first().map(|s| s.as_str()).unwrap_or("");
+                        if fontsource_abort_on_normal_404(styles, first, *weight, *italic) {
                             return wrote;
                         }
                     }
@@ -2905,19 +2939,18 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     // Fontsource when Google listed nothing.
     let need_fontsource = google_expected == 0;
     if need_fontsource {
-        if let Some((all_subsets, weights, has_italic, fs_ver)) = fontsource_meta(client, &slug) {
+        if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();
             let mut subsets = pick_subsets(&all_subsets);
             if subsets.is_empty() {
                 subsets.push("latin".into());
             }
             let weights = pick_fontsource_weights(&weights);
-            let styles: &[bool] = if slug.contains("emoji") {
-                &[false]
-            } else if has_italic {
-                &[false, true]
+            // Use advertised styles only — never invent normal for italic-only packages.
+            let styles: Vec<bool> = if slug.contains("emoji") {
+                vec![false]
             } else {
-                &[false]
+                meta_styles
             };
             let fs_expected = subsets.len().saturating_mul(weights.len()).saturating_mul(styles.len());
             if google_expected == 0 {
@@ -2926,7 +2959,7 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
             // When Google listed a rich set, keep that expected count for .complete honesty.
             // FS may still fill supplemental files, but *-latin-* never counts toward Google planned.
             let fs_wrote = pull_fontsource_subset_to_dir(
-                client, &slug, &version, &subsets, &weights, styles, &root,
+                client, &slug, &version, &subsets, &weights, &styles, &root,
             );
             // CJK honesty: metadata listed chinese-* but FS only dropped latin → do not
             // claim a Fontsource expected set when Google also wrote nothing.
@@ -4372,6 +4405,65 @@ mod install_path_tests {
     fn pick_weights_keeps_all_advertised() {
         let w = pick_fontsource_weights(&[100, 400, 500, 700]);
         assert_eq!(w, vec![100, 400, 500, 700]);
+    }
+
+    #[test]
+    fn fontsource_styles_italic_only_does_not_invent_normal() {
+        // Syne Italic: API styles=["italic"] only — must not schedule 400-normal.
+        let styles = fontsource_styles_from_meta(&["italic".into()]);
+        assert_eq!(styles, vec![true]);
+        let expected = 1usize; // 1 subset × 1 weight × 1 style
+        assert_eq!(
+            expected,
+            1usize.saturating_mul(1).saturating_mul(styles.len())
+        );
+    }
+
+    #[test]
+    fn fontsource_styles_normal_and_italic() {
+        let styles = fontsource_styles_from_meta(&["normal".into(), "italic".into()]);
+        assert_eq!(styles, vec![false, true]);
+    }
+
+    #[test]
+    fn fontsource_styles_normal_only() {
+        let styles = fontsource_styles_from_meta(&["normal".into()]);
+        assert_eq!(styles, vec![false]);
+    }
+
+    #[test]
+    fn fontsource_abort_skips_italic_only_and_dual_style() {
+        // Italic-only: never abort on a normal miss (normal is not scheduled).
+        assert!(!fontsource_abort_on_normal_404(&[true], true, 400, false));
+        // Dual-style: keep going after 400-normal 404 so italic can download.
+        assert!(!fontsource_abort_on_normal_404(&[false, true], true, 400, false));
+        // Normal-only missing package: fast abort.
+        assert!(fontsource_abort_on_normal_404(&[false], true, 400, false));
+        // Non-first subset / non-400 / italic miss: never abort.
+        assert!(!fontsource_abort_on_normal_404(&[false], false, 400, false));
+        assert!(!fontsource_abort_on_normal_404(&[false], true, 700, false));
+        assert!(!fontsource_abort_on_normal_404(&[false, true], true, 400, true));
+    }
+
+    #[test]
+    fn ttf_urls_prefers_latest_before_pinned() {
+        let urls = ttf_urls("syne-italic", "2.76", 400, true, "latin", 0);
+        assert!(
+            urls[0].contains("@latest/"),
+            "first URL must be @latest, got {}",
+            urls[0]
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("@2.76/")),
+            "pinned version should still be tried after @latest"
+        );
+        let latest_only = ttf_urls("syne-italic", "", 400, true, "latin", 0);
+        assert!(latest_only[0].contains("@latest/"));
+        assert_eq!(
+            latest_only.iter().filter(|u| u.contains("cdn.jsdelivr.net/fontsource")).count(),
+            1,
+            "empty pin must not duplicate @latest"
+        );
     }
 
     #[test]

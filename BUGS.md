@@ -1,6 +1,7 @@
 # Font Manager — known issues / follow-ups
 
 ## Fixed in tip / 1.0.150
+- Fontsource italic-only packs (e.g. Syne Italic): use API styles only — do not invent normal; do not abort pull on 400-normal 404 when italic is planned; prefer `@latest` before pinned jsDelivr tags that return HTTP 400.
 - Download real variable TTFs from google/fonts (jsDelivr) alongside static CSS instances.
 - Illustrator family naming: patch Google instances to family "Nunito" + style "ExtraLight".
 - Prefer discrete static multi-face listing when variable CSS only yields range weights (`200-1000`); do not purge latin remnants into an empty folder when Google fetch writes nothing.
