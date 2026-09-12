@@ -6,7 +6,6 @@ mod parse;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -25,8 +24,9 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Hide first so X feels instant. Enumerable session fonts (flag 0) are NOT
 /// dropped when the process dies — RemoveFontResourceExW must finish.
-/// Wait for unload on this thread (up to 45s hung-GDI cap) so Explorer can
-/// delete Documents\Font Manager\Family folders after Quit.
+/// Wait for unload on this thread (budget scales with session path count,
+/// clamped 45s–300s) so Explorer can delete Documents\Font Manager\Family
+/// folders after Quit and sidecars can clear.
 fn quit_gracefully(app: &tauri::AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
@@ -36,14 +36,17 @@ fn quit_gracefully(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
+    let budget = activate::quit_unload_budget(app);
     let handle = app.clone();
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::spawn(move || {
         activate::session_end(&handle);
         let _ = done_tx.send(());
     });
-    // Prefer finishing unload over a hard exit mid-Remove. 45s is the hung cap.
-    let _ = done_rx.recv_timeout(Duration::from_secs(45));
+    // Prefer finishing unload over a hard exit mid-Remove. Budget grows with
+    // ~11k-path sessions (Skye 1.0.153); hard exit still leaves .session-paths
+    // for startup recovery when the hung-GDI cap is hit.
+    let _ = done_rx.recv_timeout(budget);
     std::process::exit(0);
 }
 
