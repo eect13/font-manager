@@ -250,6 +250,7 @@ export async function restoreSessionFromDisk(families: string[]): Promise<{
 }> {
   const empty = { ready: [] as string[], missing: [] as string[], onDisk: [] as string[] };
   if (!(await inDesktopShell())) return empty;
+  void bindDownloadEvents();
   const plan = await tauriInvoke<{
     ready: string[];
     missing: string[];
@@ -270,6 +271,7 @@ export async function restoreSessionFromDisk(families: string[]): Promise<{
 export async function resumeGoogleFamilies(families: string[]): Promise<void> {
   if (!families.length) return;
   if (!(await inDesktopShell())) return;
+  void bindDownloadEvents();
   const plan = await tauriInvoke<{ ready: string[]; missing: string[] }>("plan_google_activation", {
     families,
   }).catch(() => null);
@@ -354,21 +356,73 @@ export async function pruneUnknownFolders(keep: string[]): Promise<number> {
   }
 }
 
+export type RepairResult = {
+  queued: number;
+  healed: number;
+  locked: number;
+  write_failed: number;
+  var_ensured: number;
+};
+
+function toastNameHealLocked(locked: number, healed = 0) {
+  const faces = `${locked.toLocaleString()} face${locked === 1 ? "" : "s"} locked`;
+  const healedBit =
+    healed > 0 ? `Healed ${healed.toLocaleString()}; ${locked.toLocaleString()} locked skipped. ` : "";
+  toast.error(`${faces} — deactivate fonts or quit Adobe/Word, then Repair`, {
+    description: `${healedBit}Illustrator, fontdrvhost, or another app is holding mashed TTFs. Quit those apps (or Deactivate), then Repair again.`,
+    duration: 24_000,
+    action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+  });
+}
+
 export async function repairIncompleteFamilies(families: string[] = []): Promise<number> {
   if (!(await inDesktopShell())) return 0;
+  void bindDownloadEvents();
   try {
-    const n = (await tauriInvoke<number>("repair_incomplete_families", { families })) ?? 0;
-    if (n) {
+    const result =
+      (await tauriInvoke<RepairResult>("repair_incomplete_families", { families })) ?? {
+        queued: 0,
+        healed: 0,
+        locked: 0,
+        write_failed: 0,
+        var_ensured: 0,
+      };
+    const locked = (result.locked ?? 0) + (result.write_failed ?? 0);
+    const healed = result.healed ?? 0;
+    const queued = result.queued ?? 0;
+    const varEnsured = result.var_ensured ?? 0;
+    const work = queued + healed + varEnsured;
+
+    if (locked > 0) {
+      toastNameHealLocked(locked, healed);
+    }
+    if (queued > 0) {
       toast.message("Repairing incomplete families", {
-        description: `${n.toLocaleString()} ${n === 1 ? "family" : "families"} — re-fetching missing faces.`,
+        description: `${queued.toLocaleString()} ${queued === 1 ? "family" : "families"} — re-fetching missing faces.${
+          healed ? ` Also healed ${healed.toLocaleString()} name${healed === 1 ? "" : "s"}.` : ""
+        }`,
       });
       startGooglePoll();
-    } else {
+    } else if (healed > 0 && locked === 0) {
+      toast.success(
+        `Healed ${healed.toLocaleString()} face name${healed === 1 ? "" : "s"}`,
+        {
+          description: varEnsured
+            ? `Also ensured ${varEnsured.toLocaleString()} catalog variable face${varEnsured === 1 ? "" : "s"}.`
+            : "Illustrator-friendly family/style split rewritten in place.",
+        },
+      );
+    } else if (varEnsured > 0 && locked === 0) {
+      toast.success(
+        `Ensured ${varEnsured.toLocaleString()} variable face${varEnsured === 1 ? "" : "s"}`,
+        { description: "Catalog vars added to complete folders." },
+      );
+    } else if (work === 0 && locked === 0) {
       toast.message("Nothing to repair", {
         description: "Every on-disk family has a .complete marker, or Documents is empty.",
       });
     }
-    return n;
+    return work + locked;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err ?? "repair failed");
     toast.error("Repair failed", {
@@ -756,6 +810,14 @@ async function bindDownloadEvents() {
     await listen("font-download", (ev) => {
       applyPayload(ev.payload as Parameters<typeof applyPayload>[0]);
     });
+    await listen("name-heal", (ev) => {
+      const p = ev.payload as { healed?: number; locked?: number; write_failed?: number };
+      const locked = (p.locked ?? 0) + (p.write_failed ?? 0);
+      // Activate/download heal path — fail loud when Illustrator/fontdrvhost holds TTFs.
+      if (locked > 0) {
+        toastNameHealLocked(locked, p.healed ?? 0);
+      }
+    });
   } catch {
     eventsBound = false;
   }
@@ -1009,6 +1071,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     return true;
   }
   if (font.source === "google") {
+    void bindDownloadEvents();
     const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
       families: [font.family],
     }).catch(() => [] as string[]);

@@ -1570,25 +1570,27 @@ fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> Str
 }
 
 /// Download real variable TTFs from google/fonts via jsDelivr (never @fontsource-variable WOFF).
-/// Returns on-disk filenames that were written or already intact.
+/// Returns on-disk filenames that were written or already intact, plus HealStats from
+/// in-place name heals on intact faces (never discard locked/healed).
 fn download_google_variable_ttfs(
     client: &reqwest::blocking::Client,
     family: &str,
     slug: &str,
     root: &Path,
-) -> Vec<String> {
+) -> (Vec<String>, HealStats) {
     if !google_catalog_is_variable(family) {
-        return Vec::new();
+        return (Vec::new(), HealStats::default());
     }
     let licenses = ["ofl", "apache", "ufl"];
     let folders = google_fonts_repo_folders(family);
     let pascal = google_fonts_pascal(family);
+    let mut heal = HealStats::default();
 
     // 1) Prefer METADATA.pb filenames + axes.
     for lic in licenses {
         for folder in &folders {
             if bulk().cancel.load(Ordering::SeqCst) {
-                return Vec::new();
+                return (Vec::new(), heal);
             }
             let meta_url = format!(
                 "https://cdn.jsdelivr.net/gh/google/fonts@main/{lic}/{folder}/METADATA.pb"
@@ -1620,7 +1622,7 @@ fn download_google_variable_ttfs(
                 if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&dest) {
                     // Intact vars from prior installs may still mash id1
                     // ("Nunito ExtraLight"). Heal name only — keep fvar.
-                    let _ = heal_google_variable_face_file(&dest, family, *italic);
+                    heal.add(heal_google_variable_face_file(&dest, family, *italic));
                     register_path(&dest);
                     wrote.push(dest_name);
                     continue;
@@ -1637,7 +1639,7 @@ fn download_google_variable_ttfs(
                 }
             }
             if !wrote.is_empty() {
-                return wrote;
+                return (wrote, heal);
             }
             // METADATA found but TTFs missing — try next folder/license.
         }
@@ -1656,7 +1658,7 @@ fn download_google_variable_ttfs(
         for folder in &folders {
             for axes in axis_patterns {
                 if bulk().cancel.load(Ordering::SeqCst) {
-                    return wrote;
+                    return (wrote, heal);
                 }
                 for italic in [false, true] {
                     let remote = if italic {
@@ -1670,7 +1672,7 @@ fn download_google_variable_ttfs(
                         continue;
                     }
                     if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&dest) {
-                        let _ = heal_google_variable_face_file(&dest, family, italic);
+                        heal.add(heal_google_variable_face_file(&dest, family, italic));
                         register_path(&dest);
                         wrote.push(dest_name);
                         continue;
@@ -1686,12 +1688,12 @@ fn download_google_variable_ttfs(
                 }
                 // If we got a roman var file for this axes pattern, stop trying other axes.
                 if wrote.iter().any(|w| w.contains("-variable-") && !w.contains("-italic")) {
-                    return wrote;
+                    return (wrote, heal);
                 }
             }
         }
     }
-    wrote
+    (wrote, heal)
 }
 
 fn is_variable_face_filename(name: &str) -> bool {
@@ -1788,21 +1790,21 @@ fn http_download_client() -> Option<reqwest::blocking::Client> {
 
 /// Always pull real `*-variable-*` TTFs for catalog-variable families — including
 /// when the folder is already `.complete` / statics-only. Does **not** bust statics;
-/// registers both. Returns how many var filenames were written or already intact.
+/// registers both. Returns (var filenames written/intact, HealStats from intact heals).
 fn ensure_catalog_variable_faces(
     app: &AppHandle,
     client: &reqwest::blocking::Client,
     family: &str,
-) -> usize {
+) -> (usize, HealStats) {
     if !google_catalog_is_variable(family) {
-        return 0;
+        return (0, HealStats::default());
     }
     let slug = slug_family(family);
     if slug.is_empty() {
-        return 0;
+        return (0, HealStats::default());
     }
     let Ok(root) = family_dir(app, family) else {
-        return 0;
+        return (0, HealStats::default());
     };
     if !root.is_dir() {
         let _ = fs::create_dir_all(&root);
@@ -1818,13 +1820,14 @@ fn ensure_catalog_variable_faces(
         if !planned_vars.is_empty()
             && planned_vars.iter().all(|k| ttf_intact(&root.join(k)))
         {
+            let mut heal = HealStats::default();
             for name in &planned_vars {
                 let path = root.join(name);
                 let italic = variable_face_filename_is_italic(name);
-                let _ = heal_google_variable_face_file(&path, family, italic);
+                heal.add(heal_google_variable_face_file(&path, family, italic));
                 let _ = register_family_path(family, &path);
             }
-            return planned_vars.len();
+            return (planned_vars.len(), heal);
         }
     } else if dir_has_intact_variable(&root) {
         // Vars on disk but missing from planned (legacy complete) — fold in, no CDN.
@@ -1843,34 +1846,35 @@ fn ensure_catalog_variable_faces(
             .collect();
         if !var_files.is_empty() {
             adopt_variable_files_into_plan(&root, &var_files);
+            let mut heal = HealStats::default();
             for name in &var_files {
                 let path = root.join(name);
                 let italic = variable_face_filename_is_italic(name);
-                let _ = heal_google_variable_face_file(&path, family, italic);
+                heal.add(heal_google_variable_face_file(&path, family, italic));
                 let _ = register_family_path(family, &path);
             }
-            return var_files.len();
+            return (var_files.len(), heal);
         }
     }
 
     // Missing vars (complete statics-only Nunito, etc.) — fetch without busting statics.
-    let var_files = download_google_variable_ttfs(client, family, &slug, &root);
+    let (var_files, heal) = download_google_variable_ttfs(client, family, &slug, &root);
     if var_files.is_empty() {
-        return 0;
+        return (0, heal);
     }
     adopt_variable_files_into_plan(&root, &var_files);
     // Register vars first; statics stay and are registered by the normal pass.
     // Windows AddFontResource lists every file; order helps apps that pick the
     // first face with axes. Statics remain installed as backup — never var-only.
+    // Intact heals already counted in download_google_variable_ttfs — do not
+    // re-heal here (would double-count locked).
     for name in &var_files {
         let path = root.join(name);
         if ttf_intact(&path) {
-            let italic = variable_face_filename_is_italic(name);
-            let _ = heal_google_variable_face_file(&path, family, italic);
             let _ = register_family_path(family, &path);
         }
     }
-    var_files.len()
+    (var_files.len(), heal)
 }
 
 /// Cap concurrent face streams so bulk Activate cannot buffer ~N×CJK in RAM.
@@ -2199,66 +2203,116 @@ fn instance_name_needs_heal(font: &[u8], family: &str) -> bool {
     id1.is_none() && id16.is_none()
 }
 
+/// Counts from in-place name heal. Locked/write failures stay soft (no force
+/// overwrite) but must be visible to Repair/Activate — never look like success.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HealStats {
+    pub healed: usize,
+    pub locked: usize,
+    pub write_failed: usize,
+}
+
+impl HealStats {
+    fn add(&mut self, other: Self) {
+        self.healed = self.healed.saturating_add(other.healed);
+        self.locked = self.locked.saturating_add(other.locked);
+        self.write_failed = self.write_failed.saturating_add(other.write_failed);
+    }
+
+    fn from_write(result: Result<(), String>) -> Self {
+        match result {
+            Ok(()) => Self {
+                healed: 1,
+                ..Default::default()
+            },
+            Err(e) if e.contains("locked") => Self {
+                locked: 1,
+                ..Default::default()
+            },
+            Err(_) => Self {
+                write_failed: 1,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+fn emit_name_heal(app: &AppHandle, stats: HealStats) {
+    if stats.locked > 0 || stats.write_failed > 0 || stats.healed > 0 {
+        let _ = app.emit("name-heal", stats);
+    }
+}
+
+/// Map write_font_file outcome after a successful patch attempt.
+fn heal_write_stats(path: &Path, patched: &[u8]) -> HealStats {
+    HealStats::from_write(write_font_file(path, patched))
+}
+
 /// Re-patch one intact Google CSS instance face in place when nameID 1/16 ≠ family.
-/// Soft-fails on locked/unreadable files (returns false — never panics / half-writes
-/// beyond `write_font_file`'s usual delete+write path).
+/// Soft-fails on locked/unreadable files (never panics / force-overwrite) — callers
+/// must surface `locked` / `write_failed` instead of treating zero healed as success.
 fn heal_google_instance_face_file(
     path: &Path,
     family: &str,
     weight: &str,
     css_style: &str,
-) -> bool {
+) -> HealStats {
     let Ok(bytes) = fs::read(path) else {
-        return false;
+        return HealStats::default();
     };
     if !ttf_magic(&bytes) || bytes.len() < 256 {
-        return false;
+        return HealStats::default();
     }
     if !instance_name_needs_heal(&bytes, family) {
-        return false;
+        return HealStats::default();
     }
     let Some(patched) =
         crate::namepatch::patch_google_instance_face(&bytes, family, weight, css_style)
     else {
-        return false;
+        return HealStats::default();
     };
     if patched.as_slice() == bytes.as_slice() {
-        return false;
+        return HealStats::default();
     }
-    write_font_file(path, &patched).is_ok()
+    heal_write_stats(path, &patched)
 }
 
 /// Re-patch one intact variable TTF in place when nameID 1/16 ≠ catalog family.
 /// Style becomes Regular or Italic only; `fvar` is preserved by name-table rewrite.
-/// Soft-fails when locked/unreadable.
-fn heal_google_variable_face_file(path: &Path, family: &str, italic: bool) -> bool {
+/// Soft-fails when locked/unreadable — report via HealStats, do not swallow.
+fn heal_google_variable_face_file(path: &Path, family: &str, italic: bool) -> HealStats {
     let Ok(bytes) = fs::read(path) else {
-        return false;
+        return HealStats::default();
     };
     if !ttf_magic(&bytes) || bytes.len() < 256 {
-        return false;
+        return HealStats::default();
     }
     if !instance_name_needs_heal(&bytes, family) {
-        return false;
+        return HealStats::default();
     }
     let Some(patched) = crate::namepatch::patch_variable_face(&bytes, family, italic) else {
-        return false;
+        return HealStats::default();
     };
     if patched.as_slice() == bytes.as_slice() {
-        return false;
+        return HealStats::default();
     }
-    write_font_file(path, &patched).is_ok()
+    heal_write_stats(path, &patched)
 }
 
 /// Walk a family folder and heal mashed Google name tables on **instances and
-/// vars** (id1/16 ≠ catalog family). Soft-fail per file when locked. Returns
-/// how many files were rewritten.
-fn heal_google_instance_names_in_dir(dir: &Path, family: &str) -> usize {
+/// vars** (id1/16 ≠ catalog family). Soft-fail per file when locked (Illustrator /
+/// fontdrvhost / PID4), but return locked/write_failed counts for fail-loud UI.
+/// When `include_vars` is false, skip `*-variable-*` (caller already healed via ensure).
+fn heal_google_instance_names_in_dir(dir: &Path, family: &str) -> HealStats {
+    heal_google_names_in_dir(dir, family, true)
+}
+
+fn heal_google_names_in_dir(dir: &Path, family: &str, include_vars: bool) -> HealStats {
     let slug = slug_family(family);
     if slug.is_empty() || !dir.is_dir() {
-        return 0;
+        return HealStats::default();
     }
-    let mut healed = 0usize;
+    let mut stats = HealStats::default();
     let mut files = Vec::new();
     walk_font_files(dir, &mut files);
     for path in files {
@@ -2269,50 +2323,56 @@ fn heal_google_instance_names_in_dir(dir: &Path, family: &str) -> usize {
             continue;
         }
         if is_variable_face_filename(name) {
-            let italic = variable_face_filename_is_italic(name);
-            if heal_google_variable_face_file(&path, family, italic) {
-                healed += 1;
+            if !include_vars {
+                continue;
             }
+            let italic = variable_face_filename_is_italic(name);
+            stats.add(heal_google_variable_face_file(&path, family, italic));
             continue;
         }
         let Some((weight, style)) = parse_google_instance_face_name(&slug, name) else {
             continue;
         };
-        if heal_google_instance_face_file(&path, family, &weight, &style) {
-            healed += 1;
-        }
+        stats.add(heal_google_instance_face_file(&path, family, &weight, &style));
     }
-    healed
+    stats
 }
 
-fn heal_family_google_instance_names(app: &AppHandle, family: &str) -> usize {
+fn heal_family_google_instance_names(app: &AppHandle, family: &str) -> HealStats {
+    heal_family_google_names(app, family, true)
+}
+
+/// `include_vars: false` after `ensure_catalog_variable_faces` so var heals are
+/// counted once (ensure) and static instances still get healed.
+fn heal_family_google_names(app: &AppHandle, family: &str, include_vars: bool) -> HealStats {
     if !is_official_google_family(family) {
-        return 0;
+        return HealStats::default();
     }
-    let mut n = 0usize;
+    let mut stats = HealStats::default();
     for dir in family_locations(app, family) {
-        n = n.saturating_add(heal_google_instance_names_in_dir(&dir, family));
+        stats.add(heal_google_names_in_dir(&dir, family, include_vars));
     }
-    n
+    stats
 }
 
 /// Fetch listed Google CSS instance TTFs to `root`, patching name tables for
-/// Illustrator-friendly family/style split. Returns (written_or_intact, expected).
+/// Illustrator-friendly family/style split. Returns (written_or_intact, expected, heal).
 fn download_listed_faces_to_dir(
     client: &reqwest::blocking::Client,
     family: &str,
     slug: &str,
     root: &Path,
     listed: Vec<(String, String, String)>,
-) -> (usize, usize) {
+) -> (usize, usize, HealStats) {
     let expected = listed.len();
     if listed.is_empty() {
-        return (0, 0);
+        return (0, 0, HealStats::default());
     }
     // One face at a time per family (bulk already parallelizes families). Buffer
     // bytes so we can patch nameID 1/2/4/16/17 before write — stream-only path
     // cannot rewrite the name table.
     let mut wrote = 0usize;
+    let mut heal = HealStats::default();
     for (style, weight, url) in listed {
         if bulk().cancel.load(Ordering::SeqCst) {
             break;
@@ -2323,7 +2383,7 @@ fn download_listed_faces_to_dir(
             // Intact faces from prior installs may still carry mashed nameID 1/16
             // ("Nunito ExtraLight"). Re-patch in place so Repair/Activate heals
             // complete folders without a full re-download.
-            let _ = heal_google_instance_face_file(&path, family, &weight, &style);
+            heal.add(heal_google_instance_face_file(&path, family, &weight, &style));
             register_path(&path);
             wrote += 1;
             continue;
@@ -2339,30 +2399,31 @@ fn download_listed_faces_to_dir(
             wrote += 1;
         }
     }
-    (wrote, expected)
+    (wrote, expected, heal)
 }
 
 /// Google-first install path: discover richest listing, then stream faces to disk.
-/// Returns (faces written/intact from this listing, listed face keys). Skips CSS for non-Google families.
+/// Returns (faces written/intact, listed keys, var filenames, heal from intact heals).
 fn fetch_google_family_faces_to_dir(
     client: &reqwest::blocking::Client,
     family: &str,
     slug: &str,
     root: &Path,
-) -> (usize, Vec<(String, String, String)>, Vec<String>) {
+) -> (usize, Vec<(String, String, String)>, Vec<String>, HealStats) {
     if !is_official_google_family(family) {
-        return (0, Vec::new(), Vec::new());
+        return (0, Vec::new(), Vec::new(), HealStats::default());
     }
     let listed = discover_richest_google_listing(client, family);
-    let (inst_wrote, _) = if listed.is_empty() {
-        (0, 0)
+    let (inst_wrote, _, mut heal) = if listed.is_empty() {
+        (0, 0, HealStats::default())
     } else {
         download_listed_faces_to_dir(client, family, slug, root, listed.clone())
     };
     // Catalog-variable: ALSO pull real variable TTFs from google/fonts (jsDelivr).
-    let var_files = download_google_variable_ttfs(client, family, slug, root);
+    let (var_files, var_heal) = download_google_variable_ttfs(client, family, slug, root);
+    heal.add(var_heal);
     let wrote = inst_wrote.saturating_add(var_files.len());
-    (wrote, listed, var_files)
+    (wrote, listed, var_files, heal)
 }
 
 fn needs_compat_pack(slug: &str) -> bool {
@@ -2548,11 +2609,16 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     // heal mashed instance names — Activate used to name-heal only / skip vars.
     let client = http_download_client();
     let mut n = 0usize;
+    let mut heal = HealStats::default();
     for family in ready {
         if let Some(ref c) = client {
-            ensure_catalog_variable_faces(app, c, family);
+            let (_, eh) = ensure_catalog_variable_faces(app, c, family);
+            heal.add(eh);
+            // Vars already counted via ensure — heal static instances only.
+            heal.add(heal_family_google_names(app, family, false));
+        } else {
+            heal.add(heal_family_google_instance_names(app, family));
         }
-        heal_family_google_instance_names(app, family);
         n += match index {
             Some(idx) => register_from_index(app, idx, family),
             None => register_intact_family(app, family),
@@ -2568,6 +2634,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         #[cfg(windows)]
         save_session_paths(app, &winfont::snapshot_loaded());
     }
+    emit_name_heal(app, heal);
     if let Ok(mut p) = bulk().progress.lock() {
         for family in ready {
             if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
@@ -3136,7 +3203,11 @@ fn emit_progress(app: &AppHandle) {
     }
 }
 
-fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: &str) -> Result<usize, String> {
+fn download_family(
+    app: &AppHandle,
+    client: &reqwest::blocking::Client,
+    family: &str,
+) -> Result<(usize, HealStats), String> {
     let key = family.trim().to_lowercase();
     if bulk().denied.lock().map(|d| d.contains(&key)).unwrap_or(false) {
         return Err("deactivated".into());
@@ -3150,10 +3221,11 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     if existing > 0 && !bust && family_is_ready(app, family) {
         // Complete folders still need missing catalog variable TTFs (no bust)
         // and name heal for pre-namepatch installs. Statics stay; vars are added.
-        ensure_catalog_variable_faces(app, client, family);
-        heal_family_google_instance_names(app, family);
+        // Do not emit here — caller (drain) coalesces HealStats across families.
+        let (_, mut heal) = ensure_catalog_variable_faces(app, client, family);
+        heal.add(heal_family_google_names(app, family, false));
         let total = register_intact_family(app, family).max(existing);
-        return Ok(total);
+        return Ok((total, heal));
     }
     if bust {
         purge_family_files(app, family);
@@ -3167,7 +3239,7 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
 
     // Google desktop TTFs first (official families): discover richest listing, then stream
     // to disk (no full-family RAM buffer). Fontsource only when Google listed nothing.
-    let (google_wrote, mut google_listed, mut google_var_files) =
+    let (google_wrote, mut google_listed, mut google_var_files, mut heal) =
         fetch_google_family_faces_to_dir(client, family, &slug, &root);
     // If Google CSS listed faces but nothing intact landed, do NOT purge latin
     // remnants into an empty folder and abort — clear the plan so Fontsource can
@@ -3312,7 +3384,10 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     };
     if planned > 0 && intact_for_complete >= planned {
         mark_family_complete(&root, planned);
-        Ok(total)
+        // Intact heals during download already in `heal`; fold any remaining
+        // mashed statics (vars counted via download_google / ensure paths).
+        heal.add(heal_family_google_names(app, family, false));
+        Ok((total, heal))
     } else {
         clear_complete_marker(&root);
         if planned == 0 {
@@ -3344,12 +3419,14 @@ fn drain_download_queue(
     app: AppHandle,
     client: Arc<reqwest::blocking::Client>,
     queue: Arc<Mutex<VecDeque<String>>>,
-) {
+) -> HealStats {
     let state = bulk();
     let mut idle = 0u8;
+    // Coalesce name-heal across families — one toast with totals, not per-family storm.
+    let mut heal_acc = HealStats::default();
     loop {
         if state.cancel.load(Ordering::SeqCst) {
-            return;
+            return heal_acc;
         }
         if state.pause.load(Ordering::SeqCst) {
             if let Ok(mut p) = state.progress.lock() {
@@ -3366,7 +3443,7 @@ fn drain_download_queue(
         let Some(family) = take_next_family(&queue) else {
             idle = idle.saturating_add(1);
             if idle >= 2 {
-                return;
+                return heal_acc;
             }
             thread::sleep(Duration::from_millis(40));
             continue;
@@ -3393,18 +3470,26 @@ fn drain_download_queue(
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
             // Already-complete: still pull missing catalog vars (no bust) + heal names.
-            ensure_catalog_variable_faces(&app, &client, &family);
-            heal_family_google_instance_names(&app, &family);
+            // Aggregate — do not emit per family (toast storm).
+            let (_, mut heal) = ensure_catalog_variable_faces(&app, &client, &family);
+            heal.add(heal_family_google_names(&app, &family, false));
+            heal_acc.add(heal);
             Ok(1usize)
         } else {
-            download_family(&app, &client, &family)
+            match download_family(&app, &client, &family) {
+                Ok((n, heal)) => {
+                    heal_acc.add(heal);
+                    Ok(n)
+                }
+                Err(e) => Err(e),
+            }
         };
         let cancelled = state.cancel.load(Ordering::SeqCst)
             || matches!(&result, Err(reason) if reason == "cancelled" || reason == "deactivated");
         if cancelled {
             forget_queued(&family);
             if state.cancel.load(Ordering::SeqCst) {
-                return;
+                return heal_acc;
             }
             continue;
         }
@@ -3521,9 +3606,14 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
             let queue = queue.clone();
             joins.push(thread::spawn(move || drain_download_queue(app, client, queue)));
         }
+        let mut drain_heal = HealStats::default();
         for j in joins {
-            let _ = j.join();
+            if let Ok(h) = j.join() {
+                drain_heal.add(h);
+            }
         }
+        // One name-heal emit per drain wave (totals), not per family.
+        emit_name_heal(&app, drain_heal);
         leftover = state
             .pending
             .lock()
@@ -3766,14 +3856,19 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     thread::spawn(move || {
         let client = http_download_client();
         let mut added = 0usize;
+        let mut heal = HealStats::default();
         for family in &ready2 {
             if let Some(ref c) = client {
-                ensure_catalog_variable_faces(&app2, c, family);
+                let (_, eh) = ensure_catalog_variable_faces(&app2, c, family);
+                heal.add(eh);
+                heal.add(heal_family_google_names(&app2, family, false));
+            } else {
+                heal.add(heal_family_google_instance_names(&app2, family));
             }
-            heal_family_google_instance_names(&app2, family);
             added += register_intact_new(&app2, family);
             forget_queued(family);
         }
+        emit_name_heal(&app2, heal);
         session_add(&app2, &ready2);
         if added > 0 {
             notify_fonts_changed();
@@ -3879,13 +3974,28 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
     start_google_downloads(app, queued)
 }
 
+/// Repair result: queued downloads + name-heal outcomes (healed vs locked skips).
+#[derive(Debug, Clone, Serialize)]
+pub struct RepairResult {
+    pub queued: usize,
+    pub healed: usize,
+    pub locked: usize,
+    pub write_failed: usize,
+    pub var_ensured: usize,
+}
+
 /// Re-fetch families that have partial faces (no `.complete`).
 /// Complete catalog-variable folders missing `*-variable-*` get vars added in place
 /// (no full bust); incomplete families still go through Retry/bust.
+/// Name-heal soft-fails on locked faces (Illustrator/fontdrvhost) but returns
+/// `locked` so the UI can fail loud — never looks like silent success.
 #[tauri::command]
-pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
+pub fn repair_incomplete_families(
+    app: AppHandle,
+    families: Vec<String>,
+) -> Result<RepairResult, String> {
     let mut targets = Vec::new();
-    let mut healed = 0usize;
+    let mut heal = HealStats::default();
     let mut var_ensured = 0usize;
     let client = http_download_client();
     if families.is_empty() {
@@ -3899,11 +4009,14 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
                 // Complete Google folders: name-heal + pull missing catalog vars (no bust).
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     if is_official_google_family(name) {
-                        healed = healed.saturating_add(heal_google_instance_names_in_dir(dir, name));
                         if let Some(ref c) = client {
-                            var_ensured = var_ensured.saturating_add(ensure_catalog_variable_faces(
-                                &app, c, name,
-                            ));
+                            let (ve, eh) = ensure_catalog_variable_faces(&app, c, name);
+                            var_ensured = var_ensured.saturating_add(ve);
+                            heal.add(eh);
+                            // Vars counted via ensure — heal static instances only.
+                            heal.add(heal_google_names_in_dir(dir, name, false));
+                        } else {
+                            heal.add(heal_google_instance_names_in_dir(dir, name));
                         }
                     }
                 }
@@ -3914,20 +4027,36 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
             if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
                 targets.push(family);
             } else {
-                healed = healed.saturating_add(heal_family_google_instance_names(&app, &family));
                 if let Some(ref c) = client {
-                    var_ensured = var_ensured.saturating_add(ensure_catalog_variable_faces(
-                        &app, c, &family,
-                    ));
+                    let (ve, eh) = ensure_catalog_variable_faces(&app, c, &family);
+                    var_ensured = var_ensured.saturating_add(ve);
+                    heal.add(eh);
+                    heal.add(heal_family_google_names(&app, &family, false));
+                } else {
+                    heal.add(heal_family_google_instance_names(&app, &family));
                 }
             }
         }
     }
+    // Repair returns HealStats in RepairResult for the frontend toast (no
+    // name-heal event — would double-fire with the invoke result handler).
     if targets.is_empty() {
-        return Ok(healed.saturating_add(var_ensured));
+        return Ok(RepairResult {
+            queued: 0,
+            healed: heal.healed,
+            locked: heal.locked,
+            write_failed: heal.write_failed,
+            var_ensured,
+        });
     }
     let n = retry_google_downloads(app, targets)?;
-    Ok(n.saturating_add(healed).saturating_add(var_ensured))
+    Ok(RepairResult {
+        queued: n,
+        healed: heal.healed,
+        locked: heal.locked,
+        write_failed: heal.write_failed,
+        var_ensured,
+    })
 }
 
 #[tauri::command]
@@ -4686,7 +4815,8 @@ mod install_path_tests {
         fs::write(&var_path, &var_bytes).unwrap();
 
         let n = heal_google_instance_names_in_dir(&dir, "Nunito");
-        assert_eq!(n, 1, "exactly one instance face should heal");
+        assert_eq!(n.healed, 1, "exactly one instance face should heal");
+        assert_eq!(n.locked, 0);
         let healed = fs::read(&path).unwrap();
         assert_eq!(crate::namepatch::read_name_id(&healed, 1).as_deref(), Some("Nunito"));
         assert_eq!(
@@ -4700,7 +4830,7 @@ mod install_path_tests {
             "already-clean variable TTF must remain untouched"
         );
         // Second pass is a no-op.
-        assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito"), 0);
+        assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito").healed, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -4719,7 +4849,8 @@ mod install_path_tests {
         fs::write(&static_path, &static_mashed).unwrap();
 
         let n = heal_google_instance_names_in_dir(&dir, "Nunito");
-        assert_eq!(n, 3, "var roman + var italic + ExtraLight instance should heal");
+        assert_eq!(n.healed, 3, "var roman + var italic + ExtraLight instance should heal");
+        assert_eq!(n.locked, 0);
 
         let var_after = fs::read(&var_path).unwrap();
         assert_eq!(
@@ -4757,7 +4888,84 @@ mod install_path_tests {
             "instance ExtraLight style must stay ExtraLight"
         );
 
-        assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito"), 0);
+        assert_eq!(heal_google_instance_names_in_dir(&dir, "Nunito").healed, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heal_stats_add_coalesces_totals_and_skip_vars_counts_statics_only() {
+        let mut a = HealStats {
+            healed: 2,
+            locked: 1,
+            write_failed: 0,
+        };
+        a.add(HealStats {
+            healed: 3,
+            locked: 4,
+            write_failed: 1,
+        });
+        assert_eq!(a.healed, 5);
+        assert_eq!(a.locked, 5);
+        assert_eq!(a.write_failed, 1);
+
+        let dir = temp_family_dir("heal-skip-vars");
+        let var_mashed = minimal_named_font("Nunito ExtraLight", "Regular");
+        fs::write(dir.join("nunito-variable-wght.ttf"), &var_mashed).unwrap();
+        let static_mashed = minimal_named_font("Nunito ExtraLight", "Regular");
+        fs::write(dir.join("nunito-200-normal.ttf"), &static_mashed).unwrap();
+
+        let statics_only = heal_google_names_in_dir(&dir, "Nunito", false);
+        assert_eq!(
+            statics_only.healed, 1,
+            "include_vars=false must heal static instance only (ensure already owns vars)"
+        );
+        // Var still mashed
+        let var_after = fs::read(dir.join("nunito-variable-wght.ttf")).unwrap();
+        assert_eq!(
+            crate::namepatch::read_name_id(&var_after, 1).as_deref(),
+            Some("Nunito ExtraLight")
+        );
+        let all = heal_google_names_in_dir(&dir, "Nunito", true);
+        assert_eq!(all.healed, 1, "second pass heals the remaining var");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Locked/in-use rewrite must increment locked (or write_failed), not look like
+    /// success with healed=0 and no error. Soft-fail keeps bytes intact.
+    #[test]
+    fn heal_locked_write_increments_locked_not_silent_success() {
+        let dir = temp_family_dir("heal-locked");
+        let mashed = minimal_named_font("Nunito ExtraLight", "Regular");
+        let path = dir.join("nunito-variable-wght.ttf");
+        fs::write(&path, &mashed).unwrap();
+
+        // Directory not writable → delete/replace fails with PermissionDenied,
+        // which `is_lock_err` maps to the same "files locked" path as Win sharing.
+        let mut perms = fs::metadata(&dir).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&dir, perms.clone()).unwrap();
+
+        let stats = heal_google_instance_names_in_dir(&dir, "Nunito");
+
+        perms.set_readonly(false);
+        fs::set_permissions(&dir, perms).unwrap();
+
+        assert_eq!(
+            stats.healed, 0,
+            "locked rewrite must not count as healed"
+        );
+        assert!(
+            stats.locked >= 1,
+            "expected locked>=1 (got locked={}, write_failed={}) — must not look like silent success",
+            stats.locked,
+            stats.write_failed
+        );
+        let after = fs::read(&path).unwrap();
+        assert_eq!(
+            crate::namepatch::read_name_id(&after, 1).as_deref(),
+            Some("Nunito ExtraLight"),
+            "soft-fail must leave mashed bytes untouched"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
