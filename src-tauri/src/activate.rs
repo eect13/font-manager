@@ -1686,6 +1686,171 @@ fn download_google_variable_ttfs(
     wrote
 }
 
+fn is_variable_face_filename(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("-variable-")
+}
+
+fn dir_has_intact_variable(dir: &Path) -> bool {
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    files.iter().any(|p| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| is_variable_face_filename(n) && ttf_intact(p))
+            .unwrap_or(false)
+    })
+}
+
+/// Merge var filenames into planned keys. Vars are listed first (Illustrator/AI
+/// tends to pick earlier faces for axes) but **statics stay** — planned is always
+/// statics + vars, never var-only.
+fn merge_variable_into_planned_keys(existing: &[String], var_files: &[String]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for v in var_files {
+        if !v.is_empty() && !keys.iter().any(|k| k == v) {
+            keys.push(v.clone());
+        }
+    }
+    for k in existing {
+        if !k.is_empty() && !keys.iter().any(|x| x == k) {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
+
+/// Collect intact Google static instance filenames already on disk (for adopting
+/// vars onto a legacy complete folder that lacks a usable `.google-planned`).
+fn collect_intact_google_instance_keys(dir: &Path) -> Vec<String> {
+    let slug = dir_slug_hint(dir);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    let mut out = Vec::new();
+    for p in files {
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) || filename_has_latin_subset(name, &slug) {
+            continue;
+        }
+        if parse_google_instance_face_name(&slug, name).is_some() && ttf_intact(&p) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// When variable TTFs land, fold them into `.google-planned` / expected / complete
+/// **alongside** existing static instance keys — never replace statics with var-only.
+fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
+    if var_files.is_empty() {
+        return;
+    }
+    let existing = read_google_planned_keys(root).unwrap_or_else(|| collect_intact_google_instance_keys(root));
+    let keys = merge_variable_into_planned_keys(&existing, var_files);
+    if keys.is_empty() {
+        return;
+    }
+    write_google_planned(root, &keys);
+    let intact = count_intact_planned_keys(root, &keys);
+    if intact >= keys.len() {
+        mark_family_complete(root, keys.len());
+    } else {
+        write_expected_faces(root, keys.len());
+        // Honest: planned grew to include vars that are not all intact yet.
+        clear_complete_marker(root);
+    }
+}
+
+fn http_download_client() -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(120))
+        .pool_max_idle_per_host(6)
+        .user_agent("FontManager/1.0")
+        .build()
+        .ok()
+}
+
+/// Always pull real `*-variable-*` TTFs for catalog-variable families — including
+/// when the folder is already `.complete` / statics-only. Does **not** bust statics;
+/// registers both. Returns how many var filenames were written or already intact.
+fn ensure_catalog_variable_faces(
+    app: &AppHandle,
+    client: &reqwest::blocking::Client,
+    family: &str,
+) -> usize {
+    if !google_catalog_is_variable(family) {
+        return 0;
+    }
+    let slug = slug_family(family);
+    if slug.is_empty() {
+        return 0;
+    }
+    let Ok(root) = family_dir(app, family) else {
+        return 0;
+    };
+    if !root.is_dir() {
+        let _ = fs::create_dir_all(&root);
+    }
+
+    // Fast path: planned already lists intact vars — adopt is a no-op; register only.
+    if let Some(keys) = read_google_planned_keys(&root) {
+        let planned_vars: Vec<String> = keys
+            .iter()
+            .filter(|k| is_variable_face_filename(k))
+            .cloned()
+            .collect();
+        if !planned_vars.is_empty()
+            && planned_vars.iter().all(|k| ttf_intact(&root.join(k)))
+        {
+            for name in &planned_vars {
+                let _ = register_family_path(family, &root.join(name));
+            }
+            return planned_vars.len();
+        }
+    } else if dir_has_intact_variable(&root) {
+        // Vars on disk but missing from planned (legacy complete) — fold in, no CDN.
+        let mut files = Vec::new();
+        walk_font_files(&root, &mut files);
+        let var_files: Vec<String> = files
+            .iter()
+            .filter_map(|p| {
+                let name = p.file_name()?.to_str()?;
+                if is_variable_face_filename(name) && ttf_intact(p) {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !var_files.is_empty() {
+            adopt_variable_files_into_plan(&root, &var_files);
+            for name in &var_files {
+                let _ = register_family_path(family, &root.join(name));
+            }
+            return var_files.len();
+        }
+    }
+
+    // Missing vars (complete statics-only Nunito, etc.) — fetch without busting statics.
+    let var_files = download_google_variable_ttfs(client, family, &slug, &root);
+    if var_files.is_empty() {
+        return 0;
+    }
+    adopt_variable_files_into_plan(&root, &var_files);
+    // Register vars first; statics stay and are registered by the normal pass.
+    // Windows AddFontResource lists every file; order helps apps that pick the
+    // first face with axes. Statics remain installed as backup — never var-only.
+    for name in &var_files {
+        let path = root.join(name);
+        if ttf_intact(&path) {
+            let _ = register_family_path(family, &path);
+        }
+    }
+    var_files.len()
+}
+
 /// Cap concurrent face streams so bulk Activate cannot buffer ~N×CJK in RAM.
 const FACE_STREAM_SLOTS: usize = 2;
 const MAX_IN_FLIGHT_BYTES: u64 = 96 * 1024 * 1024;
@@ -1970,7 +2135,7 @@ fn parse_google_instance_face_name(slug: &str, filename: &str) -> Option<(String
     if !(lower.ends_with(".ttf") || lower.ends_with(".otf")) {
         return None;
     }
-    if lower.contains("-variable-") || lower.contains("-latin-") || lower.contains("-latin.") {
+    if lower.contains("-variable-") || filename_has_latin_subset(filename, slug) {
         return None;
     }
     let stem = lower.rsplit_once('.').map(|(s, _)| s).unwrap_or(&lower);
@@ -2181,11 +2346,34 @@ fn install_compat_pack(client: &reqwest::blocking::Client, root: &Path, family: 
     }
 }
 
+/// Register intact faces. For catalog-variable families, register `*-variable-*`
+/// first so Illustrator/AI can pick axes, then static instances as backup.
+fn sort_faces_var_first(files: &mut [PathBuf]) {
+    files.sort_by(|a, b| {
+        let av = a
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(is_variable_face_filename)
+            .unwrap_or(false);
+        let bv = b
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(is_variable_face_filename)
+            .unwrap_or(false);
+        match (av, bv) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.cmp(b),
+        }
+    });
+}
+
 fn register_intact_family(app: &AppHandle, family: &str) -> usize {
     let mut n = 0usize;
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
+        sort_faces_var_first(&mut files);
         for path in files {
             if ttf_intact(&path) {
                 let _ = register_family_path(family, &path);
@@ -2201,6 +2389,7 @@ fn register_intact_new(app: &AppHandle, family: &str) -> usize {
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
+        sort_faces_var_first(&mut files);
         for path in files {
             if ttf_intact(&path) && register_family_path(family, &path) {
                 added += 1;
@@ -2303,8 +2492,15 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     if ready.is_empty() {
         return;
     }
+    // Complete folders still pull missing catalog variable TTFs (no bust) and
+    // heal mashed instance names — Activate used to name-heal only / skip vars.
+    let client = http_download_client();
     let mut n = 0usize;
     for family in ready {
+        if let Some(ref c) = client {
+            ensure_catalog_variable_faces(app, c, family);
+        }
+        heal_family_google_instance_names(app, family);
         n += match index {
             Some(idx) => register_from_index(app, idx, family),
             None => register_intact_family(app, family),
@@ -2385,10 +2581,28 @@ fn google_face_filename(slug: &str, weight: &str, style: &str) -> String {
     sanitize(&format!("{slug}-{weight}-{style}.ttf"))
 }
 
-/// True when a file name embeds a Fontsource `latin` subset token.
-fn filename_has_latin_subset(name: &str) -> bool {
+/// True when a file name embeds a Fontsource `latin` subset token **after** the
+/// family slug. Raw `contains("-latin-")` false-positives on slugs that embed
+/// the word (e.g. `m-plus-code-latin`, `anek-latin`).
+fn filename_has_latin_subset(name: &str, slug: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.contains("-latin-") || lower.contains("-latin.")
+    let slug = slug.trim().to_ascii_lowercase();
+    if slug.is_empty() {
+        return false;
+    }
+    let stem = lower
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(lower.as_str());
+    let Some(rest) = stem
+        .strip_prefix(slug.as_str())
+        .and_then(|s| s.strip_prefix('-'))
+    else {
+        return false;
+    };
+    // Subset segment after slug only: `{slug}-latin-…`, `{slug}-japanese-latin-…`,
+    // or edge `{slug}-latin-latin-…`. Never match "latin" inside the slug itself.
+    rest.split('-').any(|seg| seg == "latin")
 }
 
 /// Fontsource on-disk name. Never includes `latin` in the filename — even when the
@@ -2400,13 +2614,13 @@ fn fontsource_face_filename(slug: &str, subset: &str, weight: u16, style: &str) 
         || sub == "latin"
         || sub.starts_with("latin-")
         || sub.contains("latin")
-        || filename_has_latin_subset(&format!("{slug}-{sub}-{weight}-{style}.ttf"))
+        || filename_has_latin_subset(&format!("{slug}-{sub}-{weight}-{style}.ttf"), slug)
     {
         return google_face_filename(slug, &weight.to_string(), style);
     }
     let name = sanitize(&format!("{slug}-{subset}-{weight}-{style}.ttf"));
     debug_assert!(
-        !filename_has_latin_subset(&name),
+        !filename_has_latin_subset(&name, slug),
         "fontsource_face_filename must never emit latin-named files"
     );
     name
@@ -2414,6 +2628,7 @@ fn fontsource_face_filename(slug: &str, subset: &str, weight: u16, style: &str) 
 
 /// Strip any leftover `*-latin-*` files (legacy Fontsource packs).
 fn purge_latin_named_files(dir: &Path) {
+    let slug = dir_slug_hint(dir);
     let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
@@ -2425,7 +2640,7 @@ fn purge_latin_named_files(dir: &Path) {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if filename_has_latin_subset(name) {
+        if filename_has_latin_subset(name, &slug) {
             let _ = fs::remove_file(&path);
         }
     }
@@ -2445,8 +2660,8 @@ fn is_google_face_key(file_name: &str, slug: &str) -> bool {
     else {
         return false;
     };
-    // Explicit: never count *-latin-* (or latin- prefix after slug) toward Google planned.
-    if rest.contains("-latin-") || rest.starts_with("latin-") {
+    // Explicit: never count Fontsource latin subset packs toward Google planned.
+    if filename_has_latin_subset(file_name, slug) {
         return false;
     }
     let mut parts: Vec<&str> = rest.split('-').collect();
@@ -2500,13 +2715,15 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
     if planned_keys.is_empty() {
         return;
     }
+    let slug = dir_slug_hint(dir);
     let planned: HashSet<&str> = planned_keys
         .iter()
         .map(|s| s.as_str())
         .filter(|n| {
-            let lower = n.to_ascii_lowercase();
             // Belt: planned keys must never include Fontsource latin subset names.
-            !lower.contains("-latin-") && !lower.contains("-latin.")
+            // Slug-aware — do not drop real Google faces for families like
+            // m-plus-code-latin / anek-latin.
+            !filename_has_latin_subset(n, &slug)
         })
         .collect();
     let mut files = Vec::new();
@@ -2529,7 +2746,7 @@ fn purge_unplanned_font_files(dir: &Path, planned_keys: &[String]) {
             continue;
         }
         // Always strip Fontsource latin subset packs on Google re-download.
-        let is_latin = lower.contains("-latin-") || lower.contains("-latin.");
+        let is_latin = filename_has_latin_subset(name, &slug);
         if !is_latin && planned.contains(name) {
             continue;
         }
@@ -2629,6 +2846,7 @@ fn dir_is_complete(dir: &Path) -> bool {
 
 /// True when every installable file embeds a Fontsource `-latin-` subset token.
 fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
+    let slug = dir_slug_hint(dir);
     let mut files = Vec::new();
     walk_font_files(dir, &mut files);
     if files.is_empty() {
@@ -2637,7 +2855,7 @@ fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
     files.iter().all(|p| {
         p.file_name()
             .and_then(|s| s.to_str())
-            .map(|n| n.to_ascii_lowercase().contains("-latin-"))
+            .map(|n| filename_has_latin_subset(n, &slug))
             .unwrap_or(false)
     })
 }
@@ -2878,9 +3096,12 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     let bust = bulk().bust.load(Ordering::SeqCst);
     let existing = register_intact_family(app, family);
     if existing > 0 && !bust && family_is_ready(app, family) {
-        // Complete folders still need name heal for pre-namepatch installs.
+        // Complete folders still need missing catalog variable TTFs (no bust)
+        // and name heal for pre-namepatch installs. Statics stay; vars are added.
+        ensure_catalog_variable_faces(app, client, family);
         heal_family_google_instance_names(app, family);
-        return Ok(existing);
+        let total = register_intact_family(app, family).max(existing);
+        return Ok(total);
     }
     if bust {
         purge_family_files(app, family);
@@ -2915,15 +3136,12 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
     wrote = wrote.saturating_add(google_wrote);
     if google_expected > 0 {
         planned = google_expected;
-        let mut keys: Vec<String> = google_listed
+        let instance_keys: Vec<String> = google_listed
             .iter()
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
             .collect();
-        for v in &google_var_files {
-            if !keys.iter().any(|k| k == v) {
-                keys.push(v.clone());
-            }
-        }
+        // Vars first in planned (axes pick), statics retained as backup — never var-only.
+        let keys = merge_variable_into_planned_keys(&instance_keys, &google_var_files);
         write_google_planned(&root, &keys);
         // Only purge leftovers once we have Google bytes on disk — otherwise a
         // failed Google fetch would delete latin remnants and leave the folder empty.
@@ -2971,7 +3189,11 @@ fn download_family(app: &AppHandle, client: &reqwest::blocking::Client, family: 
                     .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()))
                     .filter(|n| n.contains(&slug))
                     .collect();
-                if !fs_names.is_empty() && fs_names.iter().all(|n| n.contains("-latin-")) {
+                if !fs_names.is_empty()
+                    && fs_names
+                        .iter()
+                        .all(|n| filename_has_latin_subset(n, &slug))
+                {
                     planned = 0;
                 }
             }
@@ -3118,7 +3340,8 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
-            // Activate of an already-complete family must still heal mashed names.
+            // Already-complete: still pull missing catalog vars (no bust) + heal names.
+            ensure_catalog_variable_faces(&app, &client, &family);
             heal_family_google_instance_names(&app, &family);
             Ok(1usize)
         } else {
@@ -3489,8 +3712,13 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     let app2 = app.clone();
     let ready2 = ready.clone();
     thread::spawn(move || {
+        let client = http_download_client();
         let mut added = 0usize;
         for family in &ready2 {
+            if let Some(ref c) = client {
+                ensure_catalog_variable_faces(&app2, c, family);
+            }
+            heal_family_google_instance_names(&app2, family);
             added += register_intact_new(&app2, family);
             forget_queued(family);
         }
@@ -3529,10 +3757,14 @@ pub fn plan_google_activation(app: AppHandle, families: Vec<String>) -> Result<A
 #[tauri::command]
 pub fn read_family_font(app: AppHandle, family: String, italic: Option<bool>) -> Result<String, String> {
     let want_italic = italic.unwrap_or(false);
+    // Prefer variable faces when present (axes), then static instances as backup.
+    let mut var_hit: Option<PathBuf> = None;
+    let mut static_hit: Option<PathBuf> = None;
     let mut roman = None;
     for dir in family_locations(&app, &family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
+        sort_faces_var_first(&mut files);
         for path in files {
             if !ttf_intact(&path) {
                 continue;
@@ -3542,19 +3774,24 @@ pub fn read_family_font(app: AppHandle, family: String, italic: Option<bool>) ->
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            let is_var = is_variable_face_filename(&name);
             let is_italic = name.contains("italic") || name.contains("oblique");
-            if want_italic && is_italic {
-                return Ok(path.to_string_lossy().into_owned());
-            }
-            if !want_italic && !is_italic {
-                return Ok(path.to_string_lossy().into_owned());
+            let style_ok = if want_italic { is_italic } else { !is_italic };
+            if style_ok {
+                if is_var && var_hit.is_none() {
+                    var_hit = Some(path.clone());
+                } else if !is_var && static_hit.is_none() {
+                    static_hit = Some(path.clone());
+                }
             }
             if roman.is_none() {
                 roman = Some(path);
             }
         }
     }
-    roman
+    var_hit
+        .or(static_hit)
+        .or(roman)
         .map(|p| p.to_string_lossy().into_owned())
         .ok_or_else(|| "no font file on disk".into())
 }
@@ -3591,10 +3828,14 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
 }
 
 /// Re-fetch families that have partial faces (no `.complete`).
+/// Complete catalog-variable folders missing `*-variable-*` get vars added in place
+/// (no full bust); incomplete families still go through Retry/bust.
 #[tauri::command]
 pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
     let mut targets = Vec::new();
     let mut healed = 0usize;
+    let mut var_ensured = 0usize;
+    let client = http_download_client();
     if families.is_empty() {
         for_family_dirs(&app, |dir| {
             verify_complete_marker(dir);
@@ -3603,11 +3844,15 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
                     targets.push(name.to_string());
                 }
             } else if dir_is_complete(dir) {
-                // Complete Google folders: name-heal mashed instance faces in place
-                // (Illustrator will not fix "Nunito ExtraLight" via Repair alone otherwise).
+                // Complete Google folders: name-heal + pull missing catalog vars (no bust).
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     if is_official_google_family(name) {
                         healed = healed.saturating_add(heal_google_instance_names_in_dir(dir, name));
+                        if let Some(ref c) = client {
+                            var_ensured = var_ensured.saturating_add(ensure_catalog_variable_faces(
+                                &app, c, name,
+                            ));
+                        }
                     }
                 }
             }
@@ -3618,14 +3863,19 @@ pub fn repair_incomplete_families(app: AppHandle, families: Vec<String>) -> Resu
                 targets.push(family);
             } else {
                 healed = healed.saturating_add(heal_family_google_instance_names(&app, &family));
+                if let Some(ref c) = client {
+                    var_ensured = var_ensured.saturating_add(ensure_catalog_variable_faces(
+                        &app, c, &family,
+                    ));
+                }
             }
         }
     }
     if targets.is_empty() {
-        return Ok(healed);
+        return Ok(healed.saturating_add(var_ensured));
     }
     let n = retry_google_downloads(app, targets)?;
-    Ok(n.saturating_add(healed))
+    Ok(n.saturating_add(healed).saturating_add(var_ensured))
 }
 
 #[tauri::command]
@@ -4056,7 +4306,9 @@ mod complete_marker_tests {
 
     #[test]
     fn purge_unplanned_strips_latin_keeps_google_keys() {
-        let dir = temp_family_dir("purge-latin");
+        let parent = temp_family_dir("purge-latin");
+        let dir = parent.join("Libre Baskerville");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         fs::write(dir.join("libre-baskerville-400-normal.ttf"), &fake).unwrap();
@@ -4067,14 +4319,16 @@ mod complete_marker_tests {
         assert!(dir.join("libre-baskerville-400-normal.ttf").is_file());
         assert!(!dir.join("libre-baskerville-latin-400-normal.ttf").is_file());
         assert!(!dir.join("libre-baskerville-latin-700-italic.ttf").is_file());
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn purge_unplanned_strips_all_latin_and_duplicate_unplanned() {
         // Google re-download must remove EVERY *-latin-* plus prior static duplicates
         // not in the new planned key list — not merely a subset of latin pads.
-        let dir = temp_family_dir("purge-dupes");
+        let parent = temp_family_dir("purge-dupes");
+        let dir = parent.join("Inter");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         let keep = "inter-100-900-normal.ttf";
@@ -4109,12 +4363,14 @@ mod complete_marker_tests {
                 "{gone} must be purged on Google re-download"
             );
         }
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn purge_latin_named_files_strips_legacy_packs() {
-        let dir = temp_family_dir("purge-latin-names");
+        let parent = temp_family_dir("purge-latin-names");
+        let dir = parent.join("Roboto");
+        fs::create_dir_all(&dir).unwrap();
         let fake = vec![0u8; 512];
         fs::write(dir.join("roboto-400-normal.ttf"), &fake).unwrap();
         fs::write(dir.join("roboto-latin-400-normal.ttf"), &fake).unwrap();
@@ -4123,7 +4379,50 @@ mod complete_marker_tests {
         assert!(dir.join("roboto-400-normal.ttf").is_file());
         assert!(!dir.join("roboto-latin-400-normal.ttf").is_file());
         assert!(!dir.join("roboto-latin-700-italic.ttf").is_file());
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn purge_latin_named_files_keeps_slug_embedded_latin() {
+        // P0b: family slug embeds "latin" — Google faces must not be purged.
+        let parent = temp_family_dir("purge-slug-latin");
+        let dir = parent.join("M PLUS Code Latin");
+        fs::create_dir_all(&dir).unwrap();
+        let fake = vec![0u8; 512];
+        fs::write(dir.join("m-plus-code-latin-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("m-plus-code-latin-700-italic.ttf"), &fake).unwrap();
+        // True Fontsource subset pad (double latin) must still go.
+        fs::write(dir.join("m-plus-code-latin-latin-400-normal.ttf"), &fake).unwrap();
+        purge_latin_named_files(&dir);
+        assert!(
+            dir.join("m-plus-code-latin-400-normal.ttf").is_file(),
+            "slug-embedded latin must NOT be treated as subset"
+        );
+        assert!(dir.join("m-plus-code-latin-700-italic.ttf").is_file());
+        assert!(
+            !dir.join("m-plus-code-latin-latin-400-normal.ttf").is_file(),
+            "real {{slug}}-latin-* subset pack must still purge"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn purge_unplanned_keeps_slug_embedded_latin_google_keys() {
+        let parent = temp_family_dir("purge-anek");
+        let dir = parent.join("Anek Latin");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let keep = "anek-latin-400-normal.ttf";
+        fs::write(dir.join(keep), &fake).unwrap();
+        fs::write(dir.join("anek-latin-latin-400-normal.ttf"), &fake).unwrap();
+        purge_unplanned_font_files(&dir, &[keep.into()]);
+        assert!(
+            dir.join(keep).is_file(),
+            "planned Google face for anek-latin must stay"
+        );
+        assert!(!dir.join("anek-latin-latin-400-normal.ttf").is_file());
+        let _ = fs::remove_dir_all(&parent);
     }
 }
 
@@ -4152,7 +4451,9 @@ mod install_path_tests {
 
     #[test]
     fn variable_planned_filenames_not_purged() {
-        let dir = temp_family_dir("purge-var");
+        let parent = temp_family_dir("purge-var");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         let var_roman = "nunito-variable-wght.ttf";
@@ -4172,12 +4473,14 @@ mod install_path_tests {
         assert!(dir.join(var_italic).is_file(), "variable italic must stay");
         assert!(dir.join(inst).is_file(), "instance must stay");
         assert!(!dir.join("nunito-latin-400-normal.ttf").is_file());
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn unplanned_variable_filenames_are_purged() {
-        let dir = temp_family_dir("purge-unplanned-var");
+        let parent = temp_family_dir("purge-unplanned-var");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         let inst = "nunito-400-normal.ttf";
@@ -4190,7 +4493,7 @@ mod install_path_tests {
             !dir.join(stale_var).is_file(),
             "unplanned *-variable-* must not linger forever"
         );
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
@@ -4209,6 +4512,20 @@ mod install_path_tests {
         );
         assert_eq!(
             parse_google_instance_face_name("nunito", "nunito-latin-400-normal.ttf"),
+            None
+        );
+        assert_eq!(
+            parse_google_instance_face_name(
+                "m-plus-code-latin",
+                "m-plus-code-latin-400-normal.ttf"
+            ),
+            Some(("400".into(), "normal".into()))
+        );
+        assert_eq!(
+            parse_google_instance_face_name(
+                "m-plus-code-latin",
+                "m-plus-code-latin-latin-400-normal.ttf"
+            ),
             None
         );
     }
@@ -4352,6 +4669,109 @@ mod install_path_tests {
     }
 
     #[test]
+    fn merge_variable_into_planned_keeps_statics_and_lists_vars_first() {
+        let statics = vec![
+            "nunito-200-normal.ttf".into(),
+            "nunito-400-normal.ttf".into(),
+        ];
+        let vars = vec![
+            "nunito-variable-wght.ttf".into(),
+            "nunito-variable-wght-italic.ttf".into(),
+        ];
+        let keys = merge_variable_into_planned_keys(&statics, &vars);
+        assert_eq!(
+            keys,
+            vec![
+                "nunito-variable-wght.ttf",
+                "nunito-variable-wght-italic.ttf",
+                "nunito-200-normal.ttf",
+                "nunito-400-normal.ttf",
+            ]
+        );
+        // Dedup: existing var already in statics list should not duplicate.
+        let mixed = vec![
+            "nunito-variable-wght.ttf".into(),
+            "nunito-400-normal.ttf".into(),
+        ];
+        let keys2 = merge_variable_into_planned_keys(&mixed, &vars);
+        assert_eq!(keys2.iter().filter(|k| k.contains("-variable-")).count(), 2);
+        assert!(keys2.iter().any(|k| k == "nunito-400-normal.ttf"));
+        assert!(
+            !keys2.iter().any(|k| k.contains("-variable-") && keys2.iter().filter(|x| *x == k).count() > 1),
+            "no duplicate var keys"
+        );
+    }
+
+    #[test]
+    fn adopt_variable_into_plan_on_statics_only_complete_folder() {
+        let parent = temp_family_dir("adopt-var");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let var_roman = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        fs::write(dir.join(var_roman), &fake).unwrap();
+        // Legacy complete: statics planned only (the bug — 16 static, 0 variable).
+        write_google_planned(&dir, &[inst.into()]);
+        mark_family_complete(&dir, 1);
+        assert!(dir_has_intact_variable(&dir));
+        adopt_variable_files_into_plan(&dir, &[var_roman.into()]);
+        let keys = read_google_planned_keys(&dir).expect("planned keys");
+        assert!(
+            keys.iter().any(|k| k == var_roman),
+            "planned must include variable after adopt: {keys:?}"
+        );
+        assert!(
+            keys.iter().any(|k| k == inst),
+            "planned must keep static instance: {keys:?}"
+        );
+        assert_eq!(keys[0], var_roman, "var listed first");
+        assert!(dir_is_complete(&dir), "complete when all planned intact");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn complete_folder_without_var_is_detected_as_missing_catalog_variable() {
+        let parent = temp_family_dir("missing-var-detect");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("nunito-400-normal.ttf"), &fake).unwrap();
+        assert!(google_catalog_is_variable("Nunito"));
+        assert!(!dir_has_intact_variable(&dir));
+        // After a var file appears, detector flips.
+        fs::write(dir.join("nunito-variable-wght.ttf"), &fake).unwrap();
+        assert!(dir_has_intact_variable(&dir));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn sort_faces_var_first_orders_variable_ahead_of_statics() {
+        let mut files = vec![
+            PathBuf::from("nunito-400-normal.ttf"),
+            PathBuf::from("nunito-variable-wght.ttf"),
+            PathBuf::from("nunito-200-normal.ttf"),
+            PathBuf::from("nunito-variable-wght-italic.ttf"),
+        ];
+        sort_faces_var_first(&mut files);
+        let names: Vec<_> = files
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|s| s.to_str()))
+            .collect();
+        assert!(
+            names[0].contains("-variable-") && names[1].contains("-variable-"),
+            "vars first: {names:?}"
+        );
+        assert!(
+            !names[2].contains("-variable-") && !names[3].contains("-variable-"),
+            "statics after: {names:?}"
+        );
+    }
+
+    #[test]
     fn variable_face_filename_is_sanitize_friendly() {
         assert_eq!(
             variable_face_filename("nunito", "wght", false),
@@ -4370,13 +4790,55 @@ mod install_path_tests {
 
     #[test]
     fn latin_filename_never_emitted_by_google_or_fontsource_helpers() {
-        assert!(!filename_has_latin_subset(&google_face_filename("nunito", "200", "normal")));
-        assert!(!filename_has_latin_subset(&fontsource_face_filename(
-            "nunito", "latin", 200, "normal"
-        )));
-        assert!(!filename_has_latin_subset(&variable_face_filename(
-            "nunito", "wght", false
-        )));
+        assert!(!filename_has_latin_subset(
+            &google_face_filename("nunito", "200", "normal"),
+            "nunito"
+        ));
+        assert!(!filename_has_latin_subset(
+            &fontsource_face_filename("nunito", "latin", 200, "normal"),
+            "nunito"
+        ));
+        assert!(!filename_has_latin_subset(
+            &variable_face_filename("nunito", "wght", false),
+            "nunito"
+        ));
+    }
+
+    #[test]
+    fn filename_has_latin_subset_slug_aware() {
+        // Family slug embeds "latin" — Google face is NOT a Fontsource subset pack.
+        assert!(
+            !filename_has_latin_subset(
+                "m-plus-code-latin-400-normal.ttf",
+                "m-plus-code-latin"
+            ),
+            "m-plus-code-latin-400-normal must NOT be latin-subset"
+        );
+        assert!(!filename_has_latin_subset(
+            "anek-latin-700-italic.ttf",
+            "anek-latin"
+        ));
+        // True Fontsource subset after a normal slug.
+        assert!(
+            filename_has_latin_subset("roboto-latin-400-normal.ttf", "roboto"),
+            "roboto-latin-400-normal must BE latin-subset"
+        );
+        // Edge: real subset token after a slug that itself ends in latin.
+        assert!(
+            filename_has_latin_subset(
+                "m-plus-code-latin-latin-400-normal.ttf",
+                "m-plus-code-latin"
+            ),
+            "m-plus-code-latin-latin-400-normal must BE latin-subset"
+        );
+        assert!(filename_has_latin_subset(
+            "roboto-latin-ext-400-normal.ttf",
+            "roboto"
+        ));
+        assert!(filename_has_latin_subset(
+            "noto-sans-jp-japanese-latin-400-normal.ttf",
+            "noto-sans-jp"
+        ));
     }
 
     #[test]
@@ -4390,15 +4852,16 @@ mod install_path_tests {
             "noto-sans-jp-400-normal.ttf"
         );
         assert!(
-            !filename_has_latin_subset(&fontsource_face_filename(
-                "roboto", "latin-ext", 700, "italic"
-            )),
+            !filename_has_latin_subset(
+                &fontsource_face_filename("roboto", "latin-ext", 700, "italic"),
+                "roboto"
+            ),
             "latin-ext must not put latin in the filename"
         );
         // Non-latin script subset may keep its token:
         let cjk = fontsource_face_filename("chiron-sung-hk", "chinese-hongkong", 400, "normal");
         assert_eq!(cjk, "chiron-sung-hk-chinese-hongkong-400-normal.ttf");
-        assert!(!filename_has_latin_subset(&cjk));
+        assert!(!filename_has_latin_subset(&cjk, "chiron-sung-hk"));
     }
 
     #[test]
