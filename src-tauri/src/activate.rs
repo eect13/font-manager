@@ -1045,11 +1045,10 @@ fn merge_unique_paths(primary: Vec<PathBuf>, extra: Vec<PathBuf>) -> Vec<PathBuf
 }
 
 /// Quit watchdog budget: large enumerable sessions need more than 45s.
-/// ~15ms/path (RemoveFontResourceExW + set_len probe), clamped to [45s, 300s].
-/// ~11k-path libraries need well above the old 3ms→45s floor.
-pub fn quit_unload_budget_for(path_count: usize) -> Duration {
-    let ms = (path_count as u64).saturating_mul(15).clamp(45_000, 300_000);
-    Duration::from_millis(ms)
+/// Watchdog only: event loop must stay free. Sidecars are saved at session_end
+/// start; leftover GDI maps are Removed on next boot.
+pub fn quit_unload_budget_for(_path_count: usize) -> Duration {
+    Duration::from_secs(4)
 }
 
 /// SCM service names to best-effort restart after Deactivate/Quit unload.
@@ -1443,22 +1442,17 @@ pub fn session_end(app: &AppHandle) {
         bulk().cancel.store(true, Ordering::SeqCst);
         bulk().running.store(false, Ordering::SeqCst);
         winfont::begin_unload();
-        winfont::wait_in_flight(Duration::from_millis(1500));
+        winfont::wait_in_flight(Duration::from_millis(250));
         // Persist before Remove so a hung quit watchdog still has a leftover
         // list for next boot. Do not walk Documents on quit.
         let mut extra = load_session_paths(app);
         extra = merge_unique_paths(extra, winfont::snapshot_loaded());
         save_session_paths(app, &extra);
         let attempted = extra.len();
-        // No WM_FONTCHANGE on quit — broadcast can re-lock family folders in
-        // Explorer. Drain-Remove + local GdiFlush, then time-bounded FontCache
-        // service restart so svchost/LOCAL SERVICE drops Documents handles.
         let stats = winfont::unload_paths(extra.clone(), false);
-        // Do not restart FontCache or retry write-lock probes on quit — those
-        // block the hidden process (zombie) while Cache holds gdi-maps. Next
-        // boot recover_stale_session Removes leftovers. Live Deactivate still flushes.
-        let still = filter_still_write_locked(&extra);
-        let plan = plan_session_end_cleanup(attempted.max(stats.attempted), &still);
+        // No write-lock probe of thousands of files — that stalled quit.
+        // Next boot recover_stale_session Removes leftovers.
+        let plan = plan_session_end_cleanup(attempted.max(stats.attempted), &[]);
         if let Some(msg) = &plan.fail_loud {
             eprintln!("{msg}");
         } else if stats.attempted > 0 && stats.removed_ok * 2 < stats.attempted {
@@ -6694,19 +6688,12 @@ mod session_sidecar_tests {
 
     #[test]
     fn quit_unload_budget_clamps() {
-        assert_eq!(quit_unload_budget_for(0), Duration::from_secs(45));
-        assert_eq!(quit_unload_budget_for(100), Duration::from_secs(45));
-        // ~11k library (Eric): 11_000 * 15ms = 165s — must exceed old 45s floor
-        let eleven_k = quit_unload_budget_for(11_000);
-        assert!(
-            eleven_k > Duration::from_secs(45),
-            "11k paths must get >45s (got {:?})",
-            eleven_k
-        );
-        assert_eq!(eleven_k, Duration::from_secs(165));
-        // 20_000 paths * 15ms = 300s (hits cap)
-        assert_eq!(quit_unload_budget_for(20_000), Duration::from_secs(300));
-        assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(300));
+        // Short watchdog so the process is gone and a second launch can start.
+        // Full Remove of ~11k paths is best-effort; leftovers recover on boot.
+        assert_eq!(quit_unload_budget_for(0), Duration::from_secs(4));
+        assert_eq!(quit_unload_budget_for(100), Duration::from_secs(4));
+        assert_eq!(quit_unload_budget_for(11_000), Duration::from_secs(4));
+        assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(4));
     }
 
     #[test]

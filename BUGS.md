@@ -1,5 +1,10 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.159
+- **Two processes after close:** `quit_gracefully` blocked the Tauri event loop on `recv_timeout(45–300s)`. Single-instance IPC never ran; a second launch hung. Quit now hides, unloads on a worker, and a 4s watchdog always `exit`s. Next boot still Removes leftovers.
+- **Fake italic:** `font-synthesis: style` slanted roman-only families. Italic toggle/slider still work on real italic faces (`ital`/`slnt`/catalog italic cut). Others stay upright.
+- **Delete between Favorite and Activate:** trash removed from the card cluster. Delete is in the inspector with a confirm.
+
 ## Fixed in tip / 1.0.158
 - **Zombie process after Quit:** window hid then the process stayed in Font Cache restart + write-lock retries. A second launch hit single-instance `show_main` on a dying window. Quit now only `Remove`s (no Cache restart, no lock-retry, no gdi-maps delete). If a second launch arrives while `QUITTING`, exit immediately so the next click can start; sidecars already saved.
 - **Open Sauce Sans 10/14:** jsDelivr `fontsource/fonts` 200s all 14, but 400 / 600-italic / 900-italic (and 400-italic) are **not SFNT** (`\x80\x01…`). Magic check correctly rejected them; npm/unpkg 404. Not “4 missing files in the npm package.” Fallback: `cdn.jsdelivr.net/gh/marcologous/Open-Sauce-Fonts` + raw GitHub. Do not trip the CDN circuit on 200 + wrong magic.
@@ -55,4 +60,4 @@
 
 ## Notes
 
-- Tip is 1.0.158 (unreleased pack — ask before NSIS).
+- Tip is 1.0.159 (unreleased pack — ask before NSIS).

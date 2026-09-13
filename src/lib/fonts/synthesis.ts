@@ -1,5 +1,4 @@
 import type { FontRecord } from "./types";
-import { realItalicAxes } from "./axes";
 
 export type SynthesisToken = "weight" | "style" | "small-caps" | "position";
 
@@ -13,8 +12,8 @@ export function synthesisForFont(
   opts: { italicOn?: boolean; weight?: number; smcp?: boolean } = {},
 ): string {
   const tokens: SynthesisToken[] = [];
-  const { ital, slnt } = realItalicAxes(font);
-  if (opts.italicOn && !ital && !slnt && !font.variable) tokens.push("style");
+  // Never synthesize italic. Preview uses a real italic face or stays roman.
+  void opts.italicOn;
   if (font.variable) {
     if (opts.smcp && !(font.otFeatures ?? []).includes("smcp")) tokens.push("small-caps");
     return fontSynthesisValue(tokens);

@@ -260,11 +260,10 @@ export function isItalicOnlyFace(
   return /italic|oblique/i.test(`${font.fileName ?? ""} ${font.fullName ?? ""}`);
 }
 
-/** Library-card italic: real ital/slnt when the file has them. Otherwise
- *  `font-style: italic` so the header I actually toggles. Catalog VF often
- *  has no fvar in the snapshot — synthesis is the only immediate preview. */
+/** Library-card italic: real ital/slnt or a real italic cut. Never synthesize a slant
+ *  on roman-only families (Impact, etc.). Header I still toggles families that have italic. */
 export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" | "axes" | "weights">, on: boolean) {
-  if (!on) {
+  if (!on || !hasRealItalic(font)) {
     return {
       fontStyle: "normal" as const,
       fontVariationSettings: undefined as string | undefined,
@@ -296,6 +295,6 @@ export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" 
     fontVariationSettings: font.variable
       ? variationCss(defaultAxisValues(axesForFont(font)), axesForFont(font))
       : undefined,
-    fontSynthesis: "style" as const,
+    fontSynthesis: "none" as const,
   };
 }

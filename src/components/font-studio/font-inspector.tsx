@@ -14,7 +14,7 @@ import { findFont, folderTree, collectionIsWatched, tagsFor, useFontStore } from
 import { useLiveAxes } from "@/lib/fonts/live-axes";
 import { fontLicense } from "@/lib/fonts/license";
 import { CATEGORY_LABEL, LICENSE_HINT, LICENSE_LABEL, LICENSE_OPTIONS } from "@/lib/fonts/types";
-import { axesForFont, defaultWeightForFont, instancesForFont, isItalicOnlyFace, previewAxisValues, realItalicAxes, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultWeightForFont, hasRealItalic, instancesForFont, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, realItalicAxes, variationStyle } from "@/lib/fonts/axes";
 import { AxisSliders } from "./axis-sliders";
 import { HelpTip } from "./help-tip";
 import { LicenseBadge } from "./license-badge";
@@ -63,7 +63,7 @@ export function FontInspector() {
   useEffect(() => {
     if (!font) return;
     void loadFont(font, "full");
-    setItalicOn(isItalicOnlyFace(font) || Boolean(preview.italic));
+    setItalicOn(isItalicOnlyFace(font) || (hasRealItalic(font) && Boolean(preview.italic)));
     setFeatures({});
     setTagDraft("");
     setParsedTags(font.otFeatures);
@@ -120,6 +120,8 @@ export function FontInspector() {
   const liveAxes = previewAxisValues(font, storedAxes, cardWeight, italicOn);
   const weight = liveAxes.wght ?? cardWeight;
   const { ital: italAxis, slnt: slntAxis } = realItalicAxes(font);
+  const italicCss = italicPreviewStyle(font, italicOn);
+  const canItalic = hasRealItalic(font) && !isItalicOnlyFace(font);
   const axisStyle = variationStyle(
     {
       ...liveAxes,
@@ -158,8 +160,9 @@ export function FontInspector() {
             <p
               className={cn(
                 "fm-spec overflow-hidden rounded-lg bg-paper px-4 py-5 text-ink",
-                italicOn ? "fm-spec-italic" : "fm-spec-roman",
+                italicOn && hasRealItalic(font) ? "fm-spec-italic" : "fm-spec-roman",
                 font.variable ? "fm-spec-variable" : "fm-spec-static",
+                italicOn && hasRealItalic(font) ? "fm-spec-real" : null,
                 preview.align === "center" && "text-center",
                 preview.align === "right" && "text-right",
               )}
@@ -171,15 +174,12 @@ export function FontInspector() {
                 lineHeight: 1.2,
                 ...featureCss,
                 fontWeight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
-                fontStyle:
-                  italicOn
-                    ? axisStyle.fontStyle && axisStyle.fontStyle !== "normal"
-                      ? axisStyle.fontStyle
-                      : "italic"
-                    : "normal",
+                fontStyle: italicCss.fontStyle ?? "normal",
                 fontStretch: font.variable ? axisStyle.fontStretch : undefined,
-                fontVariationSettings: font.variable ? axisStyle.fontVariationSettings : undefined,
-                fontSynthesis: synthesisForFont(font, {
+                fontVariationSettings: font.variable
+                  ? (italicCss.fontVariationSettings ?? axisStyle.fontVariationSettings)
+                  : italicCss.fontVariationSettings,
+                fontSynthesis: italicCss.fontSynthesis ?? synthesisForFont(font, {
                   italicOn,
                   weight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
                   smcp: Boolean(features.smcp),
@@ -247,6 +247,7 @@ export function FontInspector() {
                     size="sm"
                     variant="destructive"
                     onClick={() => {
+                      if (!window.confirm(`Delete ${font.family} from the library and Documents?`)) return;
                       void removeLocalFont(font.id);
                       setInspectorOpen(false);
                     }}
@@ -268,6 +269,7 @@ export function FontInspector() {
                     size="sm"
                     variant="ghost"
                     onClick={() => {
+                      if (!window.confirm(`Delete ${font.family} files from Documents? The catalog entry stays.`)) return;
                       void deleteFontFiles(font).then(() => {
                         if (isOn) toggleActivated(font.id);
                       });
@@ -329,9 +331,10 @@ export function FontInspector() {
                 Italic
                 <Switch
                   checked={italicOn}
-                  disabled={isItalicOnlyFace(font)}
+                  disabled={!canItalic}
+                  title={canItalic ? "Toggle italic" : isItalicOnlyFace(font) ? "Italic file" : "No italic face"}
                   onCheckedChange={(on) => {
-                    if (isItalicOnlyFace(font)) return;
+                    if (!canItalic) return;
                     setItalicOn(on);
                     if (italAxis) setPreviewAxis(font.id, "ital", on ? 1 : 0);
                     if (slntAxis) {

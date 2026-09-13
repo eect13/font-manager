@@ -1,10 +1,9 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type RefObject } from "react";
-import { GripVertical, Heart, Italic, Power, Trash2 } from "lucide-react";
+import { GripVertical, Heart, Italic, Power } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
-import { deleteFontFiles } from "@/lib/fonts/os-activate";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
@@ -126,7 +125,6 @@ export const FontCard = memo(function FontCard({
   const hasCollections = useFontStore((s) => s.collections.length > 0);
   const toggleActivated = useFontStore((s) => s.toggleActivated);
   const toggleFavorite = useFontStore((s) => s.toggleFavorite);
-  const removeLocalFont = useFontStore((s) => s.removeLocalFont);
   const selectFont = useFontStore((s) => s.selectFont);
   const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
   const storedAxes = useLiveAxes(font.id);
@@ -163,8 +161,12 @@ export const FontCard = memo(function FontCard({
       setItalicOn(true);
       return;
     }
+    if (!hasRealItalic(font)) {
+      setItalicOn(false);
+      return;
+    }
     setItalicOn(Boolean(preview.italic));
-  }, [preview.italic, font.id, font.italic, font.variable, font.source, font.fileName, font.fullName]);
+  }, [preview.italic, font.id, font.italic, font.variable, font.source, font.fileName, font.fullName, font.axes]);
 
   useEffect(() => {
     if (!italicOn) return;
@@ -260,7 +262,7 @@ export const FontCard = memo(function FontCard({
     >
       <Italic className="size-3" />
     </button>
-  ) : (
+  ) : hasRealItalic(font) ? (
     <button
       type="button"
       title={italicOn ? "Preview roman" : "Preview italic"}
@@ -288,6 +290,16 @@ export const FontCard = memo(function FontCard({
     >
       <Italic className="size-3" />
     </button>
+  ) : (
+    <button
+      type="button"
+      title="No italic face"
+      aria-label="No italic face"
+      disabled
+      className="relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded border border-current/15 opacity-35"
+    >
+      <Italic className="size-3" />
+    </button>
   );
 
   const specimen = (
@@ -300,9 +312,7 @@ export const FontCard = memo(function FontCard({
         "fm-spec fm-spec-fit w-full transition-opacity duration-200",
         italicOn ? "fm-spec-italic" : "fm-spec-roman",
         font.variable ? "fm-spec-variable" : "fm-spec-static",
-        italicOn && hasRealItalic(font) && Boolean(font.axes?.some((a) => a.tag === "ital" || a.tag === "slnt"))
-          ? "fm-spec-real"
-          : null,
+        italicOn && hasRealItalic(font) ? "fm-spec-real" : null,
         align,
         ready ? "opacity-100" : "opacity-0",
       )}
@@ -403,26 +413,6 @@ export const FontCard = memo(function FontCard({
         >
           <Heart className={cn("size-3.5", favorite && "fill-current")} />
         </button>
-        {font.source !== "system" ? (
-          <button
-            type="button"
-            title={
-              font.source === "local"
-                ? "Delete — remove from library and Documents"
-                : "Delete files — remove from Documents (catalog stays)"
-            }
-            aria-label="Delete"
-            onPointerDown={isolate}
-            onClick={(e) => {
-              isolate(e);
-              if (font.source === "local") void removeLocalFont(font.id);
-              else void deleteFontFiles(font);
-            }}
-            className="flex size-8 items-center justify-center rounded-full bg-background/80 text-destructive opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        ) : null}
         {font.source === "system" ? (
           <span
             title="System font — already installed. Read-only."

@@ -88,7 +88,7 @@ export function PreviewToolbar() {
             className="size-7"
             aria-pressed={Boolean(preview.italic)}
             aria-label="Preview italic"
-            title="Preview italic"
+            title="Italic — only families with a real italic face"
             onClick={() => setPreview({ italic: !preview.italic })}
           >
             <Italic />

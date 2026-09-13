@@ -173,7 +173,7 @@ html[data-theme="light"] {
 }
 .fm-spec.fm-spec-italic {
   font-style: italic !important;
-  font-synthesis: style !important;
+  font-synthesis: none !important;
 }
 .fm-spec.fm-spec-italic.fm-spec-real {
   font-synthesis: none !important;
