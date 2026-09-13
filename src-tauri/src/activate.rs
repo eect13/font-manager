@@ -970,6 +970,80 @@ fn delete_font_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// User Delete: Recycle Bin (undo), not a permanent wipe. Temp `.part` / GDI maps still use `delete_font_file`.
+fn recycle_user_font_dir(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        return recycle_bin_windows(dir);
+    }
+    #[cfg(not(windows))]
+    {
+        fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn recycle_bin_windows(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct ShFileOp {
+        hwnd: isize,
+        w_func: u32,
+        p_from: *const u16,
+        p_to: *const u16,
+        f_flags: u16,
+        f_any_operations_aborted: i32,
+        p_name_mappings: *mut core::ffi::c_void,
+        lpsz_progress_title: *const u16,
+    }
+
+    const FO_DELETE: u32 = 3;
+    const FOF_SILENT: u16 = 0x0004;
+    const FOF_NOCONFIRMATION: u16 = 0x0010;
+    const FOF_ALLOWUNDO: u16 = 0x0040;
+    const FOF_NOERRORUI: u16 = 0x0400;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHFileOperationW(lp_file_op: *mut ShFileOp) -> i32;
+    }
+
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if from.last() == Some(&0) {
+        from.pop();
+    }
+    from.push(0);
+    from.push(0);
+    let mut op = ShFileOp {
+        hwnd: 0,
+        w_func: FO_DELETE,
+        p_from: from.as_ptr(),
+        p_to: std::ptr::null(),
+        f_flags: FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
+        f_any_operations_aborted: 0,
+        p_name_mappings: std::ptr::null_mut(),
+        lpsz_progress_title: std::ptr::null(),
+    };
+    let rc = unsafe { SHFileOperationW(&mut op) };
+    if rc == 0 && op.f_any_operations_aborted == 0 {
+        return Ok(());
+    }
+    if path.exists() {
+        if rc == 32 || rc == 5 || rc == 0x78 {
+            return Err("files locked — close Word or Adobe, then Retry".into());
+        }
+        return Err(format!(
+            "could not move to Recycle Bin (code {rc}). Close Word or Adobe, then Retry."
+        ));
+    }
+    Ok(())
+}
+
 fn notify_fonts_changed() {
     #[cfg(windows)]
     winfont::notify();
@@ -4006,13 +4080,8 @@ fn purge_family_files(app: &AppHandle, family: &str) {
 }
 
 fn purge_family_files_result(app: &AppHandle, family: &str) -> Result<(), String> {
-    let mut locked = false;
     let mut last_err = String::new();
     for dir in family_locations(app, family) {
-        let _ = fs::remove_file(family_complete_marker(&dir));
-        let _ = fs::remove_file(family_expected_marker(&dir));
-        clear_google_planned(&dir);
-        let _ = fs::remove_file(dir.join(".fontsource-version"));
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
         for path in &files {
@@ -4020,32 +4089,15 @@ fn purge_family_files_result(app: &AppHandle, family: &str) -> Result<(), String
             intact_forget(path);
         }
         gdi_flush_local();
-        for path in files {
-            if let Err(err) = delete_font_file(&path) {
-                if err.contains("locked") {
-                    locked = true;
-                }
-                last_err = err;
-            }
-        }
-        // File-by-file, not remove_dir_all: one locked face must not abort the rest.
-        if let Err(err) = fs::remove_dir(&dir) {
-            if dir.exists() {
-                if is_lock_err(&err) {
-                    locked = true;
-                    last_err = "files locked — close Word or Adobe, then Retry".into();
-                }
-            }
+        if let Err(err) = recycle_user_font_dir(&dir) {
+            last_err = err;
         }
     }
-    if locked {
-        return Err(if last_err.is_empty() {
-            "files locked — close Word or Adobe, then Retry".into()
-        } else {
-            last_err
-        });
+    if last_err.is_empty() {
+        Ok(())
+    } else {
+        Err(last_err)
     }
-    Ok(())
 }
 
 fn forget_queued(family: &str) {
@@ -6743,6 +6795,17 @@ mod session_sidecar_tests {
         let msg = font_cache_held_message(7);
         assert!(msg.contains("Font Cache still holding 7 files"));
         assert!(msg.contains("retry as admin or reboot"));
+    }
+
+    #[test]
+    fn recycle_user_font_dir_removes_family_folder() {
+        let root = temp_root("recycle");
+        let family = root.join("Open Sauce Sans");
+        fs::create_dir_all(&family).unwrap();
+        fs::write(family.join("face.ttf"), b"\x00\x01\x00\x00").unwrap();
+        recycle_user_font_dir(&family).expect("recycle/remove family dir");
+        assert!(!family.exists(), "family folder must be gone (Recycle Bin on Windows)");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

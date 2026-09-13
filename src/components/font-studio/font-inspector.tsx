@@ -242,12 +242,12 @@ export function FontInspector() {
                 </Button>
               </HelpTip>
               {font.source === "local" && (
-                <HelpTip label="Delete: remove the file from this library and from Documents. Deactivate only unloads it from other apps.">
+                <HelpTip label="Move the file to the Recycle Bin (library + Documents). Deactivate only unloads it from other apps.">
                   <Button
                     size="sm"
                     variant="destructive"
                     onClick={() => {
-                      if (!window.confirm(`Delete ${font.family} from the library and Documents?`)) return;
+                      if (!window.confirm(`Move ${font.family} to the Recycle Bin? You can restore it from there.`)) return;
                       void removeLocalFont(font.id);
                       setInspectorOpen(false);
                     }}
@@ -261,15 +261,15 @@ export function FontInspector() {
                 <HelpTip
                   label={
                     font.catalog === "other"
-                      ? "Delete downloaded files from Documents. The family stays in Fontsource. Deactivate only unloads them from other apps."
-                      : "Delete downloaded files from Documents. The family stays in Google Fonts. Deactivate only unloads them from other apps."
+                      ? "Move downloaded files to the Recycle Bin. The family stays in Fontsource. Deactivate only unloads them from other apps."
+                      : "Move downloaded files to the Recycle Bin. The family stays in Google Fonts. Deactivate only unloads them from other apps."
                   }
                 >
                   <Button
                     size="sm"
                     variant="ghost"
                     onClick={() => {
-                      if (!window.confirm(`Delete ${font.family} files from Documents? The catalog entry stays.`)) return;
+                      if (!window.confirm(`Move ${font.family} files to the Recycle Bin? The catalog entry stays.`)) return;
                       void deleteFontFiles(font).then(() => {
                         if (isOn) toggleActivated(font.id);
                       });

@@ -1186,8 +1186,8 @@ export async function deleteFontFiles(font: FontRecord): Promise<boolean> {
       const next = s.diskFamilies.filter((n) => n.toLowerCase() !== font.family.toLowerCase());
       s.setDiskFamilies(next);
     });
-    toast.success(`Deleted ${font.family}`, {
-      description: "Removed from Documents → Font Manager. Catalog entry stays.",
+    toast.success(`Moved ${font.family} to the Recycle Bin`, {
+      description: "Restore from Recycle Bin if you need the files back. Catalog entry stays.",
     });
     return true;
   } catch (err) {

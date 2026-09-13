@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.160
+- **Delete was permanent:** inspector Delete called `DeleteFile` / `remove_dir`. It now `SHFileOperationW(FO_DELETE | FOF_ALLOWUNDO)` so the family folder goes to Recycle Bin after GDI unload.
+
 ## Fixed in tip / 1.0.159
 - **Two processes after close:** `quit_gracefully` blocked the Tauri event loop on `recv_timeout(45–300s)`. Single-instance IPC never ran; a second launch hung. Quit now hides, unloads on a worker, and a 4s watchdog always `exit`s. Next boot still Removes leftovers.
 - **Fake italic:** `font-synthesis: style` slanted roman-only families. Italic toggle/slider still work on real italic faces (`ital`/`slnt`/catalog italic cut). Others stay upright.
@@ -60,4 +63,4 @@
 
 ## Notes
 
-- Tip is 1.0.159 (unreleased pack — ask before NSIS).
+- Tip is 1.0.160 (unreleased pack — ask before NSIS).
