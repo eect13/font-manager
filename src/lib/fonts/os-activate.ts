@@ -1165,6 +1165,16 @@ export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   void pumpRemove(batchId);
 }
 
+function invokeError(err: unknown): string {
+  if (typeof err === "string" && err.trim()) return err;
+  if (err instanceof Error && err.message.trim()) return err.message;
+  if (err && typeof err === "object" && "message" in err) {
+    const m = String((err as { message: unknown }).message ?? "").trim();
+    if (m) return m;
+  }
+  return "delete failed";
+}
+
 /** Delete family folder from Documents after unload. Surfaces locks — no silent success. */
 export async function deleteFontFiles(font: FontRecord): Promise<boolean> {
   if (font.source === "system") {
@@ -1180,20 +1190,23 @@ export async function deleteFontFiles(font: FontRecord): Promise<boolean> {
   try {
     await tauriInvoke("uninstall_font_family", { family: font.family });
     installedCache.delete(font.family.toLowerCase());
-    void import("./store").then(({ useFontStore }) => {
-      const s = useFontStore.getState();
-      s.setActivatedMany([font.id], false);
-      const next = s.diskFamilies.filter((n) => n.toLowerCase() !== font.family.toLowerCase());
-      s.setDiskFamilies(next);
-    });
+    const { useFontStore } = await import("./store");
+    const s = useFontStore.getState();
+    s.setActivatedMany([font.id], false);
+    const next = s.diskFamilies.filter((n) => n.toLowerCase() !== font.family.toLowerCase());
+    s.setDiskFamilies(next);
+    const local = font.source === "local";
     toast.success(`Moved ${font.family} to the Recycle Bin`, {
-      description: "Restore from Recycle Bin if you need the files back. Catalog entry stays.",
+      id: `recycle-${font.id}`,
+      description: local
+        ? "Removed from the library. Restore from Recycle Bin if you need it back."
+        : "Restore from Recycle Bin if you need the files back. Catalog entry stays.",
     });
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err ?? "delete failed");
-    toast.error(`Could not delete ${font.family}`, {
-      description: msg,
+    toast.error(`Could not move ${font.family} to the Recycle Bin`, {
+      id: `recycle-${font.id}`,
+      description: invokeError(err),
       duration: 20_000,
       action: { label: "Open folder", onClick: () => void openActivatedFolder() },
     });

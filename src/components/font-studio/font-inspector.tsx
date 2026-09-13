@@ -270,9 +270,7 @@ export function FontInspector() {
                     variant="ghost"
                     onClick={() => {
                       if (!window.confirm(`Move ${font.family} files to the Recycle Bin? The catalog entry stays.`)) return;
-                      void deleteFontFiles(font).then(() => {
-                        if (isOn) toggleActivated(font.id);
-                      });
+                      void deleteFontFiles(font);
                     }}
                   >
                     <Trash2 />

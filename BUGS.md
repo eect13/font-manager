@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.161
+- **Delete toast lied / files came back:** inspector ran `deleteFontFiles` then `toggleActivated` if the face was on. Recycle succeeded, then Activate queued a re-download. Toast now only fires after recycle; no second Activate.
+
 ## Fixed in tip / 1.0.160
 - **Delete was permanent:** inspector Delete called `DeleteFile` / `remove_dir`. It now `SHFileOperationW(FO_DELETE | FOF_ALLOWUNDO)` so the family folder goes to Recycle Bin after GDI unload.
 
@@ -63,4 +66,4 @@
 
 ## Notes
 
-- Tip is 1.0.160 (unreleased pack — ask before NSIS).
+- Tip is 1.0.161 (unreleased pack — ask before NSIS).
