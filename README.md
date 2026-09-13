@@ -1,10 +1,10 @@
-# Font Manager **1.0.155**
+# Font Manager **1.0.156**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
-**100% temporary session activation.** Zero registry bloat. Fonts unload on close. Files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`.
+**100% temporary session activation.** Fonts unload on Quit. Library files live in `Documents / Font Manager`; Activate only stages into per-user LocalAppData Fonts (never `C:\Windows\Fonts` / HKLM). HKCU Fonts values we add are removed on Deactivate/Quit.
 
-**1.0.155 unlock.** After Deactivate/Quit, `RemoveFontResourceExW` drains refcounts (loop until 0), then best-effort **Windows Font Cache** service restart so Documents TTFs stop sticking under `svchost`/LOCAL SERVICE. Soft-fail AccessDenied may still need admin once; unlock is proven only after WRITE_OK on a real Windows box. Startup registers ready session families in **parallel** (bounded workers; GDI Add/Remove serialized process-wide); Activate stays Adobe-visible enumerable (`FR_ENUMERABLE`).
+**1.0.156 per-user Activate.** Activate stages faces into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\` (hardlink else copy), registers `HKCU\...\Fonts`, and `AddFontResourceExW`s the **LocalAppData** path only — never Documents — so `Documents\Font Manager` stays movable/deletable (FontBase unlock). Deactivate/Quit removes HKCU values, deletes staged files, and Removes the per-user paths. No `C:\Windows\Fonts` / HKLM. Migration: old Documents session-paths are unloaded once and never re-Added.
 
 ![Library](screenshots/library.png)
 

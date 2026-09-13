@@ -291,13 +291,176 @@ mod winfont {
             .unwrap_or_default()
     }
 
+    /// System `C:\Windows\Fonts` only — per-user LocalAppData Fonts must stay manageable.
     pub(crate) fn is_windows_fonts_path(path: &Path) -> bool {
-        let lower = path.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
-        lower.contains("\\windows\\fonts")
+        crate::peruser::is_system_windows_fonts_path(path)
     }
 
-    pub fn register(path: &Path) -> bool {
+    pub(crate) fn is_documents_library_path(path: &Path) -> bool {
+        crate::peruser::is_documents_library_path(path)
+    }
+
+    // --- Per-user FontBase-style staging ------------------------------------
+    // Documents originals are never AddFontResourceExW'd. We hardlink/copy into
+    // %LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\, write HKCU Fonts,
+    // then Add the LocalAppData path so Adobe sees fonts while Documents stays
+    // movable/deletable.
+
+    #[derive(Clone)]
+    struct FaceActivation {
+        source: PathBuf,
+        per_user: PathBuf,
+        registry_name: String,
+        family: String,
+    }
+
+    fn activations() -> &'static Mutex<HashMap<PathBuf, FaceActivation>> {
+        // Keyed by per_user path (canonical GDI path).
+        static M: OnceLock<Mutex<HashMap<PathBuf, FaceActivation>>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn source_index() -> &'static Mutex<HashMap<PathBuf, PathBuf>> {
+        // source → per_user
+        static M: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    const HKCU_FONTS: &str = "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts";
+    const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as isize;
+    const KEY_SET_VALUE: u32 = 0x0002;
+    const KEY_QUERY_VALUE: u32 = 0x0001;
+    const REG_SZ: u32 = 1;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegOpenKeyExW(
+            hKey: isize,
+            lpSubKey: *const u16,
+            ulOptions: u32,
+            samDesired: u32,
+            phkResult: *mut isize,
+        ) -> i32;
+        fn RegSetValueExW(
+            hKey: isize,
+            lpValueName: *const u16,
+            Reserved: u32,
+            dwType: u32,
+            lpData: *const u8,
+            cbData: u32,
+        ) -> i32;
+        fn RegDeleteValueW(hKey: isize, lpValueName: *const u16) -> i32;
+        fn RegCloseKey(hKey: isize) -> i32;
+        fn RegCreateKeyExW(
+            hKey: isize,
+            lpSubKey: *const u16,
+            Reserved: u32,
+            lpClass: *const u16,
+            dwOptions: u32,
+            samDesired: u32,
+            lpSecurityAttributes: *mut core::ffi::c_void,
+            phkResult: *mut isize,
+            lpdwDisposition: *mut u32,
+        ) -> i32;
+    }
+
+    fn per_user_root() -> Option<PathBuf> {
+        crate::peruser::per_user_fonts_root_from_localappdata(
+            std::env::var("LOCALAPPDATA").ok().as_deref(),
+        )
+    }
+
+    fn hkcu_set_font(name: &str, path: &Path) -> bool {
+        let sub = wide_z(HKCU_FONTS);
+        let mut key: isize = 0;
+        let mut disp: u32 = 0;
+        let create = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                sub.as_ptr(),
+                0,
+                std::ptr::null(),
+                0,
+                KEY_SET_VALUE | KEY_QUERY_VALUE,
+                std::ptr::null_mut(),
+                &mut key,
+                &mut disp,
+            )
+        };
+        if create != 0 || key == 0 {
+            return false;
+        }
+        let name_w = wide_z(name);
+        let path_s = path.to_string_lossy();
+        let mut path_w: Vec<u16> = path_s.encode_utf16().chain(std::iter::once(0)).collect();
+        let bytes = (path_w.len() * 2) as u32;
+        let ok = unsafe {
+            RegSetValueExW(
+                key,
+                name_w.as_ptr(),
+                0,
+                REG_SZ,
+                path_w.as_mut_ptr() as *const u8,
+                bytes,
+            )
+        };
+        unsafe {
+            RegCloseKey(key);
+        }
+        ok == 0
+    }
+
+    fn hkcu_delete_font(name: &str) {
+        let sub = wide_z(HKCU_FONTS);
+        let mut key: isize = 0;
+        let open = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                sub.as_ptr(),
+                0,
+                KEY_SET_VALUE,
+                &mut key,
+            )
+        };
+        if open != 0 || key == 0 {
+            return;
+        }
+        let name_w = wide_z(name);
+        unsafe {
+            RegDeleteValueW(key, name_w.as_ptr());
+            RegCloseKey(key);
+        }
+    }
+
+    fn stage_to_per_user(family: &str, source: &Path) -> Option<PathBuf> {
+        if is_windows_fonts_path(source) {
+            return None;
+        }
+        let root = per_user_root()?;
+        let _ = std::fs::create_dir_all(&root);
+        let file_name = source
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("face.ttf");
+        let dest_name = crate::peruser::per_user_file_name(family, file_name);
+        let dest = root.join(dest_name);
+        if dest.exists() {
+            return Some(dest);
+        }
+        match std::fs::hard_link(source, &dest) {
+            Ok(()) => Some(dest),
+            Err(_) => match std::fs::copy(source, &dest) {
+                Ok(_) => Some(dest),
+                Err(_) => None,
+            },
+        }
+    }
+
+    fn add_gdi_path(path: &Path) -> bool {
         if is_windows_fonts_path(path) {
+            return false;
+        }
+        if crate::peruser::must_not_register_as_gdi_path(path) {
             return false;
         }
         if unloading().load(Ordering::SeqCst) {
@@ -319,9 +482,6 @@ mod winfont {
         }
         in_gdi().fetch_add(1, Ordering::SeqCst);
         let w = wide(path);
-        // Add only. Crash leftovers are Remove'd in session_begin from
-        // .session-paths.txt. Remove-then-Add here doubled GDI on every boot.
-        // Hold gdi_api across Add so parallel family workers never overlap GDI.
         let n = {
             let _gdi = gdi_api().lock().unwrap_or_else(|e| e.into_inner());
             unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) }
@@ -344,6 +504,112 @@ mod winfont {
         }
         dirty().store(true, Ordering::SeqCst);
         true
+    }
+
+    /// Activate a library face: stage to per-user Fonts, HKCU register, GDI Add
+    /// on the LocalAppData path only. Returns the per-user path on success.
+    pub fn activate_from_library(family: &str, source: &Path) -> Option<PathBuf> {
+        if is_windows_fonts_path(source) {
+            return None;
+        }
+        if crate::peruser::is_per_user_managed_path(source) {
+            if add_gdi_path(source) {
+                return Some(source.to_path_buf());
+            }
+            return None;
+        }
+        if let Ok(idx) = source_index().lock() {
+            if let Some(existing) = idx.get(source) {
+                if add_gdi_path(existing) {
+                    return Some(existing.clone());
+                }
+            }
+        }
+        let dest = stage_to_per_user(family, source)?;
+        let file_name = source
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("face.ttf");
+        let reg_name = crate::peruser::registry_value_name(family, file_name);
+        let _ = hkcu_set_font(&reg_name, &dest);
+        if !add_gdi_path(&dest) {
+            return None;
+        }
+        let act = FaceActivation {
+            source: source.to_path_buf(),
+            per_user: dest.clone(),
+            registry_name: reg_name,
+            family: family.to_string(),
+        };
+        if let Ok(mut g) = activations().lock() {
+            g.insert(dest.clone(), act);
+        }
+        if let Ok(mut g) = source_index().lock() {
+            g.insert(source.to_path_buf(), dest.clone());
+        }
+        Some(dest)
+    }
+
+    fn deactivate_staged(per_user: &Path) {
+        let act = activations()
+            .lock()
+            .ok()
+            .and_then(|mut g| g.remove(per_user));
+        if let Some(ref a) = act {
+            if let Ok(mut idx) = source_index().lock() {
+                idx.remove(&a.source);
+            }
+            hkcu_delete_font(&a.registry_name);
+        }
+        remove_one(per_user);
+        if let Ok(mut g) = loaded().lock() {
+            g.remove(per_user);
+        }
+        if crate::peruser::is_per_user_managed_path(per_user) {
+            let _ = std::fs::remove_file(per_user);
+        }
+        dirty().store(true, Ordering::SeqCst);
+    }
+
+    pub fn snapshot_activations() -> Vec<crate::peruser::FaceMap> {
+        activations()
+            .lock()
+            .map(|g| {
+                g.values()
+                    .map(|a| crate::peruser::FaceMap {
+                        source: a.source.to_string_lossy().into_owned(),
+                        per_user: a.per_user.to_string_lossy().into_owned(),
+                        registry_name: a.registry_name.clone(),
+                        family: a.family.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn remember_activation(map: crate::peruser::FaceMap) {
+        let per_user = PathBuf::from(&map.per_user);
+        let source = PathBuf::from(&map.source);
+        let act = FaceActivation {
+            source: source.clone(),
+            per_user: per_user.clone(),
+            registry_name: map.registry_name,
+            family: map.family,
+        };
+        if let Ok(mut g) = activations().lock() {
+            g.insert(per_user.clone(), act);
+        }
+        if let Ok(mut g) = source_index().lock() {
+            g.insert(source, per_user);
+        }
+    }
+
+    /// Legacy entry: refuse Documents; prefer activate_from_library.
+    pub fn register(path: &Path) -> bool {
+        if crate::peruser::must_not_register_as_gdi_path(path) {
+            return false;
+        }
+        add_gdi_path(path)
     }
 
     pub fn bind(family: &str, path: &Path) {
@@ -375,11 +641,16 @@ mod winfont {
         if is_windows_fonts_path(path) {
             return;
         }
+        if crate::peruser::is_per_user_managed_path(path)
+            || activations().lock().map(|g| g.contains_key(path)).unwrap_or(false)
+        {
+            deactivate_staged(path);
+            return;
+        }
+        // Legacy Documents leftover: Remove only (never delete the library file).
         if let Ok(mut g) = loaded().lock() {
             g.remove(path);
         }
-        // Always Remove (drain-until-zero), even if this process did not Add —
-        // crash leftover or a path that never entered `loaded` still locks DeleteFile.
         let _ = remove_one(path);
         dirty().store(true, Ordering::SeqCst);
     }
@@ -455,7 +726,17 @@ mod winfont {
         let attempted = paths.len();
         let mut removed_ok = 0usize;
         for path in paths.iter() {
-            if remove_one(path) {
+            // Full per-user reverse when we own the staged file; legacy Documents
+            // paths only Remove (library originals must remain).
+            if crate::peruser::is_per_user_managed_path(path)
+                || activations().lock().map(|g| g.contains_key(path)).unwrap_or(false)
+            {
+                let before = remove_one(path);
+                deactivate_staged(path);
+                if before {
+                    removed_ok += 1;
+                }
+            } else if remove_one(path) {
                 removed_ok += 1;
             }
         }
@@ -469,6 +750,20 @@ mod winfont {
             }
             unsafe {
                 GdiFlush();
+            }
+            // Drop any remaining activation bookkeeping.
+            if let Ok(mut g) = activations().lock() {
+                for path in paths.iter() {
+                    if let Some(act) = g.remove(path) {
+                        hkcu_delete_font(&act.registry_name);
+                        if let Ok(mut idx) = source_index().lock() {
+                            idx.remove(&act.source);
+                        }
+                        if crate::peruser::is_per_user_managed_path(path) {
+                            let _ = std::fs::remove_file(path);
+                        }
+                    }
+                }
             }
         }
         if broadcast {
@@ -717,6 +1012,17 @@ mod winfont {
 fn register_path(path: &Path) -> bool {
     #[cfg(windows)]
     {
+        // write_font_file / legacy callers: derive family from parent folder name.
+        if crate::peruser::must_not_register_as_gdi_path(path)
+            || !crate::peruser::is_per_user_managed_path(path)
+        {
+            let family = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("font");
+            return winfont::activate_from_library(family, path).is_some();
+        }
         return winfont::register(path);
     }
     #[cfg(not(windows))]
@@ -727,10 +1033,22 @@ fn register_path(path: &Path) -> bool {
 }
 
 fn register_family_path(family: &str, path: &Path) -> bool {
-    let added = register_path(path);
     #[cfg(windows)]
-    winfont::bind(family, path);
-    added
+    {
+        // FontBase-style: stage to per-user Fonts + HKCU; never Add Documents paths.
+        match winfont::activate_from_library(family, path) {
+            Some(per_user) => {
+                winfont::bind(family, &per_user);
+                true
+            }
+            None => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (family, path);
+        false
+    }
 }
 
 fn unregister_family_session(family: &str) -> u32 {
@@ -849,6 +1167,7 @@ fn clear_session_active_in(root: &Path) {
 fn clear_session_sidecars_in(root: &Path) {
     clear_session_paths_in(root);
     clear_session_active_in(root);
+    crate::peruser::clear_session_maps_in(root);
 }
 
 fn merge_unique_paths(primary: Vec<PathBuf>, extra: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -966,6 +1285,37 @@ fn save_session_paths(app: &AppHandle, paths: &[PathBuf]) {
 }
 
 #[allow(dead_code)]
+fn persist_activation_sidecars(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        let Ok(root) = documents_root(app) else {
+            return;
+        };
+        let maps = winfont::snapshot_activations();
+        crate::peruser::save_session_maps_in(&root, &maps);
+        // .session-paths.txt stores per-user GDI paths only (never Documents).
+        let paths: Vec<PathBuf> = maps
+            .iter()
+            .map(|m| PathBuf::from(&m.per_user))
+            .collect();
+        if paths.is_empty() {
+            let snap = winfont::snapshot_loaded();
+            // Filter out any accidental Documents leftovers.
+            let filtered: Vec<PathBuf> = snap
+                .into_iter()
+                .filter(|p| !crate::peruser::must_not_register_as_gdi_path(p))
+                .collect();
+            save_session_paths_in(&root, &filtered);
+        } else {
+            save_session_paths_in(&root, &paths);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+    }
+}
+
 fn clear_session_paths(app: &AppHandle) {
     if let Ok(root) = documents_root(app) {
         clear_session_paths_in(&root);
@@ -1177,18 +1527,59 @@ fn recover_stale_session(app: &AppHandle) {
             return;
         };
         let leftover = load_session_paths_in(&root);
+        let maps = crate::peruser::load_session_maps_in(&root);
         let had_active = session_active_file_in(&root).is_file();
-        if leftover.is_empty() && !had_active {
+        if leftover.is_empty() && maps.is_empty() && !had_active {
             return;
         }
-        if !leftover.is_empty() {
-            let stats = winfont::unload_paths(leftover.clone(), false);
+        // 1.0.156 migration: old-style session-paths may point at Documents.
+        // Unload those Adds (best-effort + FontCache) and never re-Add Documents.
+        let (docs_paths, mut keep_paths) =
+            crate::peruser::partition_legacy_session_paths(&leftover);
+        if !docs_paths.is_empty() {
+            eprintln!(
+                "Font Manager: migrating {} Documents session path(s) off GDI (1.0.156 per-user Activate)",
+                docs_paths.len()
+            );
+            let stats = winfont::unload_paths(docs_paths.clone(), false);
             if plan_font_cache_flush(stats.attempted) {
                 let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
             }
-            let still = filter_still_write_locked(&leftover);
+            // Documents originals must not stay in .session-paths going forward.
+            let still_docs = filter_still_write_locked(&docs_paths);
+            if !still_docs.is_empty() {
+                eprintln!(
+                    "Font Manager: startup session recovery — {} Documents path(s) still write-locked after Remove+FontCache (attempted {}). {} Deactivate-all as admin or reboot, then Repair.",
+                    still_docs.len(),
+                    stats.attempted,
+                    font_cache_held_message(still_docs.len())
+                );
+                emit_session_recovery_toast(
+                    app,
+                    still_docs.len(),
+                    stats.attempted.max(still_docs.len()),
+                );
+            }
+            // Do not re-Add Documents paths — drop them from sidecar.
+        }
+        // Restore map bookkeeping for per-user leftovers, then unload them so
+        // session_begin can re-stage cleanly from Documents via activate_from_library.
+        for m in &maps {
+            winfont::remember_activation(m.clone());
+            let pu = PathBuf::from(&m.per_user);
+            if keep_paths.iter().all(|p| p != &pu) {
+                keep_paths.push(pu);
+            }
+        }
+        if !keep_paths.is_empty() {
+            let stats = winfont::unload_paths(keep_paths.clone(), false);
+            if plan_font_cache_flush(stats.attempted) {
+                let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
+            }
+            let still = filter_still_write_locked(&keep_paths);
             if still.is_empty() {
                 clear_session_paths_in(&root);
+                crate::peruser::clear_session_maps_in(&root);
             } else {
                 save_session_paths_in(&root, &still);
                 eprintln!(
@@ -1199,6 +1590,9 @@ fn recover_stale_session(app: &AppHandle) {
                 );
                 emit_session_recovery_toast(app, still.len(), stats.attempted.max(still.len()));
             }
+        } else {
+            clear_session_paths_in(&root);
+            crate::peruser::clear_session_maps_in(&root);
         }
         // Drop stale active after path recovery so we do not re-Add thousands
         // before UI hydrate/Repair. Live Activate rewrites `.session-active.json`.
@@ -1230,7 +1624,7 @@ pub fn session_begin(app: &AppHandle) {
             .collect();
         let (files, ready) = register_ready_families_parallel(app, &ready_targets);
         if files > 0 {
-            save_session_paths(app, &winfont::snapshot_loaded());
+            persist_activation_sidecars(app);
             notify_fonts_changed();
         }
         if ready.len() != families.len() {
@@ -3280,7 +3674,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         notify_fonts_changed();
         session_add(app, ready);
         #[cfg(windows)]
-        save_session_paths(app, &winfont::snapshot_loaded());
+        persist_activation_sidecars(app);
     }
     emit_name_heal(app, heal);
     if let Ok(mut p) = bulk().progress.lock() {
@@ -4270,7 +4664,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     }
     notify_fonts_changed();
     #[cfg(windows)]
-    save_session_paths(&app, &winfont::snapshot_loaded());
+    persist_activation_sidecars(&app);
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
         p.current.clear();
@@ -4462,7 +4856,7 @@ fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
                 );
                 emit_font_cache_held_toast(app, still.len(), access_denied);
             }
-            save_session_paths(app, &winfont::snapshot_loaded());
+            persist_activation_sidecars(app);
         }
         #[cfg(not(windows))]
         {
@@ -4569,7 +4963,7 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
         if added > 0 {
             notify_fonts_changed();
             #[cfg(windows)]
-            save_session_paths(&app2, &winfont::snapshot_loaded());
+            persist_activation_sidecars(&app2);
         }
     });
     Ok(ready)
@@ -6222,13 +6616,24 @@ mod session_sidecar_tests {
     #[test]
     fn clear_session_sidecars_removes_paths_and_active() {
         let root = temp_root("clear");
-        fs::write(session_paths_file_in(&root), "C:\\\\a.ttf\n").unwrap();
+        fs::write(session_paths_file_in(&root), "C:\\a.ttf\n").unwrap();
         fs::write(session_active_file_in(&root), b"[\"Nunito\"]\n").unwrap();
+        crate::peruser::save_session_maps_in(
+            &root,
+            &[crate::peruser::FaceMap {
+                source: "C:/Documents/Font Manager/a.ttf".into(),
+                per_user: "C:/Local/Fonts/FontManager/a.ttf".into(),
+                registry_name: "a (TrueType)".into(),
+                family: "A".into(),
+            }],
+        );
         assert!(session_paths_file_in(&root).is_file());
         assert!(session_active_file_in(&root).is_file());
+        assert!(crate::peruser::session_maps_file_in(&root).is_file());
         clear_session_sidecars_in(&root);
         assert!(!session_paths_file_in(&root).is_file());
         assert!(!session_active_file_in(&root).is_file());
+        assert!(!crate::peruser::session_maps_file_in(&root).is_file());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -6365,6 +6770,20 @@ mod session_sidecar_tests {
     }
 
     #[test]
+    #[test]
+    fn documents_paths_must_not_be_gdi_registered_invariant() {
+        let docs = PathBuf::from(r"C:\Users\Eric\Documents\Font Manager\Nunito\a.ttf");
+        assert!(crate::peruser::must_not_register_as_gdi_path(&docs));
+        let staged = PathBuf::from(
+            r"C:\Users\Eric\AppData\Local\Microsoft\Windows\Fonts\FontManager\Nunito__a.ttf",
+        );
+        assert!(!crate::peruser::must_not_register_as_gdi_path(&staged));
+        assert!(!crate::peruser::is_system_windows_fonts_path(&staged));
+        assert!(crate::peruser::is_system_windows_fonts_path(Path::new(
+            r"C:\Windows\Fonts\arial.ttf"
+        )));
+    }
+
     fn plan_fail_loud_mentions_font_cache() {
         let locked = vec![PathBuf::from("a.ttf")];
         let plan = plan_session_end_cleanup(10, &locked);
