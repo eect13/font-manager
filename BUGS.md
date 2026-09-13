@@ -1,5 +1,10 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.156
+- **Skye HOLD / copy-only stage**: `stage_to_per_user` always copies into LocalAppData FontManager (no same-volume hardlink). Stale dest replaced when size/mtime/content mismatch after heal. `activate_from_library` rolls back HKCU + staged file if GDI Add fails. Successful `session_end` clears `.session-maps.json` with paths/active.
+- **Per-user Activate / Deactivate (FontBase unlock)**: **copy** faces into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\` (never hardlink — same-volume hardlink shares file ID with Documents), register `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts`, `AddFontResourceExW` on LocalAppData only — **never** Documents library paths (Font Cache no longer locks the library). Deactivate/Quit: Remove per-user paths, delete HKCU values we added, delete staged files, clear `.session-maps.json` + `.session-paths.txt`. No `C:\Windows\Fonts` / HKLM leftovers.
+- **Migration from 1.0.155**: `session_begin` unloads legacy Documents entries in `.session-paths.txt` (best-effort + FontCache restart) and does not re-Add them; fresh Activate uses per-user only.
+
 ## Fixed in tip / 1.0.155
 - **Font Cache unlock after Deactivate/Quit**: drain `RemoveFontResourceExW` until return 0 (same enumerable flags as Add), then best-effort SCM restart of `FontCache` (+ `FontCache3.0.0.0` when present). Soft-fail AccessDenied may still need admin once — toast `Font Cache still holding N files — retry as admin or reboot`. Unlock proven only after WRITE_OK on Eric's box (not claimed FontBase-or-better). No HWND_BROADCAST on quit; restart budget capped (~8s) so Quit does not hang Explorer.
 - **Faster startup**: `session_begin` parallelizes `register_intact_family` across ready session families (bounded ≤6 workers). Family walk/file I/O parallel; **GDI Add/Remove serialized** process-wide (`winfont::gdi_api`) so overlapping Adds cannot miss registrations on ~11k-path restore. Still recovers stale sidecars first; Activate remains enumerable (not FR_PRIVATE).
@@ -42,4 +47,4 @@
 
 ## Notes
 
-- Tip is 1.0.155 (unreleased pack — ask before NSIS).
+- Tip is 1.0.156 (unreleased pack — ask before NSIS).
