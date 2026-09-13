@@ -3625,7 +3625,8 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     let client = http_download_client();
     let mut n = 0usize;
     let mut heal = HealStats::default();
-    for family in ready {
+    let mut last_emit = Instant::now();
+    for (i, family) in ready.iter().enumerate() {
         if let Some(ref c) = client {
             let (_, eh) = ensure_catalog_variable_faces(app, c, family);
             heal.add(eh);
@@ -3642,6 +3643,21 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.remove(&family.trim().to_lowercase());
         }
+        if let Ok(mut p) = bulk().progress.lock() {
+            p.kind = "download".into();
+            p.running = true;
+            p.done = (i + 1) as u32;
+            p.skipped = (i + 1) as u32;
+            p.current = format!("Registering {family}");
+            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                p.ready_names.push(family.clone());
+            }
+        }
+        let last = i + 1 == ready.len();
+        if i == 0 || last || last_emit.elapsed() >= Duration::from_millis(150) {
+            emit_progress(app);
+            last_emit = Instant::now();
+        }
     }
     if n > 0 {
         notify_fonts_changed();
@@ -3650,13 +3666,6 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         save_session_paths(app, &winfont::snapshot_loaded());
     }
     emit_name_heal(app, heal);
-    if let Ok(mut p) = bulk().progress.lock() {
-        for family in ready {
-            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                p.ready_names.push(family.clone());
-            }
-        }
-    }
     emit_progress(app);
 }
 
@@ -4127,6 +4136,9 @@ pub struct GoogleDlProgress {
     pub paused: bool,
     pub ready_names: Vec<String>,
     pub skipped: u32,
+    /// "download" | "remove" — JS bar uses this so Deactivate is not labelled Downloading.
+    #[serde(default)]
+    pub kind: String,
 }
 
 struct Bulk {
@@ -4159,6 +4171,7 @@ fn bulk() -> &'static Bulk {
             paused: false,
             ready_names: Vec::new(),
             skipped: 0,
+            kind: String::new(),
         }),
         pending: Mutex::new(VecDeque::new()),
         queued: Mutex::new(HashSet::new()),
@@ -4530,13 +4543,16 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         return;
     }
     if let Ok(mut p) = state.progress.lock() {
-        p.skipped = ready.len() as u32;
-        p.done = ready.len() as u32;
+        p.skipped = 0;
+        p.done = 0;
         p.total = (ready.len() + missing.len()) as u32;
-        p.current = if missing.is_empty() {
+        p.kind = "download".into();
+        p.current = if ready.is_empty() {
+            missing.first().cloned().unwrap_or_else(|| "Downloading…".into())
+        } else if missing.is_empty() {
             format!("Registering {} already on disk…", ready.len())
         } else {
-            "Registering intact files…".into()
+            format!("Registering {} intact files…", ready.len())
         };
         p.running = true;
     }
@@ -4727,16 +4743,34 @@ pub fn flush_font_cache() -> Result<(), String> {
     Ok(())
 }
 
-fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
+fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
     // Session HashSet only. Walking Documents here was the Deactivate hang:
     // thousands of RemoveFontResourceExW on files that were never Add'ed,
     // including anything that looked like a System family name.
     let mut n = 0u32;
+    let total_n = families.len() as u32;
+    if report {
+        if let Ok(mut p) = bulk().progress.lock() {
+            p.running = true;
+            p.paused = false;
+            p.kind = "remove".into();
+            p.done = 0;
+            p.total = total_n;
+            p.failed = 0;
+            p.skipped = 0;
+            p.current = families.first().cloned().unwrap_or_default();
+            p.ready_names.clear();
+            p.failed_names.clear();
+            p.failed_details.clear();
+        }
+        emit_progress(app);
+    }
     #[cfg(windows)]
     let loaded = winfont::snapshot_loaded();
     #[cfg(windows)]
     let mut unloaded_paths: Vec<PathBuf> = Vec::new();
-    for family in families {
+    let mut last_emit = Instant::now();
+    for (i, family) in families.iter().enumerate() {
         let t = family.trim();
         if t.is_empty() {
             continue;
@@ -4784,8 +4818,32 @@ fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.insert(t.to_lowercase());
         }
+        if report {
+            if let Ok(mut p) = bulk().progress.lock() {
+                p.kind = "remove".into();
+                p.running = true;
+                p.done = (i + 1) as u32;
+                p.total = total_n;
+                p.current = t.to_string();
+            }
+            let last = i + 1 == families.len();
+            if i == 0 || last || (i + 1) % 4 == 0 || last_emit.elapsed() >= Duration::from_millis(150) {
+                emit_progress(app);
+                last_emit = Instant::now();
+            }
+        }
     }
     session_remove(app, families);
+    if report {
+        if let Ok(mut p) = bulk().progress.lock() {
+            p.kind = "remove".into();
+            p.running = true;
+            p.done = total_n;
+            p.total = total_n;
+            p.current = "Updating Windows…".into();
+        }
+        emit_progress(app);
+    }
     if n > 0 {
         gdi_flush_local();
         #[cfg(windows)]
@@ -4814,13 +4872,23 @@ fn unload_now(app: &AppHandle, families: &[String]) -> u32 {
             notify_fonts_changed();
         }
     }
+    if report {
+        if let Ok(mut p) = bulk().progress.lock() {
+            p.kind = "remove".into();
+            p.running = false;
+            p.done = total_n;
+            p.total = total_n;
+            p.current.clear();
+        }
+        emit_progress(app);
+    }
     n
 }
 
 #[tauri::command]
 pub fn unload_font_family(app: AppHandle, family: String) -> Result<u32, String> {
     // Sync — callers that delete next must finish Remove before DeleteFile.
-    Ok(unload_now(&app, &[family]))
+    Ok(unload_now(&app, &[family], false))
 }
 
 #[tauri::command]
@@ -4829,9 +4897,28 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
     if n == 0 {
         return Ok(0);
     }
+    // Seed the bar on this thread so the first JS poll is not a leftover idle
+    // snapshot (that used to toast “done” while GDI was still running).
+    let downloading = bulk().running.load(Ordering::SeqCst);
+    if !downloading {
+        if let Ok(mut p) = bulk().progress.lock() {
+            p.running = true;
+            p.paused = false;
+            p.kind = "remove".into();
+            p.done = 0;
+            p.total = n;
+            p.failed = 0;
+            p.skipped = 0;
+            p.current = families.first().cloned().unwrap_or_default();
+            p.ready_names.clear();
+            p.failed_names.clear();
+            p.failed_details.clear();
+        }
+        emit_progress(&app);
+    }
     // Bulk deactivate stays background so Activate-all off does not freeze UI.
     thread::spawn(move || {
-        let _ = unload_now(&app, &families);
+        let _ = unload_now(&app, &families, !downloading);
     });
     Ok(n)
 }
@@ -4839,7 +4926,7 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
 #[tauri::command]
 pub fn uninstall_font_family(app: AppHandle, family: String) -> Result<(), String> {
     // Await unload on this thread before DeleteFile — do not race GDI.
-    let _ = unload_now(&app, &[family.clone()]);
+    let _ = unload_now(&app, &[family.clone()], false);
     gdi_flush_local();
     purge_family_files_result(&app, &family)?;
     // Empty after Explorer-delete is success (missing = already gone).
@@ -5258,6 +5345,7 @@ pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
     {
         let mut p = state.progress.lock().map_err(|e| e.to_string())?;
         p.running = true;
+        p.kind = "download".into();
         p.current = "Scanning Documents…".into();
         if !state.running.load(Ordering::SeqCst) {
             p.done = 0;
@@ -5347,6 +5435,7 @@ pub fn google_download_progress() -> GoogleDlProgress {
             paused: false,
             ready_names: Vec::new(),
             skipped: 0,
+            kind: String::new(),
         })
 }
 

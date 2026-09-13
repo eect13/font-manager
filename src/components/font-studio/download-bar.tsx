@@ -73,9 +73,7 @@ export function DownloadBar() {
           : scanning
             ? `Scanning Documents${job.total ? ` — ${job.total.toLocaleString()} queued` : ""}`
             : registering && job.running
-              ? skipped || processed || job.total
-                ? `Registering ${(skipped || processed || job.total).toLocaleString()} already on disk`
-                : "Checking files on disk"
+              ? `Registering ${processed.toLocaleString()} / ${job.total.toLocaleString()}`
               : skipped && remaining === 0 && job.running
                 ? `Registering ${skipped.toLocaleString()} already on disk`
                 : skipped && job.running
@@ -126,21 +124,25 @@ export function DownloadBar() {
         </Button>
         {job.running || job.paused ? (
           <>
-            {job.paused ? (
-              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => resumeDownloadQueue()}>
-                <Play />
-                Resume
+            {job.mode !== "remove" ? (
+              job.paused ? (
+                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => resumeDownloadQueue()}>
+                  <Play />
+                  Resume
+                </Button>
+              ) : (
+                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => pauseDownloadQueue()}>
+                  <Pause />
+                  Pause
+                </Button>
+              )
+            ) : null}
+            {job.mode !== "remove" ? (
+              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
+                <X />
+                Cancel
               </Button>
-            ) : (
-              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => pauseDownloadQueue()}>
-                <Pause />
-                Pause
-              </Button>
-            )}
-            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
-              <X />
-              Cancel
-            </Button>
+            ) : null}
           </>
         ) : null}
         {!job.running && !job.paused && job.failedNames.length ? (

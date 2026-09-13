@@ -60,7 +60,11 @@ export function deactivateSet(ids: string[], label: string) {
     return;
   }
   useFontStore.getState().setActivatedMany(ids, false);
-  toast.success(`${label} off — unloaded from other apps, files kept`);
+  void inDesktopShell().then((desktop) => {
+    if (!desktop) {
+      toast.success(`${label} off — preview only`);
+    }
+  });
 }
 
 export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string }) {

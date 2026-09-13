@@ -1,8 +1,11 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.163
+- **Progress looked stuck until reopen:** (1) Deactivate polled *before* Rust started and treated leftover idle as “done,” then toasts fired on click. (2) Activate of files already in Documents set `done = total` *before* GDI register, so the bar sat at 100% while Windows was still adding fonts. Register/unload now tick percent + ETA; the success toast waits until GDI finishes.
+- **Collection counts vs auto-hide:** collection badges exclude auto-hidden duplicates. Provider → Local Files still shows the full upload count.
+
 ## Fixed in tip / 1.0.162
-- **Progress bar had counts, no percent:** Activate / Deactivate / Scan / register now show a live percent bar and a time-left estimate. Scanning still has no byte ETA until the queue size is known.
-- **Pause reset the bar:** Resume called the new-job poll path, which flushed ready marks. Pause now holds done/total; Resume continues from the same percent. Stale idle snapshots cannot wipe a paused bar to 0%.
+- Live percent bar + ETA. Pause holds the same percent; Resume continues (does not restart). Idle-poll race + 100% during on-disk register fixed in 1.0.163.
 
 ## Fixed in tip / 1.0.161
 - **Delete toast lied / files came back:** inspector ran `deleteFontFiles` then `toggleActivated` if the face was on. Recycle succeeded, then Activate queued a re-download. Toast now only fires after recycle; no second Activate.
@@ -70,4 +73,4 @@
 
 ## Notes
 
-- Tip is 1.0.162 (unreleased pack — ask before NSIS).
+- Tip is 1.0.163 (unreleased pack — ask before NSIS).

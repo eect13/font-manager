@@ -74,7 +74,18 @@ function GroupTree({
     return set;
   }, [rows]);
 
-  const stats = useMemo(() => folderFontStats(collections), [collections]);
+  const hideDupIds = useFontStore((s) => (s.autoHideDuplicates ? s.duplicateHideIds : EMPTY_IDS));
+  const stats = useMemo(() => {
+    const raw = folderFontStats(collections);
+    if (!hideDupIds.length) return raw;
+    const hide = new Set(hideDupIds);
+    const next = new Map<string, { count: number; ids: string[] }>();
+    for (const [id, stat] of raw) {
+      const ids = stat.ids.filter((fid) => !hide.has(fid));
+      next.set(id, { count: ids.length, ids });
+    }
+    return next;
+  }, [collections, hideDupIds]);
   const byId = useMemo(() => {
     const map = new Map<string, Collection>();
     for (const c of collections) map.set(c.id, c);

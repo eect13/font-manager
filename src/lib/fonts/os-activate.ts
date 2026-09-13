@@ -196,7 +196,7 @@ const retryAttempts = new Map<string, number>();
 
 export async function retryFailedDownloads(): Promise<void> {
   if (job.running && job.mode === "download") {
-    startGooglePoll();
+    startGooglePoll("download");
     toast.message("Download already running", {
       description: "Cancel first if you need to stop, then Retry remaining failures.",
     });
@@ -236,7 +236,7 @@ export async function retryFailedDownloads(): Promise<void> {
       toast.message("Retrying — old files are replaced", {
         description: `${added.toLocaleString()} ${added === 1 ? "family" : "families"} (attempt capped at ${MAX_RETRY_ATTEMPTS}). Cancel anytime. Close Word or Adobe if a file stays locked.`,
       });
-      startGooglePoll();
+      startGooglePoll("download");
       return;
     }
     toast.error("Retry did not queue — not a silent success", {
@@ -262,6 +262,7 @@ export async function skipFailedDownloads(): Promise<void> {
   if (!names.length) return;
   await tauriInvoke<number>("skip_google_failures", { families: names }).catch(() => 0);
   lastFailedNames = [];
+  expectKind = "";
   job = { ...EMPTY };
   emit();
   void import("./store").then(({ useFontStore }) => {
@@ -318,7 +319,7 @@ export async function resumeGoogleFamilies(families: string[]): Promise<void> {
   }
   if (!missing.length) return;
   const added = await tauriInvoke<number>("start_google_downloads", { families: missing }).catch(() => 0);
-  if (added) startGooglePoll();
+  if (added) startGooglePoll("download");
 }
 
 export async function rememberSessionFamilies(families: string[]): Promise<void> {
@@ -458,7 +459,7 @@ export async function repairIncompleteFamilies(families: string[] = []): Promise
           healed ? ` Also healed ${healed.toLocaleString()} name${healed === 1 ? "" : "s"}.` : ""
         }`,
       });
-      startGooglePoll();
+      startGooglePoll("download");
     } else if (healed > 0 && locked === 0) {
       toast.success(
         `Healed ${healed.toLocaleString()} face name${healed === 1 ? "" : "s"}`,
@@ -740,6 +741,7 @@ let lastPaint = 0;
 let pollTimer = 0;
 let rustSeenRunning = false;
 let ignoreProgress = false;
+let expectKind: "" | "download" | "remove" = "";
 
 function emitProgress(force = false) {
   if (force) {
@@ -777,9 +779,14 @@ function applyPayload(p: {
   failed_details?: string[];
   ready_names?: string[];
   skipped?: number;
+  kind?: string;
 }) {
   if (ignoreProgress) return;
   const readyLen = p.ready_names?.length ?? 0;
+  const payloadKind = p.kind === "remove" || p.kind === "download" ? p.kind : "";
+  if (expectKind && payloadKind && payloadKind !== expectKind) return;
+  if (expectKind && !payloadKind && !p.running && !p.paused) return;
+  const kind = payloadKind || expectKind || (job.mode === "remove" ? "remove" : "download");
   const sig = [
     p.running ? 1 : 0,
     p.paused ? 1 : 0,
@@ -789,9 +796,9 @@ function applyPayload(p: {
     p.skipped ?? 0,
     readyLen,
     p.failed_names?.length ?? 0,
-    // Include detail text so reason updates are not dropped when counts stay equal.
     (p.failed_details ?? []).join("\x1e"),
     p.current,
+    kind,
   ].join("|");
   // Never let a stale idle/zero snapshot wipe a live or paused bar back to 0%.
   if (
@@ -803,9 +810,18 @@ function applyPayload(p: {
   ) {
     return;
   }
-  // Poll + font-download events often deliver the same snapshot — skip duplicate work.
   if (sig === lastPayloadSig) return;
   lastPayloadSig = sig;
+  const rustIdle = !p.running && !p.paused;
+  if (rustIdle && pollTimer) {
+    const thisJobDone =
+      rustSeenRunning ||
+      (Boolean(payloadKind) &&
+        payloadKind === expectKind &&
+        p.total > 0 &&
+        p.done + p.failed >= p.total);
+    if (!thisJobDone) return;
+  }
   const prevRunning = job.running;
   const prevPaused = job.paused;
   const wasRunning = job.running || job.paused;
@@ -816,7 +832,7 @@ function applyPayload(p: {
   job = {
     running: p.running,
     paused: Boolean(p.paused),
-    mode: p.running || p.paused ? "download" : "idle",
+    mode: p.running || p.paused ? kind : "idle",
     done,
     total: Math.max(p.total, job.paused || job.running ? job.total : 0),
     failed: p.failed,
@@ -831,22 +847,37 @@ function applyPayload(p: {
     Boolean(p.paused) !== Boolean(prevPaused) ||
     (!p.running && !p.paused && wasRunning);
   emitProgress(forceEmit);
-  // Defensive: never leave body/html pointer-events locked (nothing sets it during download).
   unlockUi();
-  if (readyLen && readyLen !== lastReadyCount) {
+  if (readyLen && readyLen !== lastReadyCount && kind !== "remove") {
     lastReadyCount = readyLen;
     queueReadyFamilies(p.ready_names ?? []);
   }
   if (p.running || p.paused) rustSeenRunning = true;
-  if (!p.running && !p.paused && pollTimer && (rustSeenRunning || p.skipped || readyLen)) {
+  if (
+    rustIdle &&
+    pollTimer &&
+    (rustSeenRunning ||
+      (Boolean(payloadKind) && payloadKind === expectKind && p.total > 0 && p.done + p.failed >= p.total))
+  ) {
     window.clearInterval(pollTimer);
     pollTimer = 0;
     rustSeenRunning = false;
-    // Keep full ready list so flush can mark any remaining delta while pending still exists.
-    if (p.ready_names?.length) readyCumulative = p.ready_names;
+    expectKind = "";
+    if (kind !== "remove" && p.ready_names?.length) readyCumulative = p.ready_names;
     emitProgress(true);
+    if (kind === "remove") {
+      const n = Math.max(p.done, p.total, job.total);
+      if (n > 0) {
+        toast.success(`Deactivated ${n.toLocaleString()} — files kept in Documents`, {
+          description: n > 8 ? "Windows is catching up in the background." : undefined,
+        });
+      }
+      job = { ...EMPTY };
+      resetJobClock();
+      emit();
+      return;
+    }
     notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? []);
-    // Ordered: flush+markLiveActivated, reset batching, THEN clearPending (never reverse).
     void finalizeReadyAndClearPending();
   }
 }
@@ -864,6 +895,7 @@ async function pollRustProgress() {
       failed_details?: string[];
       ready_names?: string[];
       skipped?: number;
+      kind?: string;
     }>("google_download_progress");
     applyPayload(p);
   } catch {
@@ -915,11 +947,15 @@ function ensureGooglePoll() {
   unlockUi();
   if (pollTimer) return;
   rustSeenRunning = rustSeenRunning || job.running || job.paused;
-  pollTimer = window.setInterval(() => void pollRustProgress(), 1600);
+  pollTimer = window.setInterval(() => void pollRustProgress(), 400);
   void pollRustProgress();
 }
 
-function startGooglePoll() {
+function startGooglePoll(kind?: "download" | "remove") {
+  if (kind) {
+    expectKind = kind;
+    lastPayloadSig = "";
+  }
   void bindDownloadEvents();
   ignoreProgress = false;
   unlockUi();
@@ -927,7 +963,7 @@ function startGooglePoll() {
   const restartFlush = flushReadyFamilies();
   resetReadyBatching();
   void restartFlush;
-  rustSeenRunning = false;
+  if (!(job.running || job.paused)) rustSeenRunning = false;
   if (pollTimer) {
     window.clearInterval(pollTimer);
     pollTimer = 0;
@@ -945,13 +981,18 @@ function paint(force = false) {
 
 function finishIfIdle() {
   if (installQueue.length || removeQueue.length || workers > 0) return;
+  const wasRemove = job.mode === "remove";
   const snapshot = { ...job, running: false, mode: "idle" as const, current: "" };
   job = snapshot;
   markJobClock(false, false);
   emit();
   unlockUi();
   if (snapshot.total > 0 && snapshot.done + snapshot.failed > 0) {
-    notifyDownloadResult(snapshot.done, snapshot.failed, snapshot.failedNames, snapshot.failedDetails);
+    if (wasRemove) {
+      toast.success(`Deactivated ${snapshot.done.toLocaleString()} — files kept in Documents`);
+    } else {
+      notifyDownloadResult(snapshot.done, snapshot.failed, snapshot.failedNames, snapshot.failedDetails);
+    }
   }
 }
 
@@ -1051,6 +1092,7 @@ export function cancelDownloadQueue() {
   const keepFailed = (lastFailedNames.length ? lastFailedNames : job.failedNames).slice();
   const keepDetails = job.failedDetails.slice();
   ignoreProgress = true;
+  expectKind = "";
   // Cancel always stops the queue; keep failures so Retry stays visible.
   job = {
     ...EMPTY,
@@ -1194,7 +1236,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     const added = await tauriInvoke<number>("start_google_downloads", {
       families: [font.family],
     }).catch(() => 0);
-    startGooglePoll();
+    startGooglePoll("download");
     if (!added) {
       const again = await tauriInvoke<string[]>("activate_families_on_disk", {
         families: [font.family],
@@ -1235,8 +1277,12 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
 export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   if (font.source === "system") return;
   if (!(await inDesktopShell())) return;
-  removeQueue.push(font);
-  void pumpRemove(batchId);
+  if (job.running && job.mode === "download") {
+    removeQueue.push(font);
+    void pumpRemove(batchId);
+    return;
+  }
+  await syncFontsOnSystem([font], false);
 }
 
 function invokeError(err: unknown): string {
@@ -1308,32 +1354,27 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   unlockUi();
   if (!on) {
     const names = fonts.map((font) => font.family);
-    job = {
-      running: true,
-      paused: false,
-      mode: "remove",
-      done: 0,
-      total: names.length,
-      failed: 0,
-      skipped: 0,
-      current: names[0] ?? "",
-      failedNames: [],
-      failedDetails: [],
-    };
-    emit();
-    try {
-      const n = await tauriInvoke<number>("unload_font_families", { families: names }).catch(() => 0);
-      for (const font of fonts) installedCache.delete(font.family.toLowerCase());
+    const steal = !(job.running && job.mode === "download");
+    if (steal) {
       job = {
-        ...EMPTY,
-        done: n || names.length,
+        running: true,
+        paused: false,
+        mode: "remove",
+        done: 0,
         total: names.length,
+        failed: 0,
+        skipped: 0,
+        current: names[0] ?? "",
+        failedNames: [],
+        failedDetails: [],
       };
+      markJobClock(true, false);
       emit();
-      toast.success(
-        `Deactivated ${names.length.toLocaleString()} — files kept in Documents`,
-        { description: names.length > 8 ? "Windows is catching up in the background." : undefined },
-      );
+    }
+    try {
+      await tauriInvoke<number>("unload_font_families", { families: names });
+      for (const font of fonts) installedCache.delete(font.family.toLowerCase());
+      if (steal) startGooglePoll("remove");
     } catch {
       for (const font of fonts) removeQueue.push(font);
       void pumpRemove(batchId);
@@ -1345,11 +1386,27 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   const local = fonts.filter((font) => font.source === "local");
   if (google.length) {
     const names = google.map((font) => font.family);
+    if (!(job.running && job.mode === "download")) {
+      job = {
+        running: true,
+        paused: false,
+        mode: "download",
+        done: 0,
+        total: names.length,
+        failed: 0,
+        skipped: 0,
+        current: "Scanning Documents…",
+        failedNames: [],
+        failedDetails: [],
+      };
+      markJobClock(true, false);
+      emit();
+    }
     toast.message("Scanning Documents first", {
       description: `${names.length.toLocaleString()} families. Intact files register only; missing files download up to three at a time.`,
     });
     const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
-    startGooglePoll();
+    startGooglePoll("download");
     if (!added) {
       const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
         () => [] as string[],
@@ -1364,6 +1421,22 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     }
   }
   if (local.length) {
+    if (!(job.running && job.mode === "download" && google.length)) {
+      job = {
+        running: true,
+        paused: false,
+        mode: "download",
+        done: job.mode === "download" ? job.done : 0,
+        total: (job.mode === "download" ? job.total : 0) + local.length,
+        failed: job.mode === "download" ? job.failed : 0,
+        skipped: job.mode === "download" ? job.skipped : 0,
+        current: local[0]?.family ?? "",
+        failedNames: job.mode === "download" ? job.failedNames : [],
+        failedDetails: job.mode === "download" ? job.failedDetails : [],
+      };
+      markJobClock(true, false);
+      emit();
+    }
     for (const font of local) installQueue.push({ font, lean: false });
     kickInstall();
   }

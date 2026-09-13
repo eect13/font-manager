@@ -303,3 +303,5 @@ html[data-theme="light"] {
 .fm-job-fill-paused {
   background: color-mix(in oklab, var(--color-primary) 55%, var(--color-muted-foreground));
 }
+
+
