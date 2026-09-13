@@ -33,6 +33,40 @@ const EMPTY: DownloadJobState = {
 let job: DownloadJobState = { ...EMPTY };
 const listeners = new Set<() => void>();
 
+let clockStarted = 0;
+let clockPausedAt = 0;
+let clockPausedMs = 0;
+
+function resetJobClock() {
+  clockStarted = 0;
+  clockPausedAt = 0;
+  clockPausedMs = 0;
+}
+
+function markJobClock(running: boolean, paused: boolean) {
+  const now = Date.now();
+  if (!running && !paused) {
+    resetJobClock();
+    return;
+  }
+  if (!clockStarted) clockStarted = now;
+  if (paused) {
+    if (!clockPausedAt) clockPausedAt = now;
+    return;
+  }
+  if (clockPausedAt) {
+    clockPausedMs += now - clockPausedAt;
+    clockPausedAt = 0;
+  }
+}
+
+/** Active elapsed ms for ETA — paused time is excluded so Resume does not look like a restart. */
+export function getJobClock(): { activeMs: number } {
+  if (!clockStarted) return { activeMs: 0 };
+  const extra = clockPausedAt ? Date.now() - clockPausedAt : 0;
+  return { activeMs: Math.max(0, Date.now() - clockStarted - clockPausedMs - extra) };
+}
+
 function notifyDownloadResult(done: number, failed: number, names: string[], details: string[]) {
   lastFailedNames = names.slice();
   if (failed > 0 && names.length) {
@@ -759,24 +793,39 @@ function applyPayload(p: {
     (p.failed_details ?? []).join("\x1e"),
     p.current,
   ].join("|");
+  // Never let a stale idle/zero snapshot wipe a live or paused bar back to 0%.
+  if (
+    (job.running || job.paused) &&
+    job.total > 0 &&
+    p.total === 0 &&
+    !p.running &&
+    !p.paused
+  ) {
+    return;
+  }
   // Poll + font-download events often deliver the same snapshot — skip duplicate work.
   if (sig === lastPayloadSig) return;
   lastPayloadSig = sig;
   const prevRunning = job.running;
   const prevPaused = job.paused;
   const wasRunning = job.running || job.paused;
+  const done = job.paused && p.done < job.done && p.total === job.total ? job.done : p.done;
+  const skipped = job.paused
+    ? Math.max(p.skipped ?? 0, job.skipped)
+    : (p.skipped ?? 0);
   job = {
     running: p.running,
     paused: Boolean(p.paused),
     mode: p.running || p.paused ? "download" : "idle",
-    done: p.done,
-    total: p.total,
+    done,
+    total: Math.max(p.total, job.paused || job.running ? job.total : 0),
     failed: p.failed,
-    skipped: p.skipped ?? 0,
-    current: p.current,
+    skipped,
+    current: p.current || job.current,
     failedNames: p.failed_names ?? [],
     failedDetails: p.failed_details ?? [],
   };
+  markJobClock(job.running, job.paused);
   const forceEmit =
     Boolean(p.running) !== Boolean(prevRunning) ||
     Boolean(p.paused) !== Boolean(prevPaused) ||
@@ -860,23 +909,34 @@ export async function bindDownloadEvents() {
   }
 }
 
-function startGooglePoll() {
+function ensureGooglePoll() {
   void bindDownloadEvents();
   ignoreProgress = false;
   unlockUi();
-  // Always flush+reset when (re)starting — even if the poll is already running — so a prior
-  // job's timer/cumulative cannot leak. Capture delta synchronously before reset; mark may await.
-  const restartFlush = flushReadyFamilies();
-  resetReadyBatching();
-  void restartFlush;
   if (pollTimer) return;
-  rustSeenRunning = false;
-  // Events push live progress; poll is a slow fallback so we do not double-storm the UI.
+  rustSeenRunning = rustSeenRunning || job.running || job.paused;
   pollTimer = window.setInterval(() => void pollRustProgress(), 1600);
   void pollRustProgress();
 }
 
+function startGooglePoll() {
+  void bindDownloadEvents();
+  ignoreProgress = false;
+  unlockUi();
+  // New job only — Resume must not reset ready marks or the percent clock.
+  const restartFlush = flushReadyFamilies();
+  resetReadyBatching();
+  void restartFlush;
+  rustSeenRunning = false;
+  if (pollTimer) {
+    window.clearInterval(pollTimer);
+    pollTimer = 0;
+  }
+  ensureGooglePoll();
+}
+
 function paint(force = false) {
+  markJobClock(job.running, job.paused);
   const now = Date.now();
   if (!force && now - lastPaint < 400) return;
   lastPaint = now;
@@ -887,6 +947,7 @@ function finishIfIdle() {
   if (installQueue.length || removeQueue.length || workers > 0) return;
   const snapshot = { ...job, running: false, mode: "idle" as const, current: "" };
   job = snapshot;
+  markJobClock(false, false);
   emit();
   unlockUi();
   if (snapshot.total > 0 && snapshot.done + snapshot.failed > 0) {
@@ -919,6 +980,10 @@ async function installOne(font: FontRecord, lean: boolean) {
 async function pumpInstall(myBatch: number) {
   workers += 1;
   while (myBatch === batchId) {
+    while (job.paused && myBatch === batchId) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
+    }
+    if (myBatch !== batchId) break;
     const next = installQueue.shift();
     if (!next) break;
     job = { ...job, current: next.font.family, running: true, mode: "download" };
@@ -957,6 +1022,10 @@ function kickInstall() {
 async function pumpRemove(myBatch: number) {
   workers += 1;
   while (myBatch === batchId) {
+    while (job.paused && myBatch === batchId) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
+    }
+    if (myBatch !== batchId) break;
     const font = removeQueue.shift();
     if (!font) break;
     job = { ...job, current: font.family, running: true, mode: "remove" };
@@ -990,6 +1059,7 @@ export function cancelDownloadQueue() {
     failedDetails: keepDetails,
   };
   lastFailedNames = keepFailed;
+  markJobClock(false, false);
   emit();
   unlockUi();
   void tauriInvoke("cancel_google_downloads").catch(() => undefined);
@@ -1012,18 +1082,22 @@ export function cancelDownloadQueue() {
 }
 
 export function pauseDownloadQueue() {
-  job = { ...job, paused: true, running: true, mode: "download" };
+  if (!job.running && !job.paused) return;
+  job = { ...job, paused: true, running: true };
+  markJobClock(true, true);
   emit();
   void tauriInvoke("pause_google_downloads").catch(() => undefined);
-  toast.message("Download paused", { description: "Resume anytime. Files already saved stay put." });
+  toast.message("Paused", { description: `${Math.round((100 * Math.max(job.done, job.skipped)) / Math.max(1, job.total))}% held. Resume continues from here — it does not restart.` });
 }
 
 export function resumeDownloadQueue() {
-  job = { ...job, paused: false, running: true, mode: "download" };
+  if (!job.paused && !job.running) return;
+  job = { ...job, paused: false, running: true };
+  markJobClock(true, false);
   emit();
   void tauriInvoke("resume_google_downloads").catch(() => undefined);
-  startGooglePoll();
-  toast.message("Download resumed");
+  ensureGooglePoll();
+  toast.message("Resumed", { description: "Same queue, same percent." });
 }
 
 const uploadQueue: { family: string; fileName: string; bytes: Uint8Array }[] = [];

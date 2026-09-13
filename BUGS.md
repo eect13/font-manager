@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.162
+- **Progress bar had counts, no percent:** Activate / Deactivate / Scan / register now show a live percent bar and a time-left estimate. Scanning still has no byte ETA until the queue size is known.
+- **Pause reset the bar:** Resume called the new-job poll path, which flushed ready marks. Pause now holds done/total; Resume continues from the same percent. Stale idle snapshots cannot wipe a paused bar to 0%.
+
 ## Fixed in tip / 1.0.161
 - **Delete toast lied / files came back:** inspector ran `deleteFontFiles` then `toggleActivated` if the face was on. Recycle succeeded, then Activate queued a re-download. Toast now only fires after recycle; no second Activate.
 
@@ -66,4 +70,4 @@
 
 ## Notes
 
-- Tip is 1.0.161 (unreleased pack — ask before NSIS).
+- Tip is 1.0.162 (unreleased pack — ask before NSIS).

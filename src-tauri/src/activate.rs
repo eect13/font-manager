@@ -5288,23 +5288,27 @@ pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
 }
 
 #[tauri::command]
-pub fn pause_google_downloads() -> Result<(), String> {
+pub fn pause_google_downloads(app: AppHandle) -> Result<(), String> {
     let state = bulk();
     state.pause.store(true, Ordering::SeqCst);
     if let Ok(mut p) = state.progress.lock() {
         p.paused = true;
+        p.running = true;
     }
+    emit_progress(&app);
     Ok(())
 }
 
 #[tauri::command]
-pub fn resume_google_downloads() -> Result<(), String> {
+pub fn resume_google_downloads(app: AppHandle) -> Result<(), String> {
     let state = bulk();
     state.pause.store(false, Ordering::SeqCst);
     if let Ok(mut p) = state.progress.lock() {
         p.paused = false;
         p.running = state.running.load(Ordering::SeqCst);
+        // Keep done/total/skipped — Resume must not zero the bar.
     }
+    emit_progress(&app);
     Ok(())
 }
 

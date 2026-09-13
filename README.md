@@ -1,10 +1,12 @@
-# Font Manager **1.0.161**
+# Font Manager **1.0.162**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.162.** Activate / Deactivate / Scan show a live **percent bar** and time left (FontBase-style). Pause holds the same percent; Resume continues the queue and does not restart from 0%.
 
 **1.0.161.** Catalog Delete no longer re-Activates after Recycle Bin (the inspector used to toggle power on again, so files came back and the toast looked false). Error toasts now show the real Rust message.
 
@@ -39,7 +41,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 | Area | What it does |
 | --- | --- |
 | **Library** | Search, sort, grid/list. ~2,100 faces. Virtual-scrolled cards with live specimens. |
-| **Activate** | Session fonts via `AddFontResourceExW`. Other apps see them until you Deactivate or quit. Library stays navigable (sidebar, tabs, search, cards) while Activate/download runs — progress stays in the non-blocking bar. |
+| **Activate** | Session fonts via `AddFontResourceExW`. Other apps see them until you Deactivate or quit. Library stays navigable (sidebar, tabs, search, cards) while Activate/download runs — live percent bar, time left, Pause holds the same percent. |
 | **Google Fonts** | Official list (~1,946). Overflow: Activate remaining / Deactivate all / Scan disk (Repair **or** Remove extras — not both). |
 | **Fontsource** | Exclusive `type: other` families (~150). Same overflow menu. |
 | **Uploads** | Drop files or a folder. Stay in Documents. Deactivate unloads; Delete removes files. |
