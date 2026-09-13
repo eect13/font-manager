@@ -1,8 +1,10 @@
-# Font Manager **1.0.157**
+# Font Manager **1.0.158**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
+
+**1.0.158.** Quit no longer restarts Font Cache or retries write-locks on the hidden process (that left a Task Manager zombie; a second launch pinged it and the UI never appeared). Single-instance while quitting exits so the next click starts clean; next boot still `Remove`s leftovers. Open Sauce Sans **10/14** was jsDelivr returning HTTP 200 with a non-TTF body for 4 faces — not a missing npm package. Activate now skips those (no circuit trip) and fetches the official GitHub TTFs (`marcologous/Open-Sauce-Fonts`).
 
 **1.0.157.** In-place `AddFontResourceExW` on Documents TTFs was the lock: Windows Font Cache kept those handles after exit, so Open Sauce Sans could not finish writing faces and Explorer could not delete family folders. Activate now maps LocalAppData copies (Documents originals stay). Quit still `Remove`s both the copy and any leftover 1.0.156 Documents path. **Once:** if folders are already locked from 1.0.156, reboot once after installing 1.0.157, then Repair Open Sauce Sans.
 

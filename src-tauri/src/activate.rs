@@ -1126,12 +1126,7 @@ fn session_path(app: &AppHandle) -> Option<PathBuf> {
     documents_root(app).ok().map(|p| session_active_file_in(&p))
 }
 
-#[allow(dead_code)]
-fn session_paths_file(app: &AppHandle) -> Option<PathBuf> {
-    documents_root(app).ok().map(|p| session_paths_file_in(&p))
-}
-
-#[allow(dead_code)]
+#[cfg(windows)]
 fn load_session_paths(app: &AppHandle) -> Vec<PathBuf> {
     let Ok(root) = documents_root(app) else {
         return Vec::new();
@@ -1139,7 +1134,7 @@ fn load_session_paths(app: &AppHandle) -> Vec<PathBuf> {
     load_session_paths_in(&root)
 }
 
-#[allow(dead_code)]
+#[cfg(windows)]
 fn save_session_paths(app: &AppHandle, paths: &[PathBuf]) {
     let Ok(root) = documents_root(app) else {
         return;
@@ -1147,14 +1142,14 @@ fn save_session_paths(app: &AppHandle, paths: &[PathBuf]) {
     save_session_paths_in(&root, paths);
 }
 
-#[allow(dead_code)]
+#[cfg(windows)]
 fn clear_session_paths(app: &AppHandle) {
     if let Ok(root) = documents_root(app) {
         clear_session_paths_in(&root);
     }
 }
 
-#[allow(dead_code)]
+#[cfg(windows)]
 fn clear_session_active(app: &AppHandle) {
     if let Ok(root) = documents_root(app) {
         clear_session_active_in(&root);
@@ -1459,31 +1454,9 @@ pub fn session_end(app: &AppHandle) {
         // Explorer. Drain-Remove + local GdiFlush, then time-bounded FontCache
         // service restart so svchost/LOCAL SERVICE drops Documents handles.
         let stats = winfont::unload_paths(extra.clone(), false);
-        if plan_font_cache_flush(stats.attempted.max(attempted)) {
-            let outcome = winfont::restart_font_cache_service(font_cache_restart_budget());
-            if matches!(
-                outcome,
-                winfont::FontCacheRestartOutcome::AccessDenied
-                    | winfont::FontCacheRestartOutcome::StopTimedOut
-                    | winfont::FontCacheRestartOutcome::StartTimedOut
-                    | winfont::FontCacheRestartOutcome::OpenFailed
-            ) {
-                eprintln!(
-                    "Font Manager: FontCache restart on quit: {:?} (soft-fail; unlock may need admin/reboot)",
-                    outcome
-                );
-            }
-        }
-        // Retry Remove on Documents originals still write-locked (pre-1.0.157 in-place Adds).
-        for _ in 0..4 {
-            let still = filter_still_write_locked(&extra);
-            if still.is_empty() {
-                break;
-            }
-            let _ = winfont::unload_paths(still, false);
-            thread::sleep(Duration::from_millis(120));
-        }
-        winfont::drain_gdi_maps();
+        // Do not restart FontCache or retry write-lock probes on quit — those
+        // block the hidden process (zombie) while Cache holds gdi-maps. Next
+        // boot recover_stale_session Removes leftovers. Live Deactivate still flushes.
         let still = filter_still_write_locked(&extra);
         let plan = plan_session_end_cleanup(attempted.max(stats.attempted), &still);
         if let Some(msg) = &plan.fail_loud {
@@ -1660,7 +1633,54 @@ fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, 
     }
     // Belt-and-suspenders: never hand callers a variable-package WOFF URL.
     urls.retain(|u| !u.contains("fontsource-variable"));
+    urls.extend(fontsource_upstream_ttf_urls(slug, weight, italic));
     urls
+}
+
+/// Open Sauce (and similar type:other) — jsDelivr `fontsource/fonts` often 200s a
+/// non-TTF body for 4/14 faces (`\x80\x01…`). Official GitHub TTFs are intact.
+fn open_sauce_style_token(weight: u16, italic: bool) -> Option<&'static str> {
+    let base = match weight {
+        300 => "Light",
+        400 => "Regular",
+        500 => "Medium",
+        600 => "SemiBold",
+        700 => "Bold",
+        800 => "ExtraBold",
+        900 => "Black",
+        _ => return None,
+    };
+    Some(if italic {
+        match base {
+            "Regular" => "Italic",
+            "Light" => "LightItalic",
+            "Medium" => "MediumItalic",
+            "SemiBold" => "SemiBoldItalic",
+            "Bold" => "BoldItalic",
+            "ExtraBold" => "ExtraBoldItalic",
+            "Black" => "BlackItalic",
+            _ => return None,
+        }
+    } else {
+        base
+    })
+}
+
+fn fontsource_upstream_ttf_urls(slug: &str, weight: u16, italic: bool) -> Vec<String> {
+    let (repo, prefix) = match slug {
+        "open-sauce-sans" => ("marcologous/Open-Sauce-Fonts", "OpenSauceSans"),
+        "open-sauce-one" => ("marcologous/Open-Sauce-Fonts", "OpenSauceOne"),
+        "open-sauce-two" => ("marcologous/Open-Sauce-Fonts", "OpenSauceTwo"),
+        _ => return Vec::new(),
+    };
+    let Some(style) = open_sauce_style_token(weight, italic) else {
+        return Vec::new();
+    };
+    let file = format!("{prefix}-{style}.ttf");
+    vec![
+        format!("https://cdn.jsdelivr.net/gh/{repo}@master/fonts/ttf/{file}"),
+        format!("https://raw.githubusercontent.com/{repo}/master/fonts/ttf/{file}"),
+    ]
 }
 
 fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weight: u16, italic: bool, subset: &str) -> Result<Vec<u8>, String> {
@@ -1696,7 +1716,8 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weig
                         }
                         Ok(bytes) => {
                             last = format!("not a TTF/OTF from {host} ({} bytes)", bytes.len());
-                            circuit_failure(host);
+                            // 200 + wrong magic is not a CDN outage — do not trip the circuit
+                            // (Open Sauce jsDelivr serves 4/14 non-TTF bodies).
                         }
                         Err(err) => {
                             last = format!("{host}: {err}");
@@ -1880,6 +1901,9 @@ fn fetch_ttf_to_file(
             StreamFontResult::Http(404) => {
                 last = format!("404 {host}");
                 // Do not abort the URL list — Open Sauce npm files 404 while @latest works.
+            }
+            StreamFontResult::NotFont => {
+                last = format!("not a TTF/OTF from {host}");
             }
             StreamFontResult::Http(status) if status >= 500 || status == 429 => {
                 last = format!("{status} {host}");
@@ -2752,6 +2776,8 @@ enum StreamFontResult {
     AlreadyIntact,
     Cancelled,
     Http(u16),
+    /// HTTP 200 but not SFNT (jsDelivr Open Sauce 400/600-italic/900-italic).
+    NotFont,
     Failed(String),
 }
 
@@ -2798,7 +2824,7 @@ fn stream_url_to_font_file(client: &reqwest::blocking::Client, url: &str, dest: 
     let mut magic = [0u8; 4];
     if resp.read_exact(&mut magic).is_err() || !ttf_magic(&magic) {
         let _ = fs::remove_file(&tmp);
-        return StreamFontResult::Failed("not ttf/otf magic".into());
+        return StreamFontResult::NotFont;
     }
     if file.write_all(&magic).is_err() {
         let _ = fs::remove_file(&tmp);
@@ -6246,6 +6272,18 @@ mod install_path_tests {
             !sauce.iter().any(|u| u.contains("@1.477/")),
             "foundry version must not be used as a jsDelivr pin"
         );
+        assert!(
+            sauce.iter().any(|u| u.contains("marcologous/Open-Sauce-Fonts")
+                && u.contains("OpenSauceSans-Regular.ttf")),
+            "Open Sauce must fall back to GitHub TTFs after jsDelivr non-TTF bodies: {sauce:?}"
+        );
+        let sauce_i = ttf_urls("open-sauce-sans", "5.3.0", 900, true, "latin", 0);
+        assert!(
+            sauce_i.iter().any(|u| u.contains("OpenSauceSans-BlackItalic.ttf")),
+            "900 italic upstream: {sauce_i:?}"
+        );
+        assert!(!ttf_magic(&[0x80, 0x01, 0x33, 0x11]));
+        assert!(ttf_magic(b"\x00\x01\x00\x00"));
     }
 
     #[test]

@@ -12,15 +12,18 @@ use tauri::{
     Manager,
 };
 
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
 fn show_main(app: &tauri::AppHandle) {
+    if QUITTING.load(Ordering::SeqCst) {
+        return;
+    }
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
     }
 }
-
-static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Hide first so X feels instant. Enumerable session fonts (flag 0) are NOT
 /// dropped when the process dies — RemoveFontResourceExW must finish.
@@ -53,6 +56,12 @@ fn quit_gracefully(app: &tauri::AppHandle) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A second launch while X is draining GDI must not un-hide the dying
+            // window (zombie + "app won't open"). Exit so the next click can start
+            // a fresh process; .session-paths.txt is already saved for recovery.
+            if QUITTING.load(Ordering::SeqCst) {
+                std::process::exit(0);
+            }
             show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())

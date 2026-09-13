@@ -381,7 +381,7 @@ pub fn patch_variable_face(font: &[u8], family: &str, italic: bool) -> Option<Ve
 }
 
 /// True when the sfnt directory lists table tag `tag` (e.g. b"fvar").
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn has_table(font: &[u8], tag: &[u8; 4]) -> bool {
     let Some(num) = u16b(font, 4).map(|n| n as usize) else {
         return false;
