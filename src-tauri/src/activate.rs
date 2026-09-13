@@ -1223,11 +1223,7 @@ pub fn session_begin(app: &AppHandle) {
         // Targeted dirs only — do not walk all of Documents before the UI is up.
         // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
-        let ready_targets: Vec<String> = families
-            .iter()
-            .filter(|family| family_is_ready(app, family))
-            .cloned()
-            .collect();
+        let ready_targets = filter_ready_families_parallel(app, &families);
         let (files, ready) = register_ready_families_parallel(app, &ready_targets);
         if files > 0 {
             save_session_paths(app, &winfont::snapshot_loaded());
@@ -1437,8 +1433,8 @@ fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, 
     let style = if italic { "italic" } else { "normal" };
     let ver = version.trim().trim_start_matches('v');
     let pin = if ver.is_empty() { "latest" } else { ver };
-    // Prefer @latest before a pinned jsDelivr fontsource tag — pinned tags often
-    // return HTTP 400 while @latest serves the face (Syne Italic, Open Sauce, …).
+    // Prefer @latest, then the **npm** tag (Open Sauce is 5.3.0). Foundry
+    // versions like v1.477 400 on jsDelivr and used to starve the rest of the URL list.
     let mut urls = Vec::new();
     if pin != "latest" {
         urls.push(format!(
@@ -1480,7 +1476,6 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weig
     let urls = ttf_urls(slug, version, weight, italic, subset, bust);
     let mut last = String::from("all CDNs failed");
     let mut skipped_open = 0usize;
-    let mut not_found = 0u32;
     for url in urls.iter() {
         let host = host_label(url);
         if !circuit_allow(host) {
@@ -1511,10 +1506,8 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weig
                     }
                 } else if status.as_u16() == 404 {
                     last = format!("404 {host}");
-                    not_found += 1;
-                    if not_found >= 2 {
-                        break;
-                    }
+                    // Keep walking the list — npm @fontsource/files 404s for type:other
+                    // (Open Sauce) while @latest / @npmVersion still serve the TTF.
                 } else {
                     last = format!("{} {host}", status.as_u16());
                     if status.is_server_error() || status.as_u16() == 429 {
@@ -1559,6 +1552,19 @@ fn fontsource_abort_on_normal_404(styles: &[bool], first_subset: bool, weight: u
     first_subset && weight == 400 && !italic && !styles.iter().any(|s| *s)
 }
 
+/// jsDelivr `fontsource/fonts/{slug}@{tag}` wants the npm package tag (`5.3.0`),
+/// not the foundry version (`v1.477`). Open Sauce / type:other 400s on the latter.
+fn fontsource_jsdelivr_pin(npm_version: &str, foundry_version: &str) -> String {
+    let npm = npm_version.trim().trim_start_matches('v');
+    if !npm.is_empty() && !npm.eq_ignore_ascii_case("latest") {
+        return npm.to_string();
+    }
+    foundry_version
+        .trim()
+        .trim_start_matches('v')
+        .to_string()
+}
+
 fn fontsource_meta(
     client: &reqwest::blocking::Client,
     slug: &str,
@@ -1595,13 +1601,10 @@ fn fontsource_meta(
         })
         .unwrap_or_default();
     let styles = fontsource_styles_from_meta(&style_names);
-    let version = v
-        .get("version")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .trim()
-        .trim_start_matches('v')
-        .to_string();
+    let version = fontsource_jsdelivr_pin(
+        v.get("npmVersion").and_then(|x| x.as_str()).unwrap_or(""),
+        v.get("version").and_then(|x| x.as_str()).unwrap_or(""),
+    );
     Some((subsets, weights, styles, version))
 }
 
@@ -1656,7 +1659,6 @@ fn fetch_ttf_to_file(
     };
     let urls = ttf_urls(slug, version, weight, italic, subset, bust);
     let mut last = String::from("all CDNs failed");
-    let mut not_found = 0u32;
     let mut skipped_open = 0usize;
     for url in urls.iter() {
         let host = host_label(url);
@@ -1677,10 +1679,7 @@ fn fetch_ttf_to_file(
             StreamFontResult::Cancelled => return Err("cancelled".into()),
             StreamFontResult::Http(404) => {
                 last = format!("404 {host}");
-                not_found += 1;
-                if not_found >= 2 {
-                    break;
-                }
+                // Do not abort the URL list — Open Sauce npm files 404 while @latest works.
             }
             StreamFontResult::Http(status) if status >= 500 || status == 429 => {
                 last = format!("{status} {host}");
@@ -2126,9 +2125,17 @@ fn parse_metadata_pb_axes_and_files(meta: &str) -> (Vec<String>, Vec<(String, bo
         }
         if let Some(rest) = t.strip_prefix("filename:") {
             let name = rest.trim().trim_matches('"').trim();
-            if name.contains('[') && name.to_ascii_lowercase().ends_with(".ttf") {
-                let italic = name.to_ascii_lowercase().contains("-italic[")
-                    || name.to_ascii_lowercase().contains("-italic.");
+            let lower = name.to_ascii_lowercase();
+            let is_ttf = lower.ends_with(".ttf") || lower.ends_with(".otf");
+            // google/fonts VF names are either `Family[wght].ttf` or older
+            // `Family-VariableFont_wght.ttf` — both are installable desktop files.
+            let is_vf = name.contains('[')
+                || lower.contains("variablefont")
+                || lower.contains("-variable-");
+            if is_ttf && is_vf {
+                let italic = lower.contains("-italic[")
+                    || lower.contains("-italic.")
+                    || lower.contains("-italic-variablefont");
                 files.push((name.to_string(), italic));
             }
         }
@@ -2242,11 +2249,6 @@ fn download_google_variable_ttfs(
                     return (wrote, heal);
                 }
                 for italic in [false, true] {
-                    let remote = if italic {
-                        format!("{pascal}-Italic[{axes}].ttf")
-                    } else {
-                        format!("{pascal}[{axes}].ttf")
-                    };
                     let dest_name = variable_face_filename(slug, axes, italic);
                     let dest = root.join(&dest_name);
                     if wrote.iter().any(|w| w == &dest_name) {
@@ -2258,12 +2260,27 @@ fn download_google_variable_ttfs(
                         wrote.push(dest_name);
                         continue;
                     }
-                    let url = jsdelivr_google_fonts_url(lic, folder, &remote);
-                    if let Some(bytes) = fetch_url_ttf(client, &url) {
-                        let patched = crate::namepatch::patch_variable_face(&bytes, family, italic)
-                            .unwrap_or(bytes);
-                        if write_font_file(&dest, &patched).is_ok() {
-                            wrote.push(dest_name);
+                    let axes_us = axes.replace(',', "_");
+                    let remotes = if italic {
+                        [
+                            format!("{pascal}-Italic[{axes}].ttf"),
+                            format!("{pascal}-Italic-VariableFont_{axes_us}.ttf"),
+                        ]
+                    } else {
+                        [
+                            format!("{pascal}[{axes}].ttf"),
+                            format!("{pascal}-VariableFont_{axes_us}.ttf"),
+                        ]
+                    };
+                    for remote in remotes {
+                        let url = jsdelivr_google_fonts_url(lic, folder, &remote);
+                        if let Some(bytes) = fetch_url_ttf(client, &url) {
+                            let patched = crate::namepatch::patch_variable_face(&bytes, family, italic)
+                                .unwrap_or(bytes);
+                            if write_font_file(&dest, &patched).is_ok() {
+                                wrote.push(dest_name);
+                                break;
+                            }
                         }
                     }
                 }
@@ -3062,6 +3079,56 @@ fn sort_faces_var_first(files: &mut [PathBuf]) {
     });
 }
 
+/// Disk-only ready check, parallel across families (no GDI). Used on boot and
+/// `plan_google_activation` so a 2,000-family session does not serially stat
+/// `.complete` on the invoke thread.
+fn filter_ready_families_parallel(app: &AppHandle, families: &[String]) -> Vec<String> {
+    let trimmed: Vec<String> = families
+        .iter()
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+    if trimmed.len() <= 4 {
+        return trimmed
+            .into_iter()
+            .filter(|family| family_is_ready(app, family))
+            .collect();
+    }
+    let workers = session_register_workers(trimmed.len());
+    let queue = Arc::new(Mutex::new(VecDeque::from(trimmed.clone())));
+    let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut joins = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let app = app.clone();
+        let queue = queue.clone();
+        let hits = hits.clone();
+        joins.push(thread::spawn(move || {
+            loop {
+                let next = queue.lock().ok().and_then(|mut q| q.pop_front());
+                let Some(family) = next else {
+                    break;
+                };
+                if family_is_ready(&app, &family) {
+                    if let Ok(mut g) = hits.lock() {
+                        g.push(family);
+                    }
+                }
+            }
+        }));
+    }
+    for j in joins {
+        let _ = j.join();
+    }
+    let mut ready = hits.lock().map(|g| g.clone()).unwrap_or_default();
+    ready.sort_by_key(|a| {
+        trimmed
+            .iter()
+            .position(|t| t.eq_ignore_ascii_case(a))
+            .unwrap_or(usize::MAX)
+    });
+    ready
+}
+
 /// Bounded-parallel session register. `register` already skips paths in the
 /// in-process loaded set (no double-Add). Workers share AppHandle; family walk /
 /// file I/O stay parallel, but GDI Add/Remove is serialized on `winfont::gdi_api`
@@ -3232,20 +3299,19 @@ fn split_ready_missing(
 ) -> (Vec<String>, Vec<String>, Option<DiskIndex>) {
     // Targeted path checks only. A full Documents walk of 2,000+ folders made
     // Activate look like a download even when every family was already there.
-    let mut ready = Vec::new();
-    let mut missing = Vec::new();
-    for family in families {
-        let t = family.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if !bust && family_is_ready(app, t) {
-            ready.push(family);
-        } else {
-            // Missing or incomplete (partial faces, no .complete) → download/Repair.
-            missing.push(family);
-        }
-    }
+    let ready = if bust {
+        Vec::new()
+    } else {
+        filter_ready_families_parallel(app, &families)
+    };
+    let ready_set: HashSet<String> = ready.iter().map(|n| n.trim().to_ascii_lowercase()).collect();
+    let missing: Vec<String> = families
+        .into_iter()
+        .filter(|family| {
+            let t = family.trim();
+            !t.is_empty() && !ready_set.contains(&t.to_ascii_lowercase())
+        })
+        .collect();
     (ready, missing, None)
 }
 
@@ -4533,44 +4599,67 @@ pub fn register_existing_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     Ok(n)
 }
 
+/// After session register: pull real `*-variable-*` TTFs for catalog-variable
+/// families that only have static instances on disk. Must not run on the boot
+/// invoke thread — CDN METADATA for ~550 families would freeze startup.
+fn backfill_missing_variable_faces(app: &AppHandle, families: &[String]) {
+    let need: Vec<String> = families
+        .iter()
+        .filter(|family| {
+            google_catalog_is_variable(family)
+                && family_locations(app, family)
+                    .iter()
+                    .any(|dir| dir.is_dir() && !dir_has_intact_variable(dir))
+        })
+        .cloned()
+        .collect();
+    if need.is_empty() {
+        return;
+    }
+    let Some(client) = http_download_client() else {
+        return;
+    };
+    let mut wrote = 0usize;
+    for family in &need {
+        if bulk().cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        let (n, _) = ensure_catalog_variable_faces(app, &client, family);
+        if n > 0 {
+            wrote = wrote.saturating_add(n);
+            let _ = register_intact_family(app, family);
+        }
+    }
+    if wrote > 0 {
+        notify_fonts_changed();
+        #[cfg(windows)]
+        save_session_paths(app, &winfont::snapshot_loaded());
+    }
+}
+
 #[tauri::command]
 pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Result<Vec<String>, String> {
     if families.is_empty() {
         return Ok(Vec::new());
     }
-    let mut ready = Vec::new();
-    for family in families {
-        if family_is_ready(&app, &family) {
-            ready.push(family);
-        }
-    }
+    let ready = filter_ready_families_parallel(&app, &families);
     if ready.is_empty() {
         return Ok(ready);
     }
     let app2 = app.clone();
     let ready2 = ready.clone();
     thread::spawn(move || {
-        let client = http_download_client();
-        let mut added = 0usize;
-        let mut heal = HealStats::default();
-        for family in &ready2 {
-            if let Some(ref c) = client {
-                let (_, eh) = ensure_catalog_variable_faces(&app2, c, family);
-                heal.add(eh);
-                heal.add(heal_family_google_names(&app2, family, false));
-            } else {
-                heal.add(heal_family_google_instance_names(&app2, family));
-            }
-            added += register_intact_new(&app2, family);
-            forget_queued(family);
-        }
-        emit_name_heal(&app2, heal);
+        // Register only — no CDN. session_begin may already have loaded these;
+        // register() no-ops paths in the in-process set. Missing variable TTFs
+        // are filled after GDI is up so the window is not blocked on jsDelivr.
+        let (added, _) = register_ready_families_parallel(&app2, &ready2);
         session_add(&app2, &ready2);
         if added > 0 {
             notify_fonts_changed();
             #[cfg(windows)]
             save_session_paths(&app2, &winfont::snapshot_loaded());
         }
+        backfill_missing_variable_faces(&app2, &ready2);
     });
     Ok(ready)
 }
@@ -5940,6 +6029,44 @@ mod install_path_tests {
             1,
             "empty pin must not duplicate @latest"
         );
+        let sauce = ttf_urls("open-sauce-sans", "5.3.0", 400, false, "latin", 0);
+        assert!(sauce[0].contains("@latest/"));
+        assert!(
+            sauce.iter().any(|u| u.contains("open-sauce-sans@5.3.0/")),
+            "npm pin 5.3.0 must be tried after @latest: {sauce:?}"
+        );
+        assert!(
+            !sauce.iter().any(|u| u.contains("@1.477/")),
+            "foundry version must not be used as a jsDelivr pin"
+        );
+    }
+
+    #[test]
+    fn fontsource_pin_prefers_npm_over_foundry_version() {
+        assert_eq!(fontsource_jsdelivr_pin("5.3.0", "v1.477"), "5.3.0");
+        assert_eq!(fontsource_jsdelivr_pin("", "v1.477"), "1.477");
+        assert_eq!(fontsource_jsdelivr_pin("latest", "2.76"), "2.76");
+    }
+
+    #[test]
+    fn parse_metadata_accepts_variablefont_and_bracket_filenames() {
+        let meta = r#"
+filename: "Sora-VariableFont_wght.ttf"
+filename: "Sora-Italic-VariableFont_wght.ttf"
+filename: "Sora-Regular.ttf"
+filename: "Nunito[wght].ttf"
+"#;
+        let (_axes, files) = parse_metadata_pb_axes_and_files(meta);
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"Sora-VariableFont_wght.ttf"));
+        assert!(names.contains(&"Sora-Italic-VariableFont_wght.ttf"));
+        assert!(names.contains(&"Nunito[wght].ttf"));
+        assert!(!names.iter().any(|n| n.contains("Regular")));
+        let italic = files
+            .iter()
+            .find(|(n, _)| n.contains("Italic"))
+            .map(|(_, i)| *i);
+        assert_eq!(italic, Some(true));
     }
 
     #[test]

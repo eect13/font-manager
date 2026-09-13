@@ -139,7 +139,6 @@ export function useHydrateFonts() {
       const wantIds = Array.from(new Set(useFontStore.getState().activated));
       const desktop = await inDesktopShell();
       if (desktop) {
-        void syncManagedDocumentsRoot();
         const sessionNames = await listSessionFamilies();
         const persistNames: string[] = [];
         for (const id of wantIds) {
@@ -217,6 +216,10 @@ export function useHydrateFonts() {
             });
           }, 4000);
         });
+        window.setTimeout(() => {
+          if (cancelled) return;
+          void syncManagedDocumentsRoot();
+        }, 1200);
       }
       const liveIds = useFontStore.getState().activated;
       const toLoad = liveIds.slice(0, 12).map((id) => findFont(id, localFonts, google));
@@ -225,7 +228,9 @@ export function useHydrateFonts() {
       void reclassifyStoredLocalFonts(() => cancelled);
 
       startWatchPolling();
-      void loadSystemFonts();
+      window.setTimeout(() => {
+        if (!cancelled) void loadSystemFonts();
+      }, 500);
 
       if (!cancelled) stopCatalog = scheduleCatalogSync();
     })();
