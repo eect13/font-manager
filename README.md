@@ -1,8 +1,10 @@
-# Font Manager **1.0.156**
+# Font Manager **1.0.157**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
-**100% temporary session activation.** Zero registry bloat. Fonts unload on close. Files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`.
+**100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
+
+**1.0.157.** In-place `AddFontResourceExW` on Documents TTFs was the lock: Windows Font Cache kept those handles after exit, so Open Sauce Sans could not finish writing faces and Explorer could not delete family folders. Activate now maps LocalAppData copies (Documents originals stay). Quit still `Remove`s both the copy and any leftover 1.0.156 Documents path. **Once:** if folders are already locked from 1.0.156, reboot once after installing 1.0.157, then Repair Open Sauce Sans.
 
 **1.0.156.** Open Sauce Sans (and other Fontsource `type: other`) pins jsDelivr with the **npm** tag (`5.3.0`), not foundry `v1.477` which 400s — Activate can stamp `.complete`. Catalog-variable families: **551/558** have a real TTF in google/fonts (bracket or `VariableFont_*`). Session restore **registers first** (no CDN on the boot path); missing variable files backfill in the background. Ready-checks run in parallel. Disk scan and System drawer wait until after first paint.
 
@@ -48,7 +50,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 | **Delete** | Remove the family folder | Unload |
 | **Repair** | Re-fetch when `.complete` is missing or face count is short of expected | Register when done |
 
-**X** quits the app (session fonts unload via `RemoveFontResourceExW`; `.session-paths.txt` / `.session-active.json` clear when locks are gone; Documents TTFs stay). A family is **ready** only with a `.complete` marker stamped when the on-disk face count matches the expected full set — partial downloads do not stamp, and Scan/hydrate deletes lying `.complete` markers (including legacy bare `"1"` with no expected face count, and official Google Fontsource latin packs stamped complete without `.google-planned`, or — when there is no planned key list — below the catalog weights×italic floor; when `.google-planned` is a real key list, expected = keys.len() only) so Repair appears. Next launch recovers any stale session sidecars, then UI hydrate re-Activates the persisted library selection — no re-download.
+**X** quits the app (session fonts unload via `RemoveFontResourceExW` on the LocalAppData GDI copies **and** any leftover Documents paths; `.session-paths.txt` / `.session-active.json` clear when Documents write-locks are gone). Library TTFs stay in Documents. A family is **ready** only with a `.complete` marker stamped when the on-disk face count matches the expected full set — partial downloads do not stamp, and Scan/hydrate deletes lying `.complete` markers (including legacy bare `"1"` with no expected face count, and official Google Fontsource latin packs stamped complete without `.google-planned`, or — when there is no planned key list — below the catalog weights×italic floor; when `.google-planned` is a real key list, expected = keys.len() only) so Repair appears. Next launch recovers any stale session sidecars, then UI hydrate re-Activates the persisted library selection — no re-download.
 
 **1.0.149 UI honesty.** Activated scope and badge always follow live `activated[]` (never merge download queue / pendingActivate; no freeze while downloads run). Google Fonts drawer count is the official directory size (~1,946), not the full Fontsource-merged list. Catalog refresh toast: `Catalog N (Google 1946 · Fontsource exclusive M)`.
 

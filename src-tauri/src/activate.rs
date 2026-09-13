@@ -179,9 +179,101 @@ fn for_family_dirs(app: &AppHandle, mut visit: impl FnMut(&Path)) {
     }
 }
 
+/// LocalAppData GDI copies so Documents\Font Manager is never AddFontResourceExW'd.
+/// Font Cache holds the mapped path after Quit; in-place Adds left family folders
+/// write-locked (Open Sauce Repair could not overwrite, Explorer could not delete).
+fn gdi_map_file_name(src: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let key = src.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
+    let digest = Sha256::digest(key.as_bytes());
+    let mut hex = String::with_capacity(32);
+    for b in &digest[..16] {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("ttf")
+        .to_ascii_lowercase();
+    let ext = if matches!(ext.as_str(), "otf" | "ttf" | "ttc") {
+        ext
+    } else {
+        "ttf".into()
+    };
+    format!("{hex}.{ext}")
+}
+
+fn is_gdi_maps_dir_name(path: &Path) -> bool {
+    let lower = path.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
+    lower.contains("\\font manager\\gdi-maps")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn gdi_maps_root() -> Option<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(local).join("Font Manager").join("gdi-maps"))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn gdi_map_dest_for(src: &Path) -> Option<PathBuf> {
+    if is_gdi_maps_dir_name(src) {
+        return Some(src.to_path_buf());
+    }
+    Some(gdi_maps_root()?.join(gdi_map_file_name(src)))
+}
+
+/// Copy `src` into gdi-maps when missing or size-mismatched. Never deletes `src`.
+fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> PathBuf {
+    if !src.is_file() || is_gdi_maps_dir_name(src) {
+        return src.to_path_buf();
+    }
+    let dest = maps_root.join(gdi_map_file_name(src));
+    if let Some(parent) = dest.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let src_len = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+    let dest_ok = fs::metadata(&dest)
+        .map(|m| m.len() == src_len && src_len >= 256)
+        .unwrap_or(false);
+    if dest_ok {
+        return dest;
+    }
+    let tmp = dest.with_extension("part");
+    let _ = fs::remove_file(&tmp);
+    match fs::copy(src, &tmp) {
+        Ok(_) => {
+            if fs::rename(&tmp, &dest).is_err() {
+                if fs::copy(&tmp, &dest).is_err() {
+                    let _ = fs::remove_file(&tmp);
+                    return src.to_path_buf();
+                }
+                let _ = fs::remove_file(&tmp);
+            }
+            if dest.is_file() {
+                dest
+            } else {
+                src.to_path_buf()
+            }
+        }
+        Err(_) => {
+            let _ = fs::remove_file(&tmp);
+            src.to_path_buf()
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ensure_gdi_session_copy(src: &Path) -> PathBuf {
+    match gdi_maps_root() {
+        Some(root) => ensure_gdi_session_copy_to(src, &root),
+        None => src.to_path_buf(),
+    }
+}
+
 #[cfg(windows)]
 mod winfont {
     use std::collections::{HashMap, HashSet};
+    use std::fs;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -244,6 +336,71 @@ mod winfont {
         L.get_or_init(|| Mutex::new(()))
     }
 
+    fn maps() -> &'static Mutex<HashMap<PathBuf, PathBuf>> {
+        static M: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn remember_map(src: &Path, gdi: &Path) {
+        if src == gdi {
+            return;
+        }
+        if let Ok(mut m) = maps().lock() {
+            m.insert(src.to_path_buf(), gdi.to_path_buf());
+        }
+    }
+
+    fn gdi_path_for(src: &Path) -> PathBuf {
+        if let Ok(m) = maps().lock() {
+            if let Some(p) = m.get(src) {
+                return p.clone();
+            }
+        }
+        super::gdi_map_dest_for(src)
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| src.to_path_buf())
+    }
+
+    fn drop_map_file(gdi: &Path) {
+        if super::is_gdi_maps_dir_name(gdi) && gdi.is_file() {
+            let _ = fs::remove_file(gdi);
+        }
+    }
+
+    fn remove_mapped_keep_file(path: &Path) -> bool {
+        let gdi = gdi_path_for(path);
+        let mut any = remove_one(&gdi);
+        if gdi != path && remove_one(path) {
+            any = true;
+        }
+        any
+    }
+
+    fn forget_map(path: &Path) {
+        let gdi = gdi_path_for(path);
+        drop_map_file(&gdi);
+        if let Ok(mut m) = maps().lock() {
+            m.remove(path);
+            m.remove(&gdi);
+        }
+    }
+
+    /// Drain GDI on leftover map copies. Keep the files so the next register is a cheap Add.
+    pub fn drain_gdi_maps() {
+        let Some(dir) = super::gdi_maps_root() else {
+            return;
+        };
+        let Ok(rd) = fs::read_dir(&dir) else {
+            return;
+        };
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.is_file() {
+                let _ = remove_one(&p);
+            }
+        }
+    }
+
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
     }
@@ -303,6 +460,26 @@ mod winfont {
         if unloading().load(Ordering::SeqCst) {
             return false;
         }
+        let already = loaded()
+            .lock()
+            .map(|g| g.contains(path))
+            .unwrap_or(false);
+        if already {
+            let src_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let dest_ok = super::gdi_map_dest_for(path)
+                .and_then(|d| fs::metadata(d).ok())
+                .map(|m| m.len() == src_len && src_len >= 256)
+                .unwrap_or(false);
+            if dest_ok {
+                return true;
+            }
+            // Source changed — drain GDI on the stale map, then recopy below.
+            let _ = remove_mapped_keep_file(path);
+            forget_map(path);
+            if let Ok(mut g) = loaded().lock() {
+                g.remove(path);
+            }
+        }
         {
             let Ok(mut g) = loaded().lock() else {
                 return false;
@@ -317,11 +494,13 @@ mod winfont {
             }
             return false;
         }
+        // Copy to %LOCALAPPDATA%\Font Manager\gdi-maps and Add THAT path.
+        // Adding Documents in-place left family folders locked after Quit
+        // (Font Cache keeps the mapped file; Open Sauce could not overwrite).
+        let gdi = super::ensure_gdi_session_copy(path);
+        remember_map(path, &gdi);
         in_gdi().fetch_add(1, Ordering::SeqCst);
-        let w = wide(path);
-        // Add only. Crash leftovers are Remove'd in session_begin from
-        // .session-paths.txt. Remove-then-Add here doubled GDI on every boot.
-        // Hold gdi_api across Add so parallel family workers never overlap GDI.
+        let w = wide(&gdi);
         let n = {
             let _gdi = gdi_api().lock().unwrap_or_else(|e| e.into_inner());
             unsafe { AddFontResourceExW(w.as_ptr(), FR_ENUMERABLE, std::ptr::null_mut()) }
@@ -329,8 +508,9 @@ mod winfont {
         in_gdi().fetch_sub(1, Ordering::SeqCst);
         if unloading().load(Ordering::SeqCst) {
             if n > 0 {
-                remove_one(path);
+                let _ = remove_mapped_keep_file(path);
             }
+            forget_map(path);
             if let Ok(mut g) = loaded().lock() {
                 g.remove(path);
             }
@@ -378,9 +558,10 @@ mod winfont {
         if let Ok(mut g) = loaded().lock() {
             g.remove(path);
         }
-        // Always Remove (drain-until-zero), even if this process did not Add —
-        // crash leftover or a path that never entered `loaded` still locks DeleteFile.
-        let _ = remove_one(path);
+        // Drain the LocalAppData map AND the Documents original (1.0.156 in-place
+        // Adds). Then drop the map file so Documents can be rewritten/deleted.
+        let _ = remove_mapped_keep_file(path);
+        forget_map(path);
         dirty().store(true, Ordering::SeqCst);
     }
 
@@ -455,7 +636,7 @@ mod winfont {
         let attempted = paths.len();
         let mut removed_ok = 0usize;
         for path in paths.iter() {
-            if remove_one(path) {
+            if remove_mapped_keep_file(path) {
                 removed_ok += 1;
             }
         }
@@ -463,13 +644,14 @@ mod winfont {
             unsafe {
                 GdiFlush();
             }
-            // Second pass after flush: crash leftovers / raced Adds.
+            // Second pass after flush: crash leftovers / raced Adds / 1.0.156 in-place.
             for path in paths.iter() {
-                let _ = remove_one(path);
+                let _ = remove_mapped_keep_file(path);
             }
             unsafe {
                 GdiFlush();
             }
+            // Keep gdi-maps files — next boot re-Adds without recopying Documents.
         }
         if broadcast {
             unsafe {
@@ -1176,6 +1358,7 @@ fn recover_stale_session(app: &AppHandle) {
         let Ok(root) = documents_root(app) else {
             return;
         };
+        winfont::drain_gdi_maps();
         let leftover = load_session_paths_in(&root);
         let had_active = session_active_file_in(&root).is_file();
         if leftover.is_empty() && !had_active {
@@ -1186,9 +1369,18 @@ fn recover_stale_session(app: &AppHandle) {
             if plan_font_cache_flush(stats.attempted) {
                 let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
             }
+            // Legacy 1.0.156 in-place Adds: retry Remove on Documents paths still locked.
+            for _ in 0..4 {
+                let still = filter_still_write_locked(&leftover);
+                if still.is_empty() {
+                    break;
+                }
+                let _ = winfont::unload_paths(still, false);
+                thread::sleep(Duration::from_millis(120));
+            }
             let still = filter_still_write_locked(&leftover);
             if still.is_empty() {
-                clear_session_paths_in(&root);
+                clear_session_sidecars_in(&root);
             } else {
                 save_session_paths_in(&root, &still);
                 eprintln!(
@@ -1199,14 +1391,8 @@ fn recover_stale_session(app: &AppHandle) {
                 );
                 emit_session_recovery_toast(app, still.len(), stats.attempted.max(still.len()));
             }
-        }
-        // Drop stale active after path recovery so we do not re-Add thousands
-        // before UI hydrate/Repair. Live Activate rewrites `.session-active.json`.
-        // Keep it only while locked leftovers remain (Deactivate-all target).
-        let paths_remain = session_paths_file_in(&root).is_file()
-            && !load_session_paths_in(&root).is_empty();
-        if !paths_remain {
-            clear_session_active_in(&root);
+        } else {
+            clear_session_sidecars_in(&root);
         }
     }
     #[cfg(not(windows))]
@@ -1288,21 +1474,34 @@ pub fn session_end(app: &AppHandle) {
                 );
             }
         }
+        // Retry Remove on Documents originals still write-locked (pre-1.0.157 in-place Adds).
+        for _ in 0..4 {
+            let still = filter_still_write_locked(&extra);
+            if still.is_empty() {
+                break;
+            }
+            let _ = winfont::unload_paths(still, false);
+            thread::sleep(Duration::from_millis(120));
+        }
+        winfont::drain_gdi_maps();
         let still = filter_still_write_locked(&extra);
         let plan = plan_session_end_cleanup(attempted.max(stats.attempted), &still);
         if let Some(msg) = &plan.fail_loud {
             eprintln!("{msg}");
         } else if stats.attempted > 0 && stats.removed_ok * 2 < stats.attempted {
-            // Probe clean but most Removes returned 0 — still surface it.
             eprintln!(
                 "Font Manager: session unload Remove acknowledged {}/{} paths (rest already absent or refcount miss). Sidecars cleared.",
                 stats.removed_ok, stats.attempted
             );
         }
-        if plan.clear_active {
+        if plan.clear_active && plan.clear_paths {
+            clear_session_sidecars(app);
+        } else if plan.clear_active {
             clear_session_active(app);
-        }
-        if plan.clear_paths {
+            if !plan.keep_paths.is_empty() {
+                save_session_paths(app, &plan.keep_paths);
+            }
+        } else if plan.clear_paths {
             clear_session_paths(app);
         } else if !plan.keep_paths.is_empty() {
             save_session_paths(app, &plan.keep_paths);
@@ -1671,11 +1870,12 @@ fn fetch_ttf_to_file(
             return Err("cancelled".into());
         }
         // Single GET inside stream — classify from StreamFontResult (no double-GET).
-        match stream_url_to_font_file(client, url, dest) {
-            StreamFontResult::Written | StreamFontResult::AlreadyIntact => {
-                circuit_success(host);
-                return Ok(());
-            }
+        let result = stream_url_to_font_file(client, url, dest);
+        if result.ok() {
+            circuit_success(host);
+            return Ok(());
+        }
+        match result {
             StreamFontResult::Cancelled => return Err("cancelled".into()),
             StreamFontResult::Http(404) => {
                 last = format!("404 {host}");
@@ -1692,6 +1892,7 @@ fn fetch_ttf_to_file(
                 last = format!("{host}: {msg}");
                 circuit_failure(host);
             }
+            StreamFontResult::Written | StreamFontResult::AlreadyIntact => {}
         }
     }
     if skipped_open > 0 && skipped_open == urls.len() {
@@ -2634,6 +2835,12 @@ fn stream_url_to_font_file(client: &reqwest::blocking::Client, url: &str, dest: 
         let _ = delete_font_file(dest);
     }
     if fs::rename(&tmp, dest).is_err() {
+        if path_still_write_locked(dest) {
+            let _ = fs::remove_file(&tmp);
+            return StreamFontResult::Failed(
+                "files locked — close Word or Adobe, then Retry".into(),
+            );
+        }
         // Cross-device fallback.
         if fs::copy(&tmp, dest).is_err() {
             let _ = fs::remove_file(&tmp);
@@ -6356,6 +6563,48 @@ mod session_sidecar_tests {
         clear_session_sidecars_in(&root);
         assert!(!session_paths_file_in(&root).is_file());
         assert!(!session_active_file_in(&root).is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gdi_map_file_name_is_stable_and_not_the_original() {
+        let a = PathBuf::from(
+            r"C:\Users\Eric\Documents\Font Manager\Open Sauce Sans\open-sauce-sans-400-normal.ttf",
+        );
+        let b = PathBuf::from(
+            "C:/Users/Eric/Documents/Font Manager/Open Sauce Sans/open-sauce-sans-400-normal.ttf",
+        );
+        let na = gdi_map_file_name(&a);
+        let nb = gdi_map_file_name(&b);
+        assert_eq!(na, nb, "slash direction must not change the map name");
+        assert!(na.ends_with(".ttf"));
+        assert!(!na.to_ascii_lowercase().contains("sauce"));
+        assert!(!is_gdi_maps_dir_name(&a));
+        let map = PathBuf::from(r"C:\Users\Eric\AppData\Local\Font Manager\gdi-maps\abcd.ttf");
+        assert!(is_gdi_maps_dir_name(&map));
+    }
+
+    #[test]
+    fn ensure_gdi_session_copy_leaves_documents_original() {
+        let root = temp_root("gdi-copy");
+        let src = root.join("Open Sauce Sans").join("open-sauce-sans-400-normal.ttf");
+        fs::create_dir_all(src.parent().unwrap()).unwrap();
+        fs::write(&src, vec![0u8; 300]).unwrap();
+        let maps = root.join("gdi-maps");
+        let dest = ensure_gdi_session_copy_to(&src, &maps);
+        assert!(src.is_file(), "Documents original must remain");
+        assert_ne!(dest, src, "GDI must not map the Documents path");
+        assert!(dest.is_file());
+        assert_eq!(
+            fs::metadata(&src).unwrap().len(),
+            fs::metadata(&dest).unwrap().len()
+        );
+        let dest2 = ensure_gdi_session_copy_to(&src, &maps);
+        assert_eq!(dest, dest2, "same size must reuse the map");
+        fs::write(&src, vec![1u8; 400]).unwrap();
+        let dest3 = ensure_gdi_session_copy_to(&src, &maps);
+        assert_eq!(dest3, dest);
+        assert_eq!(fs::metadata(&dest3).unwrap().len(), 400);
         let _ = fs::remove_dir_all(&root);
     }
 

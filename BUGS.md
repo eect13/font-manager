@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.157
+- **Documents folders locked after Quit:** `AddFontResourceExW` mapped `Documents\Font Manager\*.ttf` in-place. Font Cache kept those handles after the process died, so Explorer could not delete family folders and Open Sauce Sans could not overwrite faces. GDI now Adds copies under `%LOCALAPPDATA%\Font Manager\gdi-maps`. Remove drains the copy **and** any leftover Documents path from 1.0.156. Already-locked files from 1.0.156 may need one reboot, then Repair.
+- **Release warnings:** `clear_session_sidecars` is used on the Windows quit path; `StreamFontResult::ok` is used by the CDN walker; `has_table` is allow(dead_code) (tests only).
+
 ## Fixed in tip / 1.0.156
 - **Open Sauce Sans incomplete:** Fontsource API `version` is the foundry tag (`v1.477`) which 400s on jsDelivr `fontsource/fonts/{slug}@{tag}`. Pin with `npmVersion` (`5.3.0`). Do not abort the URL list after two npm/unpkg 404s — `@fontsource/files` is missing for `type: other` while `@latest` / `@5.3.0` serve all 14 latin TTF faces.
 - **Variable files missing on disk:** 551/558 catalog-variable families have a VF TTF in google/fonts (7 Edu / Google Sans are not in the public repo). Session restore no longer sequential-CDN-ensures every family on boot. Register first; `backfill_missing_variable_faces` pulls `*-variable-*` after GDI is up. METADATA parser also accepts `Family-VariableFont_wght.ttf`.
@@ -47,4 +51,4 @@
 
 ## Notes
 
-- Tip is 1.0.156 (unreleased pack — ask before NSIS).
+- Tip is 1.0.157 (unreleased pack — ask before NSIS).
