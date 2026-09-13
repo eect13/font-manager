@@ -301,10 +301,11 @@ mod winfont {
     }
 
     // --- Per-user FontBase-style staging ------------------------------------
-    // Documents originals are never AddFontResourceExW'd. We hardlink/copy into
-    // %LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\, write HKCU Fonts,
-    // then Add the LocalAppData path so Adobe sees fonts while Documents stays
-    // movable/deletable.
+    // Documents originals are never AddFontResourceExW'd. We **copy** (never
+    // hardlink) into %LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\,
+    // write HKCU Fonts, then Add the LocalAppData path so Adobe sees fonts
+    // while Documents stays movable/deletable. Same-volume hardlink = same
+    // file ID → Font Cache locking LocalAppData would still pinch Documents.
 
     #[derive(Clone)]
     struct FaceActivation {
@@ -444,16 +445,9 @@ mod winfont {
             .unwrap_or("face.ttf");
         let dest_name = crate::peruser::per_user_file_name(family, file_name);
         let dest = root.join(dest_name);
-        if dest.exists() {
-            return Some(dest);
-        }
-        match std::fs::hard_link(source, &dest) {
-            Ok(()) => Some(dest),
-            Err(_) => match std::fs::copy(source, &dest) {
-                Ok(_) => Some(dest),
-                Err(_) => None,
-            },
-        }
+        // Copy only — never hardlink (same-volume hardlink locks Documents).
+        // Replace dest when size/mtime/content no longer matches source (heal).
+        crate::peruser::stage_face_copy_only(source, &dest).ok()
     }
 
     fn add_gdi_path(path: &Path) -> bool {
@@ -531,8 +525,16 @@ mod winfont {
             .and_then(|s| s.to_str())
             .unwrap_or("face.ttf");
         let reg_name = crate::peruser::registry_value_name(family, file_name);
-        let _ = hkcu_set_font(&reg_name, &dest);
+        let hkcu_ok = hkcu_set_font(&reg_name, &dest);
         if !add_gdi_path(&dest) {
+            // HKCU set + stage succeeded but GDI Add failed → roll back both.
+            let plan = crate::peruser::plan_gdi_fail_rollback(hkcu_ok, dest.exists());
+            if plan.delete_registry {
+                hkcu_delete_font(&reg_name);
+            }
+            if plan.delete_staged_file && crate::peruser::is_per_user_managed_path(&dest) {
+                let _ = std::fs::remove_file(&dest);
+            }
             return None;
         }
         let act = FaceActivation {
@@ -706,9 +708,10 @@ mod winfont {
 
     /// Drain this process's Adds plus leftover paths from a previous incomplete
     /// quit. RemoveFontResourceExW loops until 0 (refcount drain). Local GdiFlush
-    /// only on the quit path — HWND_BROADCAST WM_FONTCHANGE can re-lock Documents
-    /// files in Explorer. Live Deactivate may still broadcast; FontCache service
-    /// restart runs after this (see restart_font_cache_service).
+    /// only on the quit path — HWND_BROADCAST WM_FONTCHANGE can re-lock staged
+    /// LocalAppData faces (and legacy Documents leftovers) in Explorer. Live
+    /// Deactivate may still broadcast; FontCache service restart runs after this
+    /// (see restart_font_cache_service).
     pub fn unload_paths(extra: Vec<PathBuf>, broadcast: bool) -> UnloadStats {
         let mut paths = loaded()
             .lock()
@@ -779,12 +782,14 @@ mod winfont {
     }
 
     // --- Windows Font Cache (svchost / LOCAL SERVICE) unlock -----------------
-    // After enumerable Remove, Font Cache often keeps Documents TTF handles.
-    // Best-effort SCM restart beats HWND_BROADCAST for unlock; soft-fail
-    // AccessDenied may still need admin once. Unlock is proven only after
-    // WRITE_OK on Eric's box — do not treat soft-fail as FontBase-or-better.
-    // Do NOT wipe %WINDIR%\ServiceProfiles\...\FontCache here — service
-    // restart first; dir wipe is last-resort and left unimplemented.
+    // After enumerable Remove, Font Cache may keep handles on **staged**
+    // LocalAppData FontManager faces (not Documents — those are never
+    // AddFontResourceExW'd after 1.0.156). Best-effort SCM restart beats
+    // HWND_BROADCAST for unlock; soft-fail AccessDenied may still need admin
+    // once. Unlock is proven only after WRITE_OK on Eric's box — do not treat
+    // soft-fail as FontBase-or-better. Do NOT wipe
+    // %WINDIR%\ServiceProfiles\...\FontCache here — service restart first;
+    // dir wipe is last-resort and left unimplemented.
 
     #[link(name = "advapi32")]
     extern "system" {
@@ -1229,6 +1234,8 @@ pub fn session_register_workers(family_count: usize) -> usize {
 struct SessionEndCleanup {
     clear_active: bool,
     clear_paths: bool,
+    /// Successful unload must also drop `.session-maps.json` (not only paths/active).
+    clear_maps: bool,
     keep_paths: Vec<PathBuf>,
     fail_loud: Option<String>,
 }
@@ -1241,6 +1248,7 @@ fn plan_session_end_cleanup(
         SessionEndCleanup {
             clear_active: true,
             clear_paths: true,
+            clear_maps: true,
             keep_paths: Vec::new(),
             fail_loud: None,
         }
@@ -1248,6 +1256,8 @@ fn plan_session_end_cleanup(
         SessionEndCleanup {
             clear_active: true,
             clear_paths: false,
+            // Keep maps so next-boot recovery can restore HKCU/GDI bookkeeping.
+            clear_maps: false,
             keep_paths: still_locked.to_vec(),
             fail_loud: Some(format!(
                 "Font Manager: session unload incomplete — {} of {} paths still write-locked (Font Cache/svchost, fontdrvhost, or Adobe?). {} Next launch will retry RemoveFontResourceExW; or Deactivate-all as admin / reboot then Repair.",
@@ -1316,6 +1326,7 @@ fn persist_activation_sidecars(app: &AppHandle) {
     }
 }
 
+#[allow(dead_code)] // called from Windows session_end
 fn clear_session_paths(app: &AppHandle) {
     if let Ok(root) = documents_root(app) {
         clear_session_paths_in(&root);
@@ -1326,6 +1337,13 @@ fn clear_session_paths(app: &AppHandle) {
 fn clear_session_active(app: &AppHandle) {
     if let Ok(root) = documents_root(app) {
         clear_session_active_in(&root);
+    }
+}
+
+#[allow(dead_code)] // called from Windows session_end
+fn clear_session_maps(app: &AppHandle) {
+    if let Ok(root) = documents_root(app) {
+        crate::peruser::clear_session_maps_in(&root);
     }
 }
 
@@ -1492,7 +1510,7 @@ fn emit_session_recovery_toast(app: &AppHandle, locked: usize, attempted: usize)
     });
 }
 
-/// Payload when Font Cache still holds Documents TTFs after Deactivate flush.
+/// Payload when Font Cache still holds staged (or legacy) TTFs after flush.
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 struct FontCacheHeldNotice {
@@ -1667,9 +1685,10 @@ pub fn session_end(app: &AppHandle) {
         extra = merge_unique_paths(extra, winfont::snapshot_loaded());
         save_session_paths(app, &extra);
         let attempted = extra.len();
-        // No WM_FONTCHANGE on quit — broadcast can re-lock family folders in
-        // Explorer. Drain-Remove + local GdiFlush, then time-bounded FontCache
-        // service restart so svchost/LOCAL SERVICE drops Documents handles.
+        // No WM_FONTCHANGE on quit — broadcast can re-lock staged FontManager
+        // faces in Explorer. Drain-Remove + local GdiFlush, then time-bounded
+        // FontCache restart so svchost drops LocalAppData handles (Documents
+        // library was never GDI-registered after per-user Activate).
         let stats = winfont::unload_paths(extra.clone(), false);
         if plan_font_cache_flush(stats.attempted.max(attempted)) {
             let outcome = winfont::restart_font_cache_service(font_cache_restart_budget());
@@ -1704,6 +1723,9 @@ pub fn session_end(app: &AppHandle) {
             clear_session_paths(app);
         } else if !plan.keep_paths.is_empty() {
             save_session_paths(app, &plan.keep_paths);
+        }
+        if plan.clear_maps {
+            clear_session_maps(app);
         }
     }
     #[cfg(not(windows))]
@@ -6667,6 +6689,7 @@ mod session_sidecar_tests {
         let plan = plan_session_end_cleanup(10, &[]);
         assert!(plan.clear_active);
         assert!(plan.clear_paths);
+        assert!(plan.clear_maps, "successful unload must clear .session-maps.json");
         assert!(plan.keep_paths.is_empty());
         assert!(plan.fail_loud.is_none());
     }
@@ -6677,6 +6700,7 @@ mod session_sidecar_tests {
         let plan = plan_session_end_cleanup(100, &locked);
         assert!(plan.clear_active);
         assert!(!plan.clear_paths);
+        assert!(!plan.clear_maps, "keep maps for next-boot recovery while locked");
         assert_eq!(plan.keep_paths, locked);
         let msg = plan.fail_loud.expect("fail-loud");
         assert!(msg.contains("2 of 100"));
@@ -6770,7 +6794,6 @@ mod session_sidecar_tests {
     }
 
     #[test]
-    #[test]
     fn documents_paths_must_not_be_gdi_registered_invariant() {
         let docs = PathBuf::from(r"C:\Users\Eric\Documents\Font Manager\Nunito\a.ttf");
         assert!(crate::peruser::must_not_register_as_gdi_path(&docs));
@@ -6784,6 +6807,7 @@ mod session_sidecar_tests {
         )));
     }
 
+    #[test]
     fn plan_fail_loud_mentions_font_cache() {
         let locked = vec![PathBuf::from("a.ttf")];
         let plan = plan_session_end_cleanup(10, &locked);

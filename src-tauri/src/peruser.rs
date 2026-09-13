@@ -1,10 +1,12 @@
 //! Per-user Windows font activation (FontBase-style unlock).
 //!
 //! Documents library files stay on disk as the library source of truth, but
-//! Activate never calls AddFontResourceExW on those paths. Faces are hardlinked
-//! (else copied) into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\`,
+//! Activate never calls AddFontResourceExW on those paths. Faces are **copied**
+//! (never hardlinked) into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\`,
 //! registered under `HKCU\...\Fonts`, then AddFontResourceExW'd on the
-//! LocalAppData path so Adobe/Word see them while Documents stays deletable.
+//! LocalAppData path so Adobe/Word see them while Documents stays movable /
+//! deletable. Same-volume hardlinks share a file ID — Font Cache locking the
+//! staged face would still pinch the Documents original; copy-only avoids that.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +24,32 @@ pub struct FaceMap {
     pub registry_name: String,
     #[serde(default)]
     pub family: String,
+}
+
+fn alnum_lower(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// `FamilyName-Style` stem → `Style` when the prefix matches `family` ignoring
+/// spaces/case (`OpenSauceSans-Regular` + `Open Sauce Sans` → `Regular`).
+fn hyphen_style_after_family(family: &str, stem: &str) -> Option<String> {
+    let fam_key = alnum_lower(family);
+    if fam_key.is_empty() {
+        return None;
+    }
+    let (prefix, style) = stem.split_once('-')?;
+    if alnum_lower(prefix) != fam_key {
+        return None;
+    }
+    let style = style.replace('-', " ").trim().to_string();
+    if style.is_empty() {
+        None
+    } else {
+        Some(style)
+    }
 }
 
 /// HKCU Fonts value name Windows uses for "install for me only".
@@ -42,11 +70,12 @@ pub fn registry_value_name(family: &str, file_name: &str) -> String {
         "otf" | "otc" => "OpenType",
         _ => "TrueType",
     };
-    // Prefer a readable "Family Stem" when stem already embeds the family;
-    // otherwise "Family Stem".
     let label = if family.is_empty() {
         stem.to_string()
-    } else if stem.to_ascii_lowercase().starts_with(&family.to_ascii_lowercase()) {
+    } else if let Some(style) = hyphen_style_after_family(family, stem) {
+        format!("{family} {style}")
+    } else if alnum_lower(stem).starts_with(&alnum_lower(family)) {
+        // Stem already embeds the family — use stem alone (no double prefix).
         stem.to_string()
     } else {
         format!("{family} {stem}")
@@ -128,6 +157,59 @@ pub fn per_user_fonts_root_from_localappdata(local: Option<&str>) -> Option<Path
     )
 }
 
+/// True when an existing staged face can be reused (same size + mtime, or
+/// identical bytes when mtime differs / is unavailable). Mismatch → replace
+/// so heal / re-download does not keep a stale LocalAppData face.
+pub fn faces_match_for_reuse(source: &Path, dest: &Path) -> bool {
+    let Ok(s_meta) = std::fs::metadata(source) else {
+        return false;
+    };
+    let Ok(d_meta) = std::fs::metadata(dest) else {
+        return false;
+    };
+    if s_meta.len() != d_meta.len() {
+        return false;
+    }
+    match (s_meta.modified(), d_meta.modified()) {
+        (Ok(sm), Ok(dm)) if sm == dm => true,
+        _ => match (std::fs::read(source), std::fs::read(dest)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        },
+    }
+}
+
+/// Copy `source` into `dest` under FontManager/. Never hardlinks — same-volume
+/// hardlink shares a file ID so Font Cache locking LocalAppData still locks
+/// Documents. If `dest` exists but does not match source identity, replace it.
+pub fn stage_face_copy_only(source: &Path, dest: &Path) -> std::io::Result<PathBuf> {
+    if dest.exists() {
+        if faces_match_for_reuse(source, dest) {
+            return Ok(dest.to_path_buf());
+        }
+        let _ = std::fs::remove_file(dest);
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(source, dest)?;
+    Ok(dest.to_path_buf())
+}
+
+/// When HKCU + stage succeed but `AddFontResourceExW` fails, roll back both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GdiFailRollback {
+    pub delete_registry: bool,
+    pub delete_staged_file: bool,
+}
+
+pub fn plan_gdi_fail_rollback(hkcu_was_set: bool, staged_exists: bool) -> GdiFailRollback {
+    GdiFailRollback {
+        delete_registry: hkcu_was_set,
+        delete_staged_file: staged_exists,
+    }
+}
+
 pub fn session_maps_file_in(root: &Path) -> PathBuf {
     root.join(SESSION_MAPS_FILE)
 }
@@ -185,22 +267,111 @@ mod tests {
     fn registry_name_truetype_and_opentype() {
         assert_eq!(
             registry_value_name("Open Sauce Sans", "OpenSauceSans-Regular.ttf"),
-            "Open Sauce Sans OpenSauceSans-Regular (TrueType)"
+            "Open Sauce Sans Regular (TrueType)"
         );
-        // Stem lowercases to start with family → use stem alone.
         assert_eq!(
             registry_value_name("Roboto", "roboto-400.otf"),
-            "roboto-400 (OpenType)"
+            "Roboto 400 (OpenType)"
         );
         assert_eq!(
             registry_value_name("Roboto", "ExtraBold.otf"),
             "Roboto ExtraBold (OpenType)"
         );
-        // Stem already starts with family → don't double-prefix awkwardly beyond stem.
         assert_eq!(
             registry_value_name("Nunito", "Nunito-ExtraLight.ttf"),
-            "Nunito-ExtraLight (TrueType)"
+            "Nunito ExtraLight (TrueType)"
         );
+    }
+
+    #[test]
+    fn stage_face_copy_only_never_hardlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "fm-stage-copy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("src.ttf");
+        let dest = root.join("FontManager").join("Fam__src.ttf");
+        std::fs::write(&source, b"font-bytes-v1").unwrap();
+        stage_face_copy_only(&source, &dest).expect("copy");
+        assert!(dest.is_file());
+        // Same volume: hardlink would share inode; copy must not.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let s_ino = std::fs::metadata(&source).unwrap().ino();
+            let d_ino = std::fs::metadata(&dest).unwrap().ino();
+            assert_ne!(s_ino, d_ino, "staged face must be a copy, not a hardlink");
+        }
+        assert_eq!(std::fs::read(&dest).unwrap(), b"font-bytes-v1");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stage_face_replaces_stale_dest_on_mismatch() {
+        let root = std::env::temp_dir().join(format!(
+            "fm-stage-stale-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("FontManager")).unwrap();
+        let source = root.join("src.ttf");
+        let dest = root.join("FontManager").join("Fam__src.ttf");
+        std::fs::write(&dest, b"stale-old-face").unwrap();
+        std::fs::write(&source, b"healed-new-face-bytes").unwrap();
+        assert!(!faces_match_for_reuse(&source, &dest));
+        stage_face_copy_only(&source, &dest).expect("replace");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"healed-new-face-bytes");
+        // Matching identity → reuse (no error).
+        stage_face_copy_only(&source, &dest).expect("reuse");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"healed-new-face-bytes");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gdi_fail_rollback_plans_hkcu_and_staged_delete() {
+        let plan = plan_gdi_fail_rollback(true, true);
+        assert!(plan.delete_registry);
+        assert!(plan.delete_staged_file);
+        let skip = plan_gdi_fail_rollback(false, false);
+        assert!(!skip.delete_registry);
+        assert!(!skip.delete_staged_file);
+    }
+
+    #[test]
+    fn clear_session_maps_removes_file() {
+        let root = std::env::temp_dir().join(format!(
+            "fm-maps-clear-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        save_session_maps_in(
+            &root,
+            &[FaceMap {
+                source: "a".into(),
+                per_user: "b".into(),
+                registry_name: "c".into(),
+                family: "d".into(),
+            }],
+        );
+        assert!(session_maps_file_in(&root).is_file());
+        clear_session_maps_in(&root);
+        assert!(!session_maps_file_in(&root).is_file());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

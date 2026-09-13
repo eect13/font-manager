@@ -1,7 +1,8 @@
 # Font Manager — known issues / follow-ups
 
 ## Fixed in tip / 1.0.156
-- **Per-user Activate / Deactivate (FontBase unlock)**: hardlink/copy faces into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\`, register `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts`, `AddFontResourceExW` on LocalAppData only — **never** Documents library paths (Font Cache no longer locks the library). Deactivate/Quit: Remove per-user paths, delete HKCU values we added, delete staged files, clear `.session-maps.json` + `.session-paths.txt`. No `C:\Windows\Fonts` / HKLM leftovers.
+- **Skye HOLD / copy-only stage**: `stage_to_per_user` always copies into LocalAppData FontManager (no same-volume hardlink). Stale dest replaced when size/mtime/content mismatch after heal. `activate_from_library` rolls back HKCU + staged file if GDI Add fails. Successful `session_end` clears `.session-maps.json` with paths/active.
+- **Per-user Activate / Deactivate (FontBase unlock)**: **copy** faces into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\` (never hardlink — same-volume hardlink shares file ID with Documents), register `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts`, `AddFontResourceExW` on LocalAppData only — **never** Documents library paths (Font Cache no longer locks the library). Deactivate/Quit: Remove per-user paths, delete HKCU values we added, delete staged files, clear `.session-maps.json` + `.session-paths.txt`. No `C:\Windows\Fonts` / HKLM leftovers.
 - **Migration from 1.0.155**: `session_begin` unloads legacy Documents entries in `.session-paths.txt` (best-effort + FontCache restart) and does not re-Add them; fresh Activate uses per-user only.
 
 ## Fixed in tip / 1.0.155

@@ -4,7 +4,7 @@ FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and
 
 **100% temporary session activation.** Fonts unload on Quit. Library files live in `Documents / Font Manager`; Activate only stages into per-user LocalAppData Fonts (never `C:\Windows\Fonts` / HKLM). HKCU Fonts values we add are removed on Deactivate/Quit.
 
-**1.0.156 per-user Activate.** Activate stages faces into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\` (hardlink else copy), registers `HKCU\...\Fonts`, and `AddFontResourceExW`s the **LocalAppData** path only — never Documents — so `Documents\Font Manager` stays movable/deletable (FontBase unlock). Deactivate/Quit removes HKCU values, deletes staged files, and Removes the per-user paths. No `C:\Windows\Fonts` / HKLM. Migration: old Documents session-paths are unloaded once and never re-Added.
+**1.0.156 per-user Activate.** Activate stages faces into `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager\` (**copy only**, never hardlink), registers `HKCU\...\Fonts`, and `AddFontResourceExW`s the **LocalAppData** path only — never Documents — so `Documents\Font Manager` stays movable/deletable (FontBase unlock). Deactivate/Quit removes HKCU values, deletes staged files, and Removes the per-user paths. No `C:\Windows\Fonts` / HKLM. Migration: old Documents session-paths are unloaded once and never re-Added.
 
 ![Library](screenshots/library.png)
 
