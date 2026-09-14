@@ -115,3 +115,17 @@ test("progress idle ready_names are the live list", () => {
   assert.deepEqual(liveFromProgress(["Nunito", "Roboto"], false), ["Nunito", "Roboto"]);
   assert.deepEqual(liveFromProgress([], false), []);
 });
+
+test("cancel mid-register: only completed Adds go live", () => {
+  // Workers finished A/B before Cancel; C/D still queued — must not mark live.
+  const requested = ["A", "B", "C", "D"];
+  const registeredBeforeCancel = ["A", "B"];
+  const fin = finishOnDiskRegister(requested, registeredBeforeCancel);
+  assert.deepEqual(fin.liveNames, ["A", "B"]);
+  assert.equal(fin.failed, 2);
+  assert.deepEqual(fin.failedNames, ["C", "D"]);
+  assert.deepEqual(fin.pendingClearNames, ["C", "D"]);
+  assert.ok(!fin.liveNames.includes("C"));
+  assert.ok(!fin.liveNames.includes("D"));
+});
+

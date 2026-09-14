@@ -1159,6 +1159,25 @@ pub fn session_register_workers(family_count: usize) -> usize {
     family_count.clamp(MIN, MAX)
 }
 
+/// Gate for on-disk parallel register workers (Skye P1).
+/// Cancel aborts the queue; pause waits like download drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnDiskRegisterGate {
+    Run,
+    WaitPaused,
+    StopCancelled,
+}
+
+fn on_disk_register_gate(cancel: bool, pause: bool) -> OnDiskRegisterGate {
+    if cancel {
+        OnDiskRegisterGate::StopCancelled
+    } else if pause {
+        OnDiskRegisterGate::WaitPaused
+    } else {
+        OnDiskRegisterGate::Run
+    }
+}
+
 /// Decision after best-effort unload: clear sidecars on success; on partial
 /// failure keep remaining locked paths for next-boot recovery and fail loud.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5039,6 +5058,9 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     let state = bulk();
     let own_progress = !state.running.load(Ordering::SeqCst);
     if own_progress {
+        // Fresh job — clear leftover cancel/pause from a prior Cancel click.
+        state.cancel.store(false, Ordering::SeqCst);
+        state.pause.store(false, Ordering::SeqCst);
         if let Ok(mut p) = state.progress.lock() {
             p.running = true;
             p.paused = false;
@@ -5127,6 +5149,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     emit_progress(&app);
 
     let registered = register_on_disk_parallel_progress(&app, &ready);
+    let cancelled = state.cancel.load(Ordering::SeqCst);
     if !registered.is_empty() {
         session_add(&app, &registered);
     }
@@ -5137,29 +5160,34 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     }
 
     // Requested but not intact: clear pending via failed_names (poll finalize).
+    // On cancel: running=false + emit; keep ready_names for completed Adds only —
+    // do not mark remaining queue items as ready (or pretend they finished).
     if own_progress {
-        let ready_l: HashSet<String> = ready
-            .iter()
-            .map(|n| n.trim().to_lowercase())
-            .collect();
         if let Ok(mut p) = state.progress.lock() {
-            for family in &families {
-                let t = family.trim();
-                if t.is_empty() || ready_l.contains(&t.to_lowercase()) {
-                    continue;
+            if !cancelled {
+                let ready_l: HashSet<String> = ready
+                    .iter()
+                    .map(|n| n.trim().to_lowercase())
+                    .collect();
+                for family in &families {
+                    let t = family.trim();
+                    if t.is_empty() || ready_l.contains(&t.to_lowercase()) {
+                        continue;
+                    }
+                    p.failed = p.failed.saturating_add(1);
+                    if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                        p.failed_names.push(t.to_string());
+                        p.failed_details.push(format!(
+                            "{t} — not intact on disk (.complete missing or incomplete)"
+                        ));
+                    }
                 }
-                p.failed = p.failed.saturating_add(1);
-                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
-                    p.failed_names.push(t.to_string());
-                    p.failed_details.push(format!(
-                        "{t} — not intact on disk (.complete missing or incomplete)"
-                    ));
-                }
+                p.done = ready.len() as u32;
+                p.total = ready.len() as u32;
             }
             p.running = false;
+            p.paused = false;
             p.current.clear();
-            p.done = ready.len() as u32;
-            p.total = ready.len() as u32;
         }
         state.running.store(false, Ordering::SeqCst);
         emit_progress(&app);
@@ -5176,6 +5204,8 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
 
 /// ≤6 workers walk/register in parallel; GDI Add stays serialized in gdi_api.
 /// Progress done/total ticks per family; ready_names only when Add returned >0.
+/// Skye P1: honor bulk cancel/pause — Cancel clears the queue so workers stop;
+/// Pause waits like download drain (does not drain GDI while held).
 fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<String> {
     if ready.is_empty() {
         return Vec::new();
@@ -5196,10 +5226,65 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
         let last_emit = last_emit.clone();
         joins.push(thread::spawn(move || {
             loop {
+                let state = bulk();
+                match on_disk_register_gate(
+                    state.cancel.load(Ordering::SeqCst),
+                    state.pause.load(Ordering::SeqCst),
+                ) {
+                    OnDiskRegisterGate::StopCancelled => {
+                        if let Ok(mut q) = queue.lock() {
+                            q.clear();
+                        }
+                        break;
+                    }
+                    OnDiskRegisterGate::WaitPaused => {
+                        if let Ok(mut p) = state.progress.lock() {
+                            p.paused = true;
+                            p.running = true;
+                        }
+                        emit_progress(&app);
+                        thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                    OnDiskRegisterGate::Run => {
+                        if let Ok(mut p) = state.progress.lock() {
+                            p.paused = false;
+                        }
+                    }
+                }
                 let next = queue.lock().ok().and_then(|mut q| q.pop_front());
                 let Some(family) = next else {
                     break;
                 };
+                // Re-check after pop: Cancel between pop and Add must not leave
+                // the family half-handled as "ready" if we skip Add — put back
+                // only if we have not started register; here we abort without Add.
+                if state.cancel.load(Ordering::SeqCst) {
+                    if let Ok(mut q) = queue.lock() {
+                        q.clear();
+                    }
+                    break;
+                }
+                while matches!(
+                    on_disk_register_gate(
+                        state.cancel.load(Ordering::SeqCst),
+                        state.pause.load(Ordering::SeqCst),
+                    ),
+                    OnDiskRegisterGate::WaitPaused
+                ) {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.paused = true;
+                        p.running = true;
+                    }
+                    emit_progress(&app);
+                    thread::sleep(Duration::from_millis(200));
+                }
+                if state.cancel.load(Ordering::SeqCst) {
+                    if let Ok(mut q) = queue.lock() {
+                        q.clear();
+                    }
+                    break;
+                }
                 let k = register_intact_family(&app, &family);
                 forget_queued(&family);
                 if let Ok(mut denied) = bulk().denied.lock() {
@@ -5215,6 +5300,8 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                     }
                     p.current = format!("Registering {family}");
                     if k > 0 {
+                        // Honesty: this family did Add successfully — count it even
+                        // if Cancel arrived mid-flight after Add returned.
                         p.skipped = p.skipped.saturating_add(1);
                         if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.ready_names.push(family.clone());
@@ -5235,6 +5322,14 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                     if let Ok(mut g) = registered.lock() {
                         g.push(family.clone());
                     }
+                }
+                // After register: Cancel → clear remaining queue (do not mark rest ready).
+                if bulk().cancel.load(Ordering::SeqCst) {
+                    if let Ok(mut q) = queue.lock() {
+                        q.clear();
+                    }
+                    emit_progress(&app);
+                    break;
                 }
                 let last = done_n >= total;
                 let should_emit = last
@@ -7142,6 +7237,25 @@ mod session_sidecar_tests {
         assert_eq!(session_register_workers(1), 1);
         assert_eq!(session_register_workers(3), 3);
         assert_eq!(session_register_workers(100), 6);
+    }
+
+    /// Skye P1: Cancel must abort on-disk register queue; Pause waits (download-like).
+    #[test]
+    fn on_disk_register_gate_cancel_and_pause() {
+        assert_eq!(
+            on_disk_register_gate(true, false),
+            OnDiskRegisterGate::StopCancelled
+        );
+        assert_eq!(
+            on_disk_register_gate(true, true),
+            OnDiskRegisterGate::StopCancelled,
+            "cancel beats pause"
+        );
+        assert_eq!(
+            on_disk_register_gate(false, true),
+            OnDiskRegisterGate::WaitPaused
+        );
+        assert_eq!(on_disk_register_gate(false, false), OnDiskRegisterGate::Run);
     }
 
     /// Documents Skye P1: ≤6 parallel `register_intact_family` workers may walk
