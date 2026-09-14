@@ -2489,6 +2489,14 @@ fn google_fonts_variable_cdn_urls(license: &str, folder: &str, filename: &str) -
     ]
 }
 
+/// METADATA.pb: same jsDelivr → GitHub raw order as VF TTFs (jsDelivr can 403/omit).
+fn google_fonts_metadata_cdn_urls(license: &str, folder: &str) -> [String; 2] {
+    [
+        format!("https://cdn.jsdelivr.net/gh/google/fonts@main/{license}/{folder}/METADATA.pb"),
+        format!("https://raw.githubusercontent.com/google/fonts/main/{license}/{folder}/METADATA.pb"),
+    ]
+}
+
 /// Catalog marks these `variable: true` but google/fonts has no public VF file
 /// (Google Sans is proprietary; Edu * Hand packs ship statics only). Do not
 /// invent VFs or clear `.complete` for missing `*-variable-*`.
@@ -2511,6 +2519,24 @@ fn catalog_variable_expects_public_vf(family: &str) -> bool {
     google_catalog_is_variable(family) && !family_has_no_public_vf(family)
 }
 
+/// google/fonts ships **two** VFs (roman + italic) for these families. Ensure must
+/// not early-return after roman-only planned/intact — retry italic.
+fn family_expects_dual_variable(family: &str) -> bool {
+    let t = family.trim();
+    t.eq_ignore_ascii_case("Chiron Hei HK") || t.eq_ignore_ascii_case("Chiron Sung HK")
+}
+
+fn dir_has_intact_variable_italic(dir: &Path) -> bool {
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    files.iter().any(|p| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| variable_face_filename_is_italic(n) && ttf_intact(p))
+            .unwrap_or(false)
+    })
+}
+
 /// Download real variable TTFs from google/fonts (jsDelivr, then GitHub raw for large CJK).
 /// Never `@fontsource-variable` WOFF.
 /// Returns on-disk filenames that were written or already intact, plus HealStats from
@@ -2530,26 +2556,33 @@ fn download_google_variable_ttfs(
     let mut heal = HealStats::default();
 
     // 1) Prefer METADATA.pb filenames + axes.
-    for lic in licenses {
+    // partial_wrote: roman landed but METADATA also listed italic (dual-VF) —
+    // seed the axis-pattern fallback so we keep roman and still hunt italic.
+    let mut partial_wrote: Vec<String> = Vec::new();
+    'meta: for lic in licenses {
         for folder in &folders {
             if bulk().cancel.load(Ordering::SeqCst) {
                 return (Vec::new(), heal);
             }
-            let meta_url = format!(
-                "https://cdn.jsdelivr.net/gh/google/fonts@main/{lic}/{folder}/METADATA.pb"
-            );
-            let Ok(resp) = client.get(&meta_url).send() else { continue };
-            if !resp.status().is_success() {
-                continue;
+            let mut meta_text: Option<String> = None;
+            for meta_url in google_fonts_metadata_cdn_urls(lic, folder) {
+                let Ok(resp) = client.get(&meta_url).send() else { continue };
+                if !resp.status().is_success() {
+                    continue;
+                }
+                let Ok(text) = resp.text() else { continue };
+                if text.len() < 16 || !text.contains("filename:") {
+                    continue;
+                }
+                meta_text = Some(text);
+                break;
             }
-            let Ok(text) = resp.text() else { continue };
-            if text.len() < 16 || !text.contains("filename:") {
-                continue;
-            }
+            let Some(text) = meta_text else { continue };
             let (axes, files) = parse_metadata_pb_axes_and_files(&text);
             if files.is_empty() {
                 continue;
             }
+            let meta_wants_italic = files.iter().any(|(_, italic)| *italic);
             let mut wrote = Vec::new();
             for (fname, italic) in &files {
                 let axes_label = if !axes.is_empty() {
@@ -2585,8 +2618,13 @@ fn download_google_variable_ttfs(
                     }
                 }
             }
-            if !wrote.is_empty() {
+            let wrote_italic = wrote.iter().any(|w| variable_face_filename_is_italic(w));
+            if !wrote.is_empty() && !(meta_wants_italic && !wrote_italic) {
                 return (wrote, heal);
+            }
+            if !wrote.is_empty() && meta_wants_italic && !wrote_italic {
+                partial_wrote = wrote;
+                break 'meta;
             }
             // METADATA found but TTFs missing — try next folder/license.
         }
@@ -2600,7 +2638,7 @@ fn download_google_variable_ttfs(
         "wght,wdth",
         "CASL,CRSV,MONO,slnt,wght",
     ];
-    let mut wrote = Vec::new();
+    let mut wrote = partial_wrote;
     for lic in licenses {
         for folder in &folders {
             for axes in axis_patterns {
@@ -2645,8 +2683,13 @@ fn download_google_variable_ttfs(
                         }
                     }
                 }
-                // If we got a roman var file for this axes pattern, stop trying other axes.
-                if wrote.iter().any(|w| w.contains("-variable-") && !w.contains("-italic")) {
+                // If we got a roman var file for this axes pattern, stop trying other axes
+                // — unless dual-VF (Hei/Sung) still needs italic.
+                let has_roman = wrote
+                    .iter()
+                    .any(|w| w.contains("-variable-") && !variable_face_filename_is_italic(w));
+                let has_italic = wrote.iter().any(|w| variable_face_filename_is_italic(w));
+                if has_roman && (has_italic || !family_expects_dual_variable(family)) {
                     return (wrote, heal);
                 }
             }
@@ -2776,15 +2819,19 @@ fn ensure_catalog_variable_faces(
     }
 
     // Fast path: planned already lists intact vars — adopt is a no-op; register only.
+    // Dual-VF (Hei/Sung): roman-only planned/intact must still CDN-fetch italic.
     if let Some(keys) = read_google_planned_keys(&root) {
         let planned_vars: Vec<String> = keys
             .iter()
             .filter(|k| is_variable_face_filename(k))
             .cloned()
             .collect();
-        if !planned_vars.is_empty()
-            && planned_vars.iter().all(|k| ttf_intact(&root.join(k)))
-        {
+        let planned_intact = !planned_vars.is_empty()
+            && planned_vars.iter().all(|k| ttf_intact(&root.join(k)));
+        let dual_needs_italic = family_expects_dual_variable(family)
+            && !planned_vars.iter().any(|k| variable_face_filename_is_italic(k))
+            && !dir_has_intact_variable_italic(&root);
+        if planned_intact && !dual_needs_italic {
             let mut heal = HealStats::default();
             for name in &planned_vars {
                 let path = root.join(name);
@@ -2795,7 +2842,8 @@ fn ensure_catalog_variable_faces(
             return (planned_vars.len(), heal);
         }
     } else if dir_has_intact_variable(&root) {
-        // Vars on disk but missing from planned (legacy complete) — fold in, no CDN.
+        // Vars on disk but missing from planned (legacy complete) — fold in, no CDN
+        // unless dual-VF still missing italic.
         let mut files = Vec::new();
         walk_font_files(&root, &mut files);
         let var_files: Vec<String> = files
@@ -2809,7 +2857,9 @@ fn ensure_catalog_variable_faces(
                 }
             })
             .collect();
-        if !var_files.is_empty() {
+        let dual_needs_italic = family_expects_dual_variable(family)
+            && !var_files.iter().any(|k| variable_face_filename_is_italic(k));
+        if !var_files.is_empty() && !dual_needs_italic {
             adopt_variable_files_into_plan(&root, &var_files);
             let mut heal = HealStats::default();
             for name in &var_files {
@@ -2820,11 +2870,24 @@ fn ensure_catalog_variable_faces(
             }
             return (var_files.len(), heal);
         }
+        if !var_files.is_empty() && dual_needs_italic {
+            // Adopt roman now; fall through to download for italic.
+            adopt_variable_files_into_plan(&root, &var_files);
+        }
     }
 
     // Missing vars (complete statics-only Nunito, etc.) — fetch without busting statics.
     let (var_files, heal) = download_google_variable_ttfs(client, family, &slug, &root);
     if var_files.is_empty() {
+        // Loud fail: catalog expects a public VF and CDN returned nothing.
+        if catalog_variable_expects_public_vf(family) && !dir_has_intact_variable(&root) {
+            let reason = "catalog VF ensure returned 0 (jsDelivr/GitHub raw miss)";
+            eprintln!("{family} — {reason}");
+            remember_failed(family, reason);
+            if let Ok(mut p) = bulk().progress.lock() {
+                p.failed = p.failed.saturating_add(1);
+            }
+        }
         return (0, heal);
     }
     adopt_variable_files_into_plan(&root, &var_files);
@@ -5219,6 +5282,18 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         save_session_paths(&app, &winfont::snapshot_loaded());
     }
 
+    // VF backfill before finishing — do not mark Activate complete while catalog
+    // VFs are still downloading (Skye CJK). Repair remains the sync smoke path
+    // for already-`.complete` folders (ensure on the invoke). Cancel skips backfill.
+    if !cancelled && !registered.is_empty() {
+        if let Ok(mut p) = state.progress.lock() {
+            p.current = "Backfilling variable faces…".into();
+            p.running = true;
+        }
+        emit_progress(&app);
+        backfill_missing_variable_faces(&app, &registered);
+    }
+
     // Requested but not intact: clear pending via failed_names (poll finalize).
     // On cancel: running=false + emit; keep ready_names for completed Adds only —
     // do not mark remaining queue items as ready (or pretend they finished).
@@ -5254,12 +5329,6 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     } else {
         emit_progress(&app);
     }
-
-    let app2 = app.clone();
-    let backfill = registered.clone();
-    thread::spawn(move || {
-        backfill_missing_variable_faces(&app2, &backfill);
-    });
 }
 
 /// ≤6 workers walk/register in parallel; GDI Add stays serialized in gdi_api.
@@ -6630,6 +6699,65 @@ mod install_path_tests {
             "https://raw.githubusercontent.com/google/fonts/main/ofl/chirongoroundtc/ChironGoRoundTC%5Bwght%5D.ttf"
         );
         assert!(MAX_TTF_FETCH_BYTES >= 64 * 1024 * 1024, "CJK VFs need >52MB headroom");
+    }
+
+    #[test]
+    fn google_fonts_metadata_cdn_urls_jsdelivr_then_github_raw() {
+        let urls = google_fonts_metadata_cdn_urls("ofl", "chironheihk");
+        assert_eq!(
+            urls[0],
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/chironheihk/METADATA.pb"
+        );
+        assert_eq!(
+            urls[1],
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/chironheihk/METADATA.pb"
+        );
+    }
+
+    #[test]
+    fn dual_vf_families_are_hei_and_sung_only() {
+        assert!(family_expects_dual_variable("Chiron Hei HK"));
+        assert!(family_expects_dual_variable("Chiron Sung HK"));
+        assert!(!family_expects_dual_variable("Chiron GoRound TC"));
+        assert!(!family_expects_dual_variable("Nunito"));
+        assert!(!family_expects_dual_variable("Noto Serif KR"));
+    }
+
+    #[test]
+    fn dual_vf_roman_only_on_disk_detected_as_missing_italic() {
+        let parent = temp_family_dir("dual-vf-roman-only");
+        let dir = parent.join("Chiron Hei HK");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("chiron-hei-hk-variable-wght.ttf"), &fake).unwrap();
+        assert!(dir_has_intact_variable(&dir));
+        assert!(!dir_has_intact_variable_italic(&dir));
+        assert!(family_expects_dual_variable("Chiron Hei HK"));
+        fs::write(dir.join("chiron-hei-hk-variable-wght-italic.ttf"), &fake).unwrap();
+        assert!(dir_has_intact_variable_italic(&dir));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn no_public_vf_denylist_is_exact_seven() {
+        const EXPECTED: &[&str] = &[
+            "Google Sans",
+            "Edu NSW ACT Cursive",
+            "Edu NSW ACT Hand Pre",
+            "Edu QLD Hand",
+            "Edu SA Hand",
+            "Edu VIC WA NT Hand",
+            "Edu VIC WA NT Hand Pre",
+        ];
+        assert_eq!(EXPECTED.len(), 7);
+        for name in EXPECTED {
+            assert!(family_has_no_public_vf(name), "{name}");
+            assert!(!catalog_variable_expects_public_vf(name), "{name}");
+        }
+        // Spot-check: nothing else invents a denylist skip.
+        assert!(!family_has_no_public_vf("Nunito"));
+        assert!(!family_has_no_public_vf("Chiron Hei HK"));
     }
 
     #[test]

@@ -1,5 +1,11 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.166
+- **CJK variable TTFs empty on disk:** jsDelivr refuses google/fonts VFs over ~20MB (Chiron / Noto Serif KR·SC are 23–52MB), so ensure/backfill returned 0 while `.complete` matched static counts. Prefer jsDelivr then **GitHub raw** for VF TTFs **and** `METADATA.pb`; raise `MAX_TTF_FETCH_BYTES` to **64MB** (32MB was too small). Do **not** clear `.complete` for missing `*-variable-*` (would Repair/bust and risk wiping statics) — adopt updates planned/expected after vars land; static face bytes untouched. Exact-7 no-public-VF denylist (Google Sans + Edu * Hand packs) skips inventing VFs.
+- **Ensure 0 vars silent:** non-denylist catalog-variable families that still return 0 VF files after CDN attempts now `eprintln` + `remember_failed` (loud), not a quiet `(0, …)`.
+- **Dual-VF Hei/Sung roman-only:** if only roman VF is planned/intact, still fetch italic (`ChironHeiHK-Italic[wght].ttf` / Sung twin) instead of early-returning.
+- **On-disk Activate vs backfill:** `activate_on_disk_worker` runs `backfill_missing_variable_faces` before `running=false` so Activate does not look done while VFs are still downloading. Repair remains the sync smoke path for already-complete folders (`ensure_catalog_variable_faces` on the invoke).
+
 ## Fixed in tip / 1.0.165
 - **Activate All UI Not Responding:** `activate_families_on_disk` ran the full GDI register loop on the invoke thread (sequential). Progress could tick (e.g. 14/2100) while the window title went Not Responding. Register now runs on a worker with ≤6 parallel `register_intact_family` (GDI Add still serialized); invoke returns immediately; JS waits on poll/event `running=false` + `ready_names`. No early live marks.
 - **Cancel/Pause ignored during on-disk register:** `cancel_google_downloads` set `bulk().cancel`, but `register_on_disk_parallel_progress` never checked it — Cancel on ~2100 Activate All left workers draining the full GDI queue. Workers now honor cancel (clear queue, `running=false`, emit; completed Adds stay in `ready_names`) and pause (wait like download drain).
@@ -67,11 +73,11 @@
 
 ## Fixed in tip / 1.0.150
 - Fontsource italic-only packs (e.g. Syne Italic): use API styles only — do not invent normal; do not abort pull on 400-normal 404 when italic is planned; prefer `@latest` before pinned jsDelivr tags that return HTTP 400.
-- Download real variable TTFs from google/fonts (jsDelivr) alongside static CSS instances.
+- Download real variable TTFs from google/fonts alongside static CSS instances (jsDelivr + GitHub raw as of 1.0.166).
 - Illustrator family naming: patch Google instances to family "Nunito" + style "ExtraLight".
 - Prefer discrete static multi-face listing when variable CSS only yields range weights (`200-1000`); do not purge latin remnants into an empty folder when Google fetch writes nothing.
 - Heal mashed nameID 1/16 on **intact/complete** Google instance faces (Repair/Activate rewrite in place; vars skipped until 1.0.152). Soft-fail when files are locked.
-- `fetch_url_ttf`: CDN circuit + 32MB size cap (jsDelivr var fetches included). Unplanned `*-variable-*` no longer exempt from purge.
+- `fetch_url_ttf`: CDN circuit + size cap (jsDelivr var fetches included; **64MB** + GitHub raw as of 1.0.166 — was 32MB). Unplanned `*-variable-*` no longer exempt from purge.
 
 ## Fixed in 1.0.149
 - **P0a** Activated scope + badge use live `activated[]` only (no `pendingActivate` merge, no `downloadBusy` freeze).
@@ -84,4 +90,4 @@
 
 ## Notes
 
-- Tip is 1.0.165 (unreleased pack — ask before NSIS).
+- Tip is 1.0.166 (unreleased pack — ask before NSIS).
