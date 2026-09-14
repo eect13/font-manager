@@ -176,12 +176,20 @@ function commitReadyFamilies(names: string[]): Promise<void> {
   });
 }
 
-/** Flush ready marks (await markLiveActivated) then clear pending — never clear first. */
-async function finalizeReadyAndClearPending() {
+/** Flush ready marks (await markLiveActivated) then clear pending — never clear first.
+ * Pass familyNames to scope the clear (mixed Activate All: google on-disk finish must not wipe local install-queue pending).
+ * With no names, clear pending Google fonts only — never a nuclear clearPendingActivate(). */
+async function finalizeReadyAndClearPending(familyNames?: string[]) {
   await flushReadyFamilies();
   resetReadyBatching();
+  if (familyNames?.length) {
+    await clearPendingForFamilyNames(familyNames);
+    return;
+  }
   const { useFontStore } = await import("./store");
-  useFontStore.getState().clearPendingActivate();
+  const { googleFonts, clearPendingActivate, pendingSet } = useFontStore.getState();
+  const ids = googleFonts.filter((font) => pendingSet.has(font.id)).map((font) => font.id);
+  if (ids.length) clearPendingActivate(ids);
 }
 
 /** Direct callers (restore/resume) commit immediately; progress path uses queueReadyFamilies. */
@@ -894,7 +902,11 @@ function applyPayload(p: {
       return;
     }
     notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? []);
-    void finalizeReadyAndClearPending();
+    // Scope to this google job — do not wipe local install-queue pending (mixed Activate All).
+    void finalizeReadyAndClearPending([
+      ...readyCumulative,
+      ...(p.failed_names ?? []),
+    ]);
   }
 }
 
@@ -1492,12 +1504,12 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
               description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
             });
           }
-          await finalizeReadyAndClearPending();
+          await finalizeReadyAndClearPending(names);
         } else if (!(job.running && job.mode === "download")) {
           job = { ...EMPTY };
           markJobClock(false, false);
           emit();
-          await finalizeReadyAndClearPending();
+          await finalizeReadyAndClearPending(names);
         }
       }
     }

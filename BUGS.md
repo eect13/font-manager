@@ -1,6 +1,7 @@
 # Font Manager — known issues / follow-ups
 
 ## Fixed in tip / 1.0.164
+- **Mixed Activate All wiped local pending:** on-disk google finish called `finalizeReadyAndClearPending()` → nuclear `clearPendingActivate()` (no ids), clearing local install-queue pending before locals finished. Now flushes ready then `clearPendingForFamilyNames(googleNames)` (poll/cancel clear Google-only when unscoped).
 - **Folders counts vs auto-hide:** Folders badges use the same auto-hide filter as Collections (`folderStatsWithAutoHide`). Provider → Local Files still shows the full upload count.
 - **Activate All looked complete early:** (1) `activate_families_on_disk` returned `.complete` families before GDI finished (JS marked live immediately). (2) Locals jumped straight into `activated[]` on queue. (3) Drain “already on disk” path skipped register. Register now completes before ready/live; locals pending until mark-live; progress ready_names only after successful Add.
 - **False live after kill/timeout:** plan/resume `.catch(() => readyNames)` treated invoke fail as full register — catch now returns `[]` (same as syncFontsOnSystem).
@@ -74,7 +75,6 @@
 
 ## Open (P1 — waiting)
 - WOFF-only Google path (no installable TTF/OTF).
-- `clearPending` nuclear clear at finalize.
 - Continue latin-remnant heal for legacy `*-latin-*` packs already on disk (new installs since 1.0.148 do not write latin filenames); bulk latin remnant heal.
 - 7 catalog-variable families have no public google/fonts METADATA (Edu NSW/QLD/SA/VIC hands, Google Sans). Static CSS instances still install; VF TTF cannot be fetched without a public file.
 
