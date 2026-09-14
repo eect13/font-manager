@@ -1032,6 +1032,9 @@ async function pumpInstall(myBatch: number) {
     try {
       await installOne(next.font, next.lean);
       job = { ...job, done: job.done + 1 };
+      // Local/upload path used to set activated[] up front — mark live only after register.
+      const { useFontStore } = await import("./store");
+      useFontStore.getState().markLiveActivated([next.font.id]);
     } catch (err) {
       console.error(err);
       const detail = err instanceof Error ? `${next.font.family} — ${err.message}` : next.font.family;
@@ -1041,6 +1044,8 @@ async function pumpInstall(myBatch: number) {
       const details = job.failedDetails.includes(detail) ? job.failedDetails : [...job.failedDetails, detail];
       job = { ...job, failed: job.failed + 1, failedNames: names, failedDetails: details };
       lastFailedNames = names;
+      const { useFontStore } = await import("./store");
+      useFontStore.getState().clearPendingActivate([next.font.id]);
     }
     paint();
     unlockUi();
@@ -1408,15 +1413,32 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
     startGooglePoll("download");
     if (!added) {
+      // activate_families_on_disk now awaits GDI — only then mark live / finish the bar.
       const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
         () => [] as string[],
       );
       if (ready.length) {
         for (const name of ready) installedCache.add(name.toLowerCase());
         applyReadyFamilies(ready);
+        job = {
+          ...job,
+          running: false,
+          paused: false,
+          done: ready.length,
+          skipped: ready.length,
+          total: Math.max(job.total, ready.length),
+          current: "",
+          mode: "idle",
+        };
+        markJobClock(false, false);
+        emit();
         toast.message("Already on disk", {
           description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
         });
+      } else if (!(job.running && job.mode === "download")) {
+        job = { ...EMPTY };
+        markJobClock(false, false);
+        emit();
       }
     }
   }

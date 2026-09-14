@@ -1,10 +1,12 @@
-# Font Manager **1.0.163**
+# Font Manager **1.0.164**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.164.** Folders sidebar counts follow auto-hide duplicates the same way Collections do (Local Files stays full). Activate All no longer treats on-disk / `.complete` / queued as activated — progress and the Activated badge wait for real GDI register (locals queue as pending like Google until mark-live).
 
 **1.0.163.** Activate/Deactivate show a live percent + ETA that ticks while work runs (on-disk register no longer jumps to 100% while GDI is still adding; Deactivate no longer toasts “done” on click or on a leftover idle poll). Collection counts follow auto-hide duplicates; Provider → Local Files still shows the full upload total.
 

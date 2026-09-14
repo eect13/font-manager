@@ -3498,14 +3498,15 @@ fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -
 }
 
 fn register_intact_family(app: &AppHandle, family: &str) -> usize {
+    // Count only successful GDI Adds (or already-mapped session paths).
+    // Intact-on-disk alone must not inflate progress / ready_names.
     let mut n = 0usize;
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
         sort_faces_var_first(&mut files);
         for path in files {
-            if ttf_intact(&path) {
-                let _ = register_family_path(family, &path);
+            if ttf_intact(&path) && register_family_path(family, &path) {
                 n += 1;
             }
         }
@@ -3624,6 +3625,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     // heal mashed instance names — Activate used to name-heal only / skip vars.
     let client = http_download_client();
     let mut n = 0usize;
+    let mut live: Vec<String> = Vec::new();
     let mut heal = HealStats::default();
     let mut last_emit = Instant::now();
     for (i, family) in ready.iter().enumerate() {
@@ -3635,10 +3637,11 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         } else {
             heal.add(heal_family_google_instance_names(app, family));
         }
-        n += match index {
+        let added = match index {
             Some(idx) => register_from_index(app, idx, family),
             None => register_intact_family(app, family),
         };
+        n += added;
         forget_queued(family);
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.remove(&family.trim().to_lowercase());
@@ -3646,12 +3649,24 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         if let Ok(mut p) = bulk().progress.lock() {
             p.kind = "download".into();
             p.running = true;
+            // Progress = families processed; ready_names only when GDI accepted faces.
             p.done = (i + 1) as u32;
-            p.skipped = (i + 1) as u32;
-            p.current = format!("Registering {family}");
-            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                p.ready_names.push(family.clone());
+            if added > 0 {
+                p.skipped = p.skipped.saturating_add(1);
+                live.push(family.clone());
+                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.ready_names.push(family.clone());
+                }
+            } else {
+                p.failed = p.failed.saturating_add(1);
+                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.failed_names.push(family.clone());
+                    p.failed_details.push(format!(
+                        "{family} — on disk (.complete) but GDI register returned 0"
+                    ));
+                }
             }
+            p.current = format!("Registering {family}");
         }
         let last = i + 1 == ready.len();
         if i == 0 || last || last_emit.elapsed() >= Duration::from_millis(150) {
@@ -3661,7 +3676,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     }
     if n > 0 {
         notify_fonts_changed();
-        session_add(app, ready);
+        session_add(app, &live);
         #[cfg(windows)]
         save_session_paths(app, &winfont::snapshot_loaded());
     }
@@ -4475,12 +4490,18 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
-            // Already-complete: still pull missing catalog vars (no bust) + heal names.
+            // Already-complete: still pull missing catalog vars (no bust) + heal names,
+            // then register — do not treat .complete as activated without GDI.
             // Aggregate — do not emit per family (toast storm).
             let (_, mut heal) = ensure_catalog_variable_faces(&app, &client, &family);
             heal.add(heal_family_google_names(&app, &family, false));
             heal_acc.add(heal);
-            Ok(1usize)
+            let n = register_intact_family(&app, &family);
+            if n == 0 {
+                Err("register failed — files on disk but GDI Add returned 0".into())
+            } else {
+                Ok(n)
+            }
         } else {
             match download_family(&app, &client, &family) {
                 Ok((n, heal)) => {
@@ -5012,22 +5033,25 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     if ready.is_empty() {
         return Ok(ready);
     }
+    // Register on this thread before returning. Callers mark UI live from the
+    // returned list — spawning left Activated / progress at "complete" while
+    // GDI was still copying into gdi-maps and AddFontResourceExW'ing.
+    // Missing variable TTFs still backfill after GDI is up (no CDN on this path).
+    let (added, registered) = register_ready_families_parallel(&app, &ready);
+    if !registered.is_empty() {
+        session_add(&app, &registered);
+    }
+    if added > 0 {
+        notify_fonts_changed();
+        #[cfg(windows)]
+        save_session_paths(&app, &winfont::snapshot_loaded());
+    }
     let app2 = app.clone();
-    let ready2 = ready.clone();
+    let backfill = registered.clone();
     thread::spawn(move || {
-        // Register only — no CDN. session_begin may already have loaded these;
-        // register() no-ops paths in the in-process set. Missing variable TTFs
-        // are filled after GDI is up so the window is not blocked on jsDelivr.
-        let (added, _) = register_ready_families_parallel(&app2, &ready2);
-        session_add(&app2, &ready2);
-        if added > 0 {
-            notify_fonts_changed();
-            #[cfg(windows)]
-            save_session_paths(&app2, &winfont::snapshot_loaded());
-        }
-        backfill_missing_variable_faces(&app2, &ready2);
+        backfill_missing_variable_faces(&app2, &backfill);
     });
-    Ok(ready)
+    Ok(registered)
 }
 
 #[derive(Clone, Serialize)]
