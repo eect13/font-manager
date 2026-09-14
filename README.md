@@ -1,10 +1,12 @@
-# Font Manager **1.0.164**
+# Font Manager **1.0.165**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.165.** Activate All on-disk register no longer freezes the window (GDI register runs on a worker with ≤6 parallel `register_intact_family`; invoke returns immediately; progress % + ready_names via poll/event). Pending-until-GDI honesty unchanged. Scroll/sidebar/preview polish when present.
 
 **1.0.164.** Folders sidebar counts follow auto-hide duplicates the same way Collections do (Local Files stays full). Activate All no longer treats on-disk / `.complete` / queued as activated — progress and the Activated badge wait for real GDI register (locals queue as pending like Google until mark-live). Plan/resume invoke fail returns no live marks; on-disk register emits live %; partial GDI fail clears pending and bumps failed. Mixed Activate All on-disk google finish scopes `clearPending` to google family names (does not wipe local install-queue pending).
 
@@ -81,7 +83,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 1. [Node.js 22 LTS](https://nodejs.org) (Node 24 also builds).
 2. Clone or unzip → open the **inner** project folder in VS Code (not an empty wrapper). A name like `font-manager-main (1)` is fine.
 3. Double-click **`deploy.bat`** and leave it open through all three phases: pack UI → compile Rust (first time 5–15 min) → write installers.
-4. Install from `src-tauri\target\release\bundle\nsis\` (or `bundle\msi\` if WiX built one).
+4. Installers land under **`Desktop\Vibe Apps\Font Manager\Installers\`** (created if missing; override with `node scripts/deploy.mjs --out <path>`). Bundle also stays under `src-tauri\target\release\bundle\`.
 5. If an older setup fights the new one: run **`fix-install.bat`**.
 
 **`desktop-setup.bat`** only runs the app in a dev window — it does **not** make installers.

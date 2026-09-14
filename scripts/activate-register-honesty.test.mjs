@@ -67,3 +67,51 @@ test("all registered: no failed bump", () => {
   assert.deepEqual(fin.pendingClearNames, []);
   assert.equal(fin.done, 2);
 });
+
+
+/**
+ * 1.0.165 async activate_families_on_disk:
+ * - Ok([]) after successful invoke means "worker accepted", NOT "registered none"
+ * - Invoke fail still → no live (honesty)
+ * - Live list comes from progress ready_names when running=false
+ */
+function interpretActivateInvoke(invoke, workerStarted) {
+  if (!invoke.ok) return { accepted: false, waitPoll: false, liveFromInvoke: [] };
+  // Return value is always [] when accepted (async); never treat as live list.
+  return {
+    accepted: workerStarted,
+    waitPoll: workerStarted,
+    liveFromInvoke: [],
+  };
+}
+
+function liveFromProgress(ready_names, running) {
+  if (running) return []; // honesty: mid-flight ready_names may grow but UI marks via queue; finish when idle
+  return (ready_names ?? []).slice();
+}
+
+test("async Ok([]) is accepted — not false-all-failed", () => {
+  const r = interpretActivateInvoke({ ok: true, value: [] }, true);
+  assert.equal(r.accepted, true);
+  assert.equal(r.waitPoll, true);
+  assert.deepEqual(r.liveFromInvoke, []);
+  // Must not treat Ok([]) as finishOnDiskRegister(requested, []) — that would
+  // clear pending for everyone while the worker is still registering.
+  const requested = ["A", "B"];
+  const wrongSyncFinish = finishOnDiskRegister(requested, r.liveFromInvoke);
+  assert.equal(wrongSyncFinish.failed, 2, "sync finish on Ok([]) would falsely fail all");
+  assert.equal(r.waitPoll, true, "caller must wait on poll instead of sync finish");
+});
+
+test("async invoke fail — no poll, nothing live", () => {
+  const r = interpretActivateInvoke({ ok: false }, false);
+  assert.equal(r.accepted, false);
+  assert.equal(r.waitPoll, false);
+  assert.deepEqual(r.liveFromInvoke, []);
+});
+
+test("progress idle ready_names are the live list", () => {
+  assert.deepEqual(liveFromProgress(["Nunito"], true), []);
+  assert.deepEqual(liveFromProgress(["Nunito", "Roboto"], false), ["Nunito", "Roboto"]);
+  assert.deepEqual(liveFromProgress([], false), []);
+});

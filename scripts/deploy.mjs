@@ -7,21 +7,42 @@
  *        phase 1  Vite desktop UI
  *        phase 2  cargo --release  (minutes)
  *        phase 3  MSI / NSIS
- *   3. Collect MSI / NSIS from bundle/
- *   4. Open that folder
+ *   3. Collect MSI / NSIS from bundle/ → copy to Desktop\Vibe Apps\...
+ *   4. Open the Installers folder (create if missing)
  *
  *   node scripts/deploy.mjs
  *   node scripts/deploy.mjs --no-open
+ *   node scripts/deploy.mjs --out D:\builds\FontManager
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { delimiter, extname, join } from "node:path";
+import { basename, delimiter, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(fileURLToPath(new URL("..", import.meta.url)));
 const WIN = platform() === "win32";
 const noOpen = process.argv.includes("--no-open");
+
+/** Default: %USERPROFILE%\Desktop\Vibe Apps\Font Manager\Installers (create if missing). Override: --out <path> */
+function defaultInstallerDir() {
+  const desk = process.env.USERPROFILE
+    ? join(process.env.USERPROFILE, "Desktop")
+    : join(homedir(), "Desktop");
+  return join(desk, "Vibe Apps", "Font Manager", "Installers");
+}
+
+function parseOutDir(argv) {
+  const i = argv.indexOf("--out");
+  if (i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("-")) {
+    return resolve(argv[i + 1]);
+  }
+  const eq = argv.find((a) => a.startsWith("--out="));
+  if (eq) return resolve(eq.slice("--out=".length));
+  return defaultInstallerDir();
+}
+
+const outDir = parseOutDir(process.argv);
 
 const INSTALLER_EXT = new Set([".msi", ".dmg", ".deb", ".rpm", ".appimage"]);
 
@@ -88,11 +109,19 @@ function isInstaller(path) {
   return ext === "" && base === "font-manager";
 }
 
+/** MSI / NSIS / setup only — not the raw release binary. */
+function isPackagedInstaller(path) {
+  const ext = extname(path).toLowerCase();
+  if (INSTALLER_EXT.has(ext)) return true;
+  return ext === ".exe" && /nsis|setup/i.test(path);
+}
+
 console.log("Font Manager deploy — 4 steps. First time is slow; leave this window open.\n");
 console.log("  Inside step 2 there are three phases:");
 console.log("    1) Vite packs the UI     ← ends with “Phase 1 done”");
 console.log("    2) cargo compiles Rust   ← several minutes, looks like a new process");
-console.log("    3) MSI / NSIS installers ← Explorer opens the bundle folder\n");
+console.log("    3) MSI / NSIS → Desktop\\Vibe Apps\\Font Manager\\Installers\\");
+console.log("");
 
 log("1/4", "Tools");
 const major = Number(process.versions.node.split(".")[0]);
@@ -123,7 +152,7 @@ const found = walk(bundleDir)
 const show = found.filter(isInstaller);
 
 if (show.length) {
-  console.log("  Installers:");
+  console.log("  Bundle:");
   for (const p of show) console.log(`    ${p}`);
 } else if (existsSync(bundleDir)) {
   console.log(`  bundle exists but no .msi/.exe yet:\n    ${bundleDir}`);
@@ -131,8 +160,29 @@ if (show.length) {
   fail("No bundle folder. The release compile did not finish.");
 }
 
-log("4/4", "Open output folder");
-const openDir = existsSync(bundleDir) ? bundleDir : existsSync(releaseDir) ? releaseDir : null;
+log("4/4", "Copy to Desktop\\Vibe Apps + open");
+mkdirSync(outDir, { recursive: true });
+const toCopy = show.filter(isPackagedInstaller);
+const copied = [];
+for (const src of toCopy) {
+  const dest = join(outDir, basename(src));
+  try {
+    copyFileSync(src, dest);
+    copied.push(dest);
+  } catch (err) {
+    console.error(`  copy failed: ${src} → ${dest}`, err?.message ?? err);
+  }
+}
+if (copied.length) {
+  console.log(`  Installers (default):`);
+  for (const p of copied) console.log(`    ${p}`);
+} else if (show.length) {
+  console.log(`  No files copied — check permissions for:\n    ${outDir}`);
+} else {
+  console.log(`  Output folder ready (no installers yet):\n    ${outDir}`);
+}
+
+const openDir = existsSync(outDir) ? outDir : existsSync(bundleDir) ? bundleDir : existsSync(releaseDir) ? releaseDir : null;
 if (!noOpen && openDir) {
   if (WIN) spawnSync("explorer", [openDir], { shell: true, stdio: "ignore" });
   else if (platform() === "darwin") spawnSync("open", [openDir], { stdio: "ignore" });
@@ -141,6 +191,7 @@ if (!noOpen && openDir) {
 }
 
 console.log(`
-Done. Install the MSI or NSIS setup from bundle\\ — not target\\debug\\font-manager.exe.
-Other PCs do not need Node or Rust. Deactivate never deletes files; Retry replaces corrupt ones.
+Done. Install from Desktop\\Vibe Apps\\Font Manager\\Installers\\ (or --out path).
+Not target\\debug\\font-manager.exe. Other PCs do not need Node or Rust.
+Deactivate never deletes files; Retry replaces corrupt ones.
 `);

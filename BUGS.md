@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.165
+- **Activate All UI Not Responding:** `activate_families_on_disk` ran the full GDI register loop on the invoke thread (sequential). Progress could tick (e.g. 14/2100) while the window title went Not Responding. Register now runs on a worker with ≤6 parallel `register_intact_family` (GDI Add still serialized); invoke returns immediately; JS waits on poll/event `running=false` + `ready_names`. No early live marks.
+
 ## Fixed in tip / 1.0.164
 - **Mixed Activate All wiped local pending:** on-disk google finish called `finalizeReadyAndClearPending()` → nuclear `clearPendingActivate()` (no ids), clearing local install-queue pending before locals finished. Now flushes ready then `clearPendingForFamilyNames(googleNames)` (poll/cancel clear Google-only when unscoped).
 - **Folders counts vs auto-hide:** Folders badges use the same auto-hide filter as Collections (`folderStatsWithAutoHide`). Provider → Local Files still shows the full upload count.
@@ -80,4 +83,4 @@
 
 ## Notes
 
-- Tip is 1.0.164 (unreleased pack — ask before NSIS).
+- Tip is 1.0.165 (unreleased pack — ask before NSIS).

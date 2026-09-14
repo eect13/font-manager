@@ -5029,16 +5029,13 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     if families.is_empty() {
         return Ok(Vec::new());
     }
-    let ready = filter_ready_families_parallel(&app, &families);
-    if ready.is_empty() {
-        return Ok(ready);
-    }
-    // Register on this thread before returning. Callers mark UI live from the
-    // returned list — spawning left Activated / progress at "complete" while
-    // GDI was still copying into gdi-maps and AddFontResourceExW'ing.
-    // Emit progress mid-flight (done/total) so Activate All of on-disk libs
-    // ticks like 1.0.163 instead of freezing then jumping. No CDN here —
-    // missing variable TTFs still backfill after GDI is up.
+    // P0 (1.0.165): never run the GDI register loop on the invoke thread —
+    // Activate All of ~2k on-disk families made the window "Not Responding"
+    // even while mid-flight progress events fired. Filter + ≤6 parallel
+    // register_intact_family run on a worker; callers wait on progress
+    // (running=false + ready_names) via poll/event — Ok([]) here means
+    // "accepted / started", NOT "registered none" (invoke fail still catch→[]).
+    // Honesty unchanged: ready_names / session only after successful Add.
     let state = bulk();
     let own_progress = !state.running.load(Ordering::SeqCst);
     if own_progress {
@@ -5047,10 +5044,10 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
             p.paused = false;
             p.kind = "download".into();
             p.done = 0;
-            p.total = ready.len() as u32;
+            p.total = families.len() as u32;
             p.failed = 0;
             p.skipped = 0;
-            p.current = format!("Registering {} already on disk…", ready.len());
+            p.current = format!("Checking {} on disk…", families.len());
             p.ready_names.clear();
             p.failed_names.clear();
             p.failed_details.clear();
@@ -5060,70 +5057,105 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     } else if let Ok(mut p) = state.progress.lock() {
         p.kind = "download".into();
         p.running = true;
-        if p.total < ready.len() as u32 {
-            p.total = ready.len() as u32;
+        if p.total < families.len() as u32 {
+            p.total = families.len() as u32;
         }
-        p.current = format!("Registering {} already on disk…", ready.len());
+        p.current = format!("Checking {} on disk…", families.len());
     }
     if !own_progress {
         emit_progress(&app);
     }
 
-    let mut files = 0usize;
-    let mut registered = Vec::new();
-    let mut last_emit = Instant::now();
-    for (i, family) in ready.iter().enumerate() {
-        let k = register_intact_family(&app, family);
-        forget_queued(family);
-        if let Ok(mut denied) = state.denied.lock() {
-            denied.remove(&family.trim().to_lowercase());
-        }
-        if let Ok(mut p) = state.progress.lock() {
-            p.kind = "download".into();
-            p.running = true;
-            p.done = (i + 1) as u32;
-            if p.total < ready.len() as u32 {
-                p.total = ready.len() as u32;
-            }
-            p.current = format!("Registering {family}");
-            if k > 0 {
-                files += k;
-                registered.push(family.clone());
-                p.skipped = p.skipped.saturating_add(1);
-                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                    p.ready_names.push(family.clone());
+    let app2 = app.clone();
+    thread::spawn(move || {
+        activate_on_disk_worker(app2, families, own_progress);
+    });
+    Ok(Vec::new())
+}
+
+/// Worker: disk-ready filter then ≤6 parallel intact register with progress ticks.
+fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: bool) {
+    let ready = filter_ready_families_parallel(&app, &families);
+    let state = bulk();
+    if ready.is_empty() {
+        if own_progress {
+            if let Ok(mut p) = state.progress.lock() {
+                p.failed = 0;
+                p.failed_names.clear();
+                p.failed_details.clear();
+                // Nothing intact — surface as failed so JS clears pending.
+                for family in &families {
+                    let t = family.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    p.failed = p.failed.saturating_add(1);
+                    if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                        p.failed_names.push(t.to_string());
+                        p.failed_details.push(format!(
+                            "{t} — not intact on disk (.complete missing or incomplete)"
+                        ));
+                    }
                 }
-            } else {
-                p.failed = p.failed.saturating_add(1);
-                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                    p.failed_names.push(family.clone());
-                    p.failed_details.push(format!(
-                        "{family} — on disk (.complete) but GDI register returned 0"
-                    ));
-                }
+                let n = p.failed_names.len() as u32;
+                p.running = false;
+                p.current.clear();
+                p.done = n;
+                p.total = n.max(1);
             }
-        } else if k > 0 {
-            files += k;
-            registered.push(family.clone());
-        }
-        let last = i + 1 == ready.len();
-        if i == 0 || last || last_emit.elapsed() >= Duration::from_millis(150) {
+            state.running.store(false, Ordering::SeqCst);
             emit_progress(&app);
-            last_emit = Instant::now();
         }
+        return;
     }
 
+    if let Ok(mut p) = state.progress.lock() {
+        p.kind = "download".into();
+        p.running = true;
+        p.done = 0;
+        p.total = ready.len() as u32;
+        p.current = format!("Registering {} already on disk…", ready.len());
+        if own_progress {
+            p.failed = 0;
+            p.skipped = 0;
+            // Keep ready_names if merging into a parent job; own job starts clean.
+            p.ready_names.clear();
+            p.failed_names.clear();
+            p.failed_details.clear();
+        }
+    }
+    emit_progress(&app);
+
+    let registered = register_on_disk_parallel_progress(&app, &ready);
     if !registered.is_empty() {
         session_add(&app, &registered);
     }
-    if files > 0 {
+    if !registered.is_empty() {
         notify_fonts_changed();
         #[cfg(windows)]
         save_session_paths(&app, &winfont::snapshot_loaded());
     }
 
+    // Requested but not intact: clear pending via failed_names (poll finalize).
     if own_progress {
+        let ready_l: HashSet<String> = ready
+            .iter()
+            .map(|n| n.trim().to_lowercase())
+            .collect();
         if let Ok(mut p) = state.progress.lock() {
+            for family in &families {
+                let t = family.trim();
+                if t.is_empty() || ready_l.contains(&t.to_lowercase()) {
+                    continue;
+                }
+                p.failed = p.failed.saturating_add(1);
+                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                    p.failed_names.push(t.to_string());
+                    p.failed_details.push(format!(
+                        "{t} — not intact on disk (.complete missing or incomplete)"
+                    ));
+                }
+            }
             p.running = false;
             p.current.clear();
             p.done = ready.len() as u32;
@@ -5140,7 +5172,97 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     thread::spawn(move || {
         backfill_missing_variable_faces(&app2, &backfill);
     });
-    Ok(registered)
+}
+
+/// ≤6 workers walk/register in parallel; GDI Add stays serialized in gdi_api.
+/// Progress done/total ticks per family; ready_names only when Add returned >0.
+fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<String> {
+    if ready.is_empty() {
+        return Vec::new();
+    }
+    let workers = session_register_workers(ready.len());
+    let queue = Arc::new(Mutex::new(VecDeque::from(ready.to_vec())));
+    let registered: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let processed = Arc::new(AtomicUsize::new(0));
+    let last_emit = Arc::new(Mutex::new(Instant::now()));
+    let total = ready.len();
+    let mut joins = Vec::with_capacity(workers);
+
+    for _ in 0..workers {
+        let app = app.clone();
+        let queue = queue.clone();
+        let registered = registered.clone();
+        let processed = processed.clone();
+        let last_emit = last_emit.clone();
+        joins.push(thread::spawn(move || {
+            loop {
+                let next = queue.lock().ok().and_then(|mut q| q.pop_front());
+                let Some(family) = next else {
+                    break;
+                };
+                let k = register_intact_family(&app, &family);
+                forget_queued(&family);
+                if let Ok(mut denied) = bulk().denied.lock() {
+                    denied.remove(&family.trim().to_lowercase());
+                }
+                let done_n = processed.fetch_add(1, Ordering::SeqCst) + 1;
+                if let Ok(mut p) = bulk().progress.lock() {
+                    p.kind = "download".into();
+                    p.running = true;
+                    p.done = done_n as u32;
+                    if p.total < total as u32 {
+                        p.total = total as u32;
+                    }
+                    p.current = format!("Registering {family}");
+                    if k > 0 {
+                        p.skipped = p.skipped.saturating_add(1);
+                        if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                            p.ready_names.push(family.clone());
+                        }
+                        if let Ok(mut g) = registered.lock() {
+                            g.push(family.clone());
+                        }
+                    } else {
+                        p.failed = p.failed.saturating_add(1);
+                        if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                            p.failed_names.push(family.clone());
+                            p.failed_details.push(format!(
+                                "{family} — on disk (.complete) but GDI register returned 0"
+                            ));
+                        }
+                    }
+                } else if k > 0 {
+                    if let Ok(mut g) = registered.lock() {
+                        g.push(family.clone());
+                    }
+                }
+                let last = done_n >= total;
+                let should_emit = last
+                    || done_n == 1
+                    || last_emit
+                        .lock()
+                        .map(|t| t.elapsed() >= Duration::from_millis(150))
+                        .unwrap_or(true);
+                if should_emit {
+                    emit_progress(&app);
+                    if let Ok(mut t) = last_emit.lock() {
+                        *t = Instant::now();
+                    }
+                }
+            }
+        }));
+    }
+    for j in joins {
+        let _ = j.join();
+    }
+    let mut out = registered.lock().map(|g| g.clone()).unwrap_or_default();
+    out.sort_by_key(|a| {
+        ready
+            .iter()
+            .position(|t| t.eq_ignore_ascii_case(a))
+            .unwrap_or(usize::MAX)
+    });
+    out
 }
 
 #[derive(Clone, Serialize)]

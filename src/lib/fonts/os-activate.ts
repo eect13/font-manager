@@ -318,10 +318,8 @@ export async function restoreSessionFromDisk(families: string[]): Promise<{
   if (!readyNames.length) {
     return { ready: [], missing: plan?.missing ?? [], onDisk };
   }
-  // Invoke fail/timeout must not pretend every planned family registered (false live).
-  const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: readyNames }).catch(
-    () => [] as string[],
-  );
+  // Worker + poll — invoke no longer awaits GDI (1.0.165). Catch/start-fail → [].
+  const ready = await activateOnDiskAndWait(readyNames);
   if (ready?.length) applyReadyFamilies(ready);
   return { ready: ready ?? [], missing: plan?.missing ?? [], onDisk };
 }
@@ -335,10 +333,8 @@ export async function resumeGoogleFamilies(families: string[]): Promise<void> {
   }).catch(() => null);
   const missing = plan?.missing ?? families;
   if (plan?.ready.length) {
-    // Same honesty as syncFontsOnSystem — catch returns [] so kill/timeout ≠ live.
-    const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: plan.ready }).catch(
-      () => [] as string[],
-    );
+    // Same honesty — start-fail / timeout → [] (no false live).
+    const ready = await activateOnDiskAndWait(plan.ready);
     if (ready?.length) applyReadyFamilies(ready);
   }
   if (!missing.length) return;
@@ -542,10 +538,97 @@ function slugFamily(family: string) {
     .replace(/^-|-$/g, "");
 }
 
+
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
 }
+
+type OnDiskProgressSnap = {
+  running: boolean;
+  paused?: boolean;
+  done: number;
+  total: number;
+  failed: number;
+  current: string;
+  failed_names?: string[];
+  failed_details?: string[];
+  ready_names?: string[];
+  skipped?: number;
+  kind?: string;
+};
+
+/**
+ * 1.0.165: activate_families_on_disk returns immediately (Ok([]) = accepted).
+ * GDI register runs on a Rust worker; live marks come from progress ready_names.
+ * Invoke throw/reject still means nothing started → [] (honesty).
+ */
+async function startActivateOnDisk(families: string[]): Promise<boolean> {
+  if (!families.length) return false;
+  void bindDownloadEvents();
+  try {
+    await tauriInvoke<string[]>("activate_families_on_disk", { families });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Poll until on-disk register worker idles; return ready_names (pending-until-GDI). */
+async function waitForOnDiskRegisterIdle(timeoutMs = 30 * 60_000): Promise<string[]> {
+  const start = Date.now();
+  let sawRunning = false;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const p = await tauriInvoke<OnDiskProgressSnap>("google_download_progress");
+      if (p.running || p.paused) sawRunning = true;
+      applyPayload(p);
+      if (sawRunning && !p.running && !p.paused) {
+        return (p.ready_names ?? []).slice();
+      }
+      if (
+        !p.running &&
+        !p.paused &&
+        p.kind === "download" &&
+        p.total > 0 &&
+        p.done + p.failed >= p.total &&
+        ((p.ready_names?.length ?? 0) > 0 || (p.failed_names?.length ?? 0) > 0)
+      ) {
+        return (p.ready_names ?? []).slice();
+      }
+    } catch {
+      /* ignore */
+    }
+    await new Promise<void>((r) => window.setTimeout(r, 200));
+  }
+  return [];
+}
+
+/** Start worker + wait for ready_names (restore / single-family / resume). */
+async function activateOnDiskAndWait(families: string[]): Promise<string[]> {
+  if (!families.length) return [];
+  if (!(job.running || job.paused)) {
+    job = {
+      running: true,
+      paused: false,
+      mode: "download",
+      done: 0,
+      total: families.length,
+      failed: 0,
+      skipped: 0,
+      current: "Checking disk…",
+      failedNames: [],
+      failedDetails: [],
+    };
+    markJobClock(true, false);
+    emit();
+  }
+  startGooglePoll("download");
+  const started = await startActivateOnDisk(families);
+  if (!started) return [];
+  return waitForOnDiskRegisterIdle();
+}
+
 
 const installedCache = new Set<string>();
 
@@ -1258,9 +1341,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
   }
   if (font.source === "google") {
     void bindDownloadEvents();
-    const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
-      families: [font.family],
-    }).catch(() => [] as string[]);
+    const ready = await activateOnDiskAndWait([font.family]);
     if (ready.length) {
       installedCache.add(font.family.toLowerCase());
       await markPreviewLive([font.id]);
@@ -1271,9 +1352,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     }).catch(() => 0);
     startGooglePoll("download");
     if (!added) {
-      const again = await tauriInvoke<string[]>("activate_families_on_disk", {
-        families: [font.family],
-      }).catch(() => [] as string[]);
+      const again = await activateOnDiskAndWait([font.family]);
       if (again.length) {
         installedCache.add(font.family.toLowerCase());
         await markPreviewLive([font.id]);
@@ -1281,9 +1360,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     }
     return true;
   }
-  const ready = await tauriInvoke<string[]>("activate_families_on_disk", {
-    families: [font.family],
-  }).catch(() => [] as string[]);
+  const ready = await activateOnDiskAndWait([font.family]);
   if (ready.length) {
     installedCache.add(font.family.toLowerCase());
     await markPreviewLive([font.id]);
@@ -1463,33 +1540,40 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
       if (bulkRunning) {
         /* poll drives progress / ready_names */
       } else {
-        // activate_families_on_disk awaits GDI and emits mid-flight done/total.
-        const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
-          () => [] as string[],
-        );
-        const readyLower = new Set(ready.map((n) => n.trim().toLowerCase()));
-        const failedNames = names.filter((n) => !readyLower.has(n.trim().toLowerCase()));
-        if (ready.length) {
-          for (const name of ready) installedCache.add(name.toLowerCase());
-          applyReadyFamilies(ready);
+        // 1.0.165: spawn Rust worker; do not await multi-minute GDI on invoke.
+        // Ok([]) = accepted — poll/event drives % + ready_names + finalize.
+        // Invoke fail (no worker) → nothing live, clear pending (honesty).
+        if (!(job.running || job.paused)) {
+          job = {
+            running: true,
+            paused: false,
+            mode: "download",
+            done: 0,
+            total: names.length,
+            failed: 0,
+            skipped: 0,
+            current: "Checking disk…",
+            failedNames: [],
+            failedDetails: [],
+          };
+          markJobClock(true, false);
+          emit();
         }
-        // Partial / timeout: subset may be live; clear pending + bump failed for the rest.
-        if (failedNames.length) {
-          lastFailedNames = failedNames.slice();
-          await clearPendingForFamilyNames(failedNames);
-        }
-        if (ready.length || failedNames.length) {
-          const details = failedNames.map(
+        startGooglePoll("download");
+        const started = await startActivateOnDisk(names);
+        if (!started) {
+          lastFailedNames = names.slice();
+          const details = names.map(
             (n) => `${n} — on disk but GDI register failed or invoke timed out`,
           );
           job = {
             ...job,
             running: false,
             paused: false,
-            done: ready.length,
-            skipped: ready.length,
-            failed: failedNames.length,
-            failedNames: failedNames.slice(),
+            done: 0,
+            skipped: 0,
+            failed: names.length,
+            failedNames: names.slice(),
             failedDetails: details,
             total: Math.max(job.total, names.length),
             current: "",
@@ -1497,20 +1581,10 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
           };
           markJobClock(false, false);
           emit();
-          if (failedNames.length) {
-            notifyDownloadResult(ready.length, failedNames.length, failedNames, details);
-          } else {
-            toast.message("Already on disk", {
-              description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
-            });
-          }
-          await finalizeReadyAndClearPending(names);
-        } else if (!(job.running && job.mode === "download")) {
-          job = { ...EMPTY };
-          markJobClock(false, false);
-          emit();
-          await finalizeReadyAndClearPending(names);
+          notifyDownloadResult(0, names.length, names, details);
+          await clearPendingForFamilyNames(names);
         }
+        /* else: poll applyPayload marks live from ready_names; finalize on idle */
       }
     }
   }
