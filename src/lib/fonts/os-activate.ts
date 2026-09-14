@@ -191,6 +191,20 @@ function applyReadyFamilies(names: string[]) {
   else void commitReadyFamilies(names);
 }
 
+
+/** Drop pendingActivate for family names that did not make the registered/live list. */
+async function clearPendingForFamilyNames(names: string[]) {
+  if (!names.length) return;
+  const { useFontStore } = await import("./store");
+  const { googleFonts, localFonts, clearPendingActivate, pendingSet } = useFontStore.getState();
+  const drop = new Set(names.map((n) => n.trim().toLowerCase()));
+  const ids = [...googleFonts, ...localFonts]
+    .filter((font) => drop.has(font.family.toLowerCase()) && pendingSet.has(font.id))
+    .map((font) => font.id);
+  if (ids.length) clearPendingActivate(ids);
+}
+
+
 const MAX_RETRY_ATTEMPTS = 3;
 const retryAttempts = new Map<string, number>();
 
@@ -296,8 +310,9 @@ export async function restoreSessionFromDisk(families: string[]): Promise<{
   if (!readyNames.length) {
     return { ready: [], missing: plan?.missing ?? [], onDisk };
   }
+  // Invoke fail/timeout must not pretend every planned family registered (false live).
   const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: readyNames }).catch(
-    () => readyNames,
+    () => [] as string[],
   );
   if (ready?.length) applyReadyFamilies(ready);
   return { ready: ready ?? [], missing: plan?.missing ?? [], onDisk };
@@ -312,8 +327,9 @@ export async function resumeGoogleFamilies(families: string[]): Promise<void> {
   }).catch(() => null);
   const missing = plan?.missing ?? families;
   if (plan?.ready.length) {
+    // Same honesty as syncFontsOnSystem — catch returns [] so kill/timeout ≠ live.
     const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: plan.ready }).catch(
-      () => plan.ready,
+      () => [] as string[],
     );
     if (ready?.length) applyReadyFamilies(ready);
   }
@@ -1410,35 +1426,79 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     toast.message("Scanning Documents first", {
       description: `${names.length.toLocaleString()} families. Intact files register only; missing files download up to three at a time.`,
     });
-    const added = await tauriInvoke<number>("start_google_downloads", { families: names }).catch(() => 0);
+    let added = 0;
+    let startFailed = false;
+    try {
+      added = await tauriInvoke<number>("start_google_downloads", { families: names });
+    } catch {
+      // Invoke fail/timeout — fall back to sync on-disk register (no false live).
+      startFailed = true;
+      added = 0;
+    }
     startGooglePoll("download");
     if (!added) {
-      // activate_families_on_disk now awaits GDI — only then mark live / finish the bar.
-      const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
-        () => [] as string[],
-      );
-      if (ready.length) {
-        for (const name of ready) installedCache.add(name.toLowerCase());
-        applyReadyFamilies(ready);
-        job = {
-          ...job,
-          running: false,
-          paused: false,
-          done: ready.length,
-          skipped: ready.length,
-          total: Math.max(job.total, ready.length),
-          current: "",
-          mode: "idle",
-        };
-        markJobClock(false, false);
-        emit();
-        toast.message("Already on disk", {
-          description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
-        });
-      } else if (!(job.running && job.mode === "download")) {
-        job = { ...EMPTY };
-        markJobClock(false, false);
-        emit();
+      // Ok(0) often means already queued in a running bulk job — leave the poll alone.
+      // Sync-register when start failed, or when Rust is idle (nothing else owns the bar).
+      let bulkRunning = false;
+      if (!startFailed) {
+        try {
+          const p = await tauriInvoke<{ running: boolean; paused?: boolean }>("google_download_progress");
+          bulkRunning = Boolean(p.running || p.paused);
+        } catch {
+          bulkRunning = false;
+        }
+      }
+      if (bulkRunning) {
+        /* poll drives progress / ready_names */
+      } else {
+        // activate_families_on_disk awaits GDI and emits mid-flight done/total.
+        const ready = await tauriInvoke<string[]>("activate_families_on_disk", { families: names }).catch(
+          () => [] as string[],
+        );
+        const readyLower = new Set(ready.map((n) => n.trim().toLowerCase()));
+        const failedNames = names.filter((n) => !readyLower.has(n.trim().toLowerCase()));
+        if (ready.length) {
+          for (const name of ready) installedCache.add(name.toLowerCase());
+          applyReadyFamilies(ready);
+        }
+        // Partial / timeout: subset may be live; clear pending + bump failed for the rest.
+        if (failedNames.length) {
+          lastFailedNames = failedNames.slice();
+          await clearPendingForFamilyNames(failedNames);
+        }
+        if (ready.length || failedNames.length) {
+          const details = failedNames.map(
+            (n) => `${n} — on disk but GDI register failed or invoke timed out`,
+          );
+          job = {
+            ...job,
+            running: false,
+            paused: false,
+            done: ready.length,
+            skipped: ready.length,
+            failed: failedNames.length,
+            failedNames: failedNames.slice(),
+            failedDetails: details,
+            total: Math.max(job.total, names.length),
+            current: "",
+            mode: "idle",
+          };
+          markJobClock(false, false);
+          emit();
+          if (failedNames.length) {
+            notifyDownloadResult(ready.length, failedNames.length, failedNames, details);
+          } else {
+            toast.message("Already on disk", {
+              description: `${ready.length.toLocaleString()} intact ${ready.length === 1 ? "family" : "families"} — registered, not fetched again.`,
+            });
+          }
+          await finalizeReadyAndClearPending();
+        } else if (!(job.running && job.mode === "download")) {
+          job = { ...EMPTY };
+          markJobClock(false, false);
+          emit();
+          await finalizeReadyAndClearPending();
+        }
       }
     }
   }

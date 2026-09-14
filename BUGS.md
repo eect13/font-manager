@@ -3,6 +3,9 @@
 ## Fixed in tip / 1.0.164
 - **Folders counts vs auto-hide:** Folders badges use the same auto-hide filter as Collections (`folderStatsWithAutoHide`). Provider → Local Files still shows the full upload count.
 - **Activate All looked complete early:** (1) `activate_families_on_disk` returned `.complete` families before GDI finished (JS marked live immediately). (2) Locals jumped straight into `activated[]` on queue. (3) Drain “already on disk” path skipped register. Register now completes before ready/live; locals pending until mark-live; progress ready_names only after successful Add.
+- **False live after kill/timeout:** plan/resume `.catch(() => readyNames)` treated invoke fail as full register — catch now returns `[]` (same as syncFontsOnSystem).
+- **On-disk Activate All bar freeze:** `activate_families_on_disk` now emits mid-flight done/total while awaiting GDI (no freeze-then-jump).
+- **Partial on-disk register:** failed families clear `pendingActivate` and bump `failed` on the finish path (not left pending forever).
 
 ## Fixed in tip / 1.0.163
 - **Progress looked stuck until reopen:** (1) Deactivate polled *before* Rust started and treated leftover idle as “done,” then toasts fired on click. (2) Activate of files already in Documents set `done = total` *before* GDI register, so the bar sat at 100% while Windows was still adding fonts. Register/unload now tick percent + ETA; the success toast waits until GDI finishes.

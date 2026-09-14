@@ -5036,16 +5036,105 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     // Register on this thread before returning. Callers mark UI live from the
     // returned list — spawning left Activated / progress at "complete" while
     // GDI was still copying into gdi-maps and AddFontResourceExW'ing.
-    // Missing variable TTFs still backfill after GDI is up (no CDN on this path).
-    let (added, registered) = register_ready_families_parallel(&app, &ready);
+    // Emit progress mid-flight (done/total) so Activate All of on-disk libs
+    // ticks like 1.0.163 instead of freezing then jumping. No CDN here —
+    // missing variable TTFs still backfill after GDI is up.
+    let state = bulk();
+    let own_progress = !state.running.load(Ordering::SeqCst);
+    if own_progress {
+        if let Ok(mut p) = state.progress.lock() {
+            p.running = true;
+            p.paused = false;
+            p.kind = "download".into();
+            p.done = 0;
+            p.total = ready.len() as u32;
+            p.failed = 0;
+            p.skipped = 0;
+            p.current = format!("Registering {} already on disk…", ready.len());
+            p.ready_names.clear();
+            p.failed_names.clear();
+            p.failed_details.clear();
+        }
+        state.running.store(true, Ordering::SeqCst);
+        emit_progress(&app);
+    } else if let Ok(mut p) = state.progress.lock() {
+        p.kind = "download".into();
+        p.running = true;
+        if p.total < ready.len() as u32 {
+            p.total = ready.len() as u32;
+        }
+        p.current = format!("Registering {} already on disk…", ready.len());
+    }
+    if !own_progress {
+        emit_progress(&app);
+    }
+
+    let mut files = 0usize;
+    let mut registered = Vec::new();
+    let mut last_emit = Instant::now();
+    for (i, family) in ready.iter().enumerate() {
+        let k = register_intact_family(&app, family);
+        forget_queued(family);
+        if let Ok(mut denied) = state.denied.lock() {
+            denied.remove(&family.trim().to_lowercase());
+        }
+        if let Ok(mut p) = state.progress.lock() {
+            p.kind = "download".into();
+            p.running = true;
+            p.done = (i + 1) as u32;
+            if p.total < ready.len() as u32 {
+                p.total = ready.len() as u32;
+            }
+            p.current = format!("Registering {family}");
+            if k > 0 {
+                files += k;
+                registered.push(family.clone());
+                p.skipped = p.skipped.saturating_add(1);
+                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.ready_names.push(family.clone());
+                }
+            } else {
+                p.failed = p.failed.saturating_add(1);
+                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.failed_names.push(family.clone());
+                    p.failed_details.push(format!(
+                        "{family} — on disk (.complete) but GDI register returned 0"
+                    ));
+                }
+            }
+        } else if k > 0 {
+            files += k;
+            registered.push(family.clone());
+        }
+        let last = i + 1 == ready.len();
+        if i == 0 || last || last_emit.elapsed() >= Duration::from_millis(150) {
+            emit_progress(&app);
+            last_emit = Instant::now();
+        }
+    }
+
     if !registered.is_empty() {
         session_add(&app, &registered);
     }
-    if added > 0 {
+    if files > 0 {
         notify_fonts_changed();
         #[cfg(windows)]
         save_session_paths(&app, &winfont::snapshot_loaded());
     }
+
+    if own_progress {
+        if let Ok(mut p) = state.progress.lock() {
+            p.running = false;
+            p.current.clear();
+            p.done = ready.len() as u32;
+            p.total = ready.len() as u32;
+        }
+        state.running.store(false, Ordering::SeqCst);
+        emit_progress(&app);
+    } else {
+        emit_progress(&app);
+    }
+
     let app2 = app.clone();
     let backfill = registered.clone();
     thread::spawn(move || {
