@@ -2151,9 +2151,11 @@ fn parse_css_faces(css: &str) -> Vec<(String, String, String)> {
     out
 }
 
-/// Hard cap for a single TTF/OTF body (jsDelivr var files included). Prevents
-/// unbounded RAM when a CDN returns a huge or non-font payload.
-const MAX_TTF_FETCH_BYTES: usize = 32 * 1024 * 1024;
+/// Hard cap for a single TTF/OTF body (google/fonts var files included).
+/// CJK VFs (Chiron / Noto Serif KR·SC) are ~23–52MB — jsDelivr's 20MB limit
+/// rejects them, so we fall back to GitHub raw; 32MB was still too small for
+/// Chiron GoRound/Sung. Prevents unbounded RAM on a non-font payload.
+const MAX_TTF_FETCH_BYTES: usize = 64 * 1024 * 1024;
 
 fn fetch_url_ttf(client: &reqwest::blocking::Client, url: &str) -> Option<Vec<u8>> {
     if bulk().cancel.load(Ordering::SeqCst) {
@@ -2455,9 +2457,9 @@ fn parse_metadata_pb_axes_and_files(meta: &str) -> (Vec<String>, Vec<(String, bo
     (axes_order, files)
 }
 
-fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> String {
-    // Bracket axes must be percent-encoded for jsDelivr.
-    let enc: String = filename
+fn encode_google_fonts_filename(filename: &str) -> String {
+    // Bracket axes must be percent-encoded for jsDelivr / GitHub raw.
+    filename
         .chars()
         .map(|c| match c {
             '[' => "%5B".to_string(),
@@ -2465,11 +2467,52 @@ fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> Str
             ' ' => "%20".to_string(),
             _ => c.to_string(),
         })
-        .collect();
+        .collect()
+}
+
+fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> String {
+    let enc = encode_google_fonts_filename(filename);
     format!("https://cdn.jsdelivr.net/gh/google/fonts@main/{license}/{folder}/{enc}")
 }
 
-/// Download real variable TTFs from google/fonts via jsDelivr (never @fontsource-variable WOFF).
+/// GitHub raw fallback — jsDelivr refuses files over ~20MB (CJK variable TTFs).
+fn github_raw_google_fonts_url(license: &str, folder: &str, filename: &str) -> String {
+    let enc = encode_google_fonts_filename(filename);
+    format!("https://raw.githubusercontent.com/google/fonts/main/{license}/{folder}/{enc}")
+}
+
+/// Prefer jsDelivr (fast, cached) then GitHub raw (serves 20MB+ CJK VFs).
+fn google_fonts_variable_cdn_urls(license: &str, folder: &str, filename: &str) -> [String; 2] {
+    [
+        jsdelivr_google_fonts_url(license, folder, filename),
+        github_raw_google_fonts_url(license, folder, filename),
+    ]
+}
+
+/// Catalog marks these `variable: true` but google/fonts has no public VF file
+/// (Google Sans is proprietary; Edu * Hand packs ship statics only). Do not
+/// invent VFs or clear `.complete` for missing `*-variable-*`.
+fn family_has_no_public_vf(family: &str) -> bool {
+    const NO_PUBLIC_VF: &[&str] = &[
+        "Google Sans",
+        "Edu NSW ACT Cursive",
+        "Edu NSW ACT Hand Pre",
+        "Edu QLD Hand",
+        "Edu SA Hand",
+        "Edu VIC WA NT Hand",
+        "Edu VIC WA NT Hand Pre",
+    ];
+    let t = family.trim();
+    NO_PUBLIC_VF.iter().any(|n| n.eq_ignore_ascii_case(t))
+}
+
+/// Catalog-variable families that should have a real `*-variable-*` / VF on disk.
+fn catalog_variable_expects_public_vf(family: &str) -> bool {
+    google_catalog_is_variable(family) && !family_has_no_public_vf(family)
+}
+
+/// Download real variable TTFs from google/fonts (jsDelivr, then GitHub raw for large CJK).
+/// Never `@fontsource-variable` WOFF.
 /// Returns on-disk filenames that were written or already intact, plus HealStats from
 /// in-place name heals on intact faces (never discard locked/healed).
 fn download_google_variable_ttfs(
@@ -2478,7 +2521,7 @@ fn download_google_variable_ttfs(
     slug: &str,
     root: &Path,
 ) -> (Vec<String>, HealStats) {
-    if !google_catalog_is_variable(family) {
+    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
         return (Vec::new(), HealStats::default());
     }
     let licenses = ["ofl", "apache", "ufl"];
@@ -2527,14 +2570,18 @@ fn download_google_variable_ttfs(
                     wrote.push(dest_name);
                     continue;
                 }
-                let url = jsdelivr_google_fonts_url(lic, folder, fname);
-                if let Some(bytes) = fetch_url_ttf(client, &url) {
+                // jsDelivr first; GitHub raw for >20MB CJK VFs jsDelivr rejects.
+                for url in google_fonts_variable_cdn_urls(lic, folder, fname) {
+                    let Some(bytes) = fetch_url_ttf(client, &url) else {
+                        continue;
+                    };
                     // google/fonts vars often mash default-instance style into
                     // nameID 1. Rewrite name only (Regular/Italic); preserve fvar.
                     let patched = crate::namepatch::patch_variable_face(&bytes, family, *italic)
                         .unwrap_or(bytes);
                     if write_font_file(&dest, &patched).is_ok() {
                         wrote.push(dest_name);
+                        break;
                     }
                 }
             }
@@ -2584,14 +2631,16 @@ fn download_google_variable_ttfs(
                             format!("{pascal}-VariableFont_{axes_us}.ttf"),
                         ]
                     };
-                    for remote in remotes {
-                        let url = jsdelivr_google_fonts_url(lic, folder, &remote);
-                        if let Some(bytes) = fetch_url_ttf(client, &url) {
+                    'outer: for remote in remotes {
+                        for url in google_fonts_variable_cdn_urls(lic, folder, &remote) {
+                            let Some(bytes) = fetch_url_ttf(client, &url) else {
+                                continue;
+                            };
                             let patched = crate::namepatch::patch_variable_face(&bytes, family, italic)
                                 .unwrap_or(bytes);
                             if write_font_file(&dest, &patched).is_ok() {
                                 wrote.push(dest_name);
-                                break;
+                                break 'outer;
                             }
                         }
                     }
@@ -2668,6 +2717,8 @@ fn collect_intact_google_instance_keys(dir: &Path) -> Vec<String> {
 
 /// When variable TTFs land, fold them into `.google-planned` / expected / complete
 /// **alongside** existing static instance keys — never replace statics with var-only.
+/// Stamp honesty only (markers + planned keys); never deletes/renames/rewrites
+/// static face files on disk.
 fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
     if var_files.is_empty() {
         return;
@@ -2691,7 +2742,8 @@ fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
 fn http_download_client() -> Option<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(120))
+        // CJK variable TTFs are ~25–52MB over GitHub raw; 120s was tight on slow links.
+        .timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(6)
         .user_agent("FontManager/1.0")
         .build()
@@ -2699,14 +2751,17 @@ fn http_download_client() -> Option<reqwest::blocking::Client> {
 }
 
 /// Always pull real `*-variable-*` TTFs for catalog-variable families — including
-/// when the folder is already `.complete` / statics-only. Does **not** bust statics;
-/// registers both. Returns (var filenames written/intact, HealStats from intact heals).
+/// when the folder is already `.complete` / statics-only. `.complete` must **not**
+/// block VF fetch. Does **not** delete, rename, rewrite, or purge static faces —
+/// only writes missing var files, then `adopt_variable_files_into_plan` updates
+/// planned/expected/complete. No-public-VF catalog families are skipped (no invent).
+/// Returns (var filenames written/intact, HealStats from intact var heals).
 fn ensure_catalog_variable_faces(
     app: &AppHandle,
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> (usize, HealStats) {
-    if !google_catalog_is_variable(family) {
+    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
         return (0, HealStats::default());
     }
     let slug = slug_family(family);
@@ -4044,6 +4099,11 @@ fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
 /// apply the catalog floor (Google CSS often omits edge weights 1/1000, so
 /// planned can be ≪ floor for Sofia Sans / Ysabeau / DM Sans / Nunito / …
 /// without being a latin lie; floor-when-planned caused permanent Repair↔retry).
+///
+/// Missing catalog VFs are **not** cleared here: clearing `.complete` would push
+/// families through Repair/bust and risk touching statics. Ensure/backfill pulls
+/// VFs while `.complete` stays; `adopt_variable_files_into_plan` updates the stamp
+/// after vars land without deleting/renaming/rewriting static faces.
 fn official_google_complete_is_lie(dir: &Path) -> bool {
     let family = dir
         .file_name()
@@ -4611,10 +4671,10 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         return;
     }
 
-    // CJK full TTFs are ~30MB each; 10s was too short (Chiron Sung HK).
+    // CJK full TTFs / VFs are ~25–52MB; 10s was too short (Chiron Sung HK).
     let client = match reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(6)
         .user_agent("FontManager/1.0")
         .build()
@@ -6549,6 +6609,130 @@ mod install_path_tests {
         // After a var file appears, detector flips.
         fs::write(dir.join("nunito-variable-wght.ttf"), &fake).unwrap();
         assert!(dir_has_intact_variable(&dir));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn google_fonts_variable_cdn_urls_jsdelivr_then_github_raw() {
+        let urls = google_fonts_variable_cdn_urls("ofl", "chirongoroundtc", "ChironGoRoundTC[wght].ttf");
+        assert!(
+            urls[0].starts_with("https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/chirongoroundtc/"),
+            "jsDelivr first: {}",
+            urls[0]
+        );
+        assert!(
+            urls[0].contains("ChironGoRoundTC%5Bwght%5D.ttf"),
+            "brackets encoded: {}",
+            urls[0]
+        );
+        assert_eq!(
+            urls[1],
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/chirongoroundtc/ChironGoRoundTC%5Bwght%5D.ttf"
+        );
+        assert!(MAX_TTF_FETCH_BYTES >= 64 * 1024 * 1024, "CJK VFs need >52MB headroom");
+    }
+
+    #[test]
+    fn no_public_vf_denylist_skips_invented_variable_expectation() {
+        assert!(google_catalog_is_variable("Google Sans"));
+        assert!(family_has_no_public_vf("Google Sans"));
+        assert!(!catalog_variable_expects_public_vf("Google Sans"));
+        assert!(family_has_no_public_vf("Edu NSW ACT Cursive"));
+        assert!(family_has_no_public_vf("Edu VIC WA NT Hand Pre"));
+        // P1 gap families DO expect a public VF.
+        assert!(catalog_variable_expects_public_vf("Chiron GoRound TC"));
+        assert!(catalog_variable_expects_public_vf("Chiron Hei HK"));
+        assert!(catalog_variable_expects_public_vf("Chiron Sung HK"));
+        assert!(catalog_variable_expects_public_vf("Noto Serif KR"));
+        assert!(catalog_variable_expects_public_vf("Noto Serif SC"));
+        assert!(catalog_variable_expects_public_vf("Nunito"));
+    }
+
+    #[test]
+    fn complete_statics_only_keeps_stamp_vars_adopted_without_touching_statics() {
+        // Eric: .complete must not block VF backfill; statics untouched.
+        // Clearing .complete would Repair/bust and risk wiping statics — don't.
+        let parent = temp_family_dir("statics-only-complete");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let varf = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        let static_bytes_before = fs::read(dir.join(inst)).unwrap();
+        write_google_planned(&dir, &[inst.into()]);
+        mark_family_complete(&dir, 1);
+        assert!(dir_is_complete(&dir));
+        assert!(!dir_has_intact_variable(&dir));
+        assert!(
+            !official_google_complete_is_lie(&dir),
+            "missing VF must not clear .complete (would risk static wipe on Repair)"
+        );
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            ".complete stays; ensure/backfill still fetches vars while ready"
+        );
+        // Simulate VF landing (ensure path) then stamp honesty via adopt.
+        fs::write(dir.join(varf), &fake).unwrap();
+        adopt_variable_files_into_plan(&dir, &[varf.into()]);
+        let keys = read_google_planned_keys(&dir).expect("planned");
+        assert!(keys.iter().any(|k| k == varf), "planned gains var: {keys:?}");
+        assert!(keys.iter().any(|k| k == inst), "planned keeps static: {keys:?}");
+        assert_eq!(
+            fs::read(dir.join(inst)).unwrap(),
+            static_bytes_before,
+            "static face bytes must be untouched after adopt"
+        );
+        assert!(dir.is_dir());
+        assert!(dir.join(inst).is_file());
+        assert!(dir_is_complete(&dir), "stamp honest once vars intact");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn verify_keeps_complete_for_no_public_vf_statics_only() {
+        let parent = temp_family_dir("no-public-vf-complete");
+        let dir = parent.join("Google Sans");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "google-sans-400-normal.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        write_google_planned(&dir, &[inst.into()]);
+        mark_family_complete(&dir, 1);
+        assert!(google_catalog_is_variable("Google Sans"));
+        assert!(family_has_no_public_vf("Google Sans"));
+        assert!(
+            !official_google_complete_is_lie(&dir),
+            "do not invent VF requirement for Google Sans"
+        );
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            "no-public-VF statics-only complete must remain"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn verify_keeps_complete_when_catalog_variable_has_intact_vf() {
+        let parent = temp_family_dir("complete-with-vf");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let varf = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        fs::write(dir.join(varf), &fake).unwrap();
+        write_google_planned(&dir, &[varf.into(), inst.into()]);
+        mark_family_complete(&dir, 2);
+        assert!(dir_has_intact_variable(&dir));
+        assert!(!official_google_complete_is_lie(&dir));
+        verify_complete_marker(&dir);
+        assert!(family_complete_marker(&dir).is_file());
         let _ = fs::remove_dir_all(&parent);
     }
 
