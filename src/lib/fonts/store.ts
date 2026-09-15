@@ -355,8 +355,13 @@ export const useFontStore = create<FontState>()(
               ...(prev.licenseUserSet
                 ? { license: prev.license, licenseName: prev.licenseName, licenseUserSet: true as const }
                 : {}),
-              // Keep probed axes only when prior honesty already marked Variable (disk VF).
-              ...(prev.axes?.length && prev.variable ? { axes: prev.axes, variable: true as const } : {}),
+              // Keep disk-VF honesty across catalog refresh even before axes are probed.
+              ...(prev.variable
+                ? {
+                    variable: true as const,
+                    ...(prev.axes?.length ? { axes: prev.axes } : {}),
+                  }
+                : {}),
             };
           });
           const ids = new Set(googleFonts.map((f) => f.id));

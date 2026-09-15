@@ -274,7 +274,8 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
         weights: item.weights?.length ? item.weights : existing.weights,
         italic: item.styles?.includes("italic") ?? existing.italic,
         catalogVariable: Boolean(item.variable) || Boolean(existing.catalogVariable),
-        variable: existing.variable && Boolean(existing.axes?.length),
+        // Preserve applyDiskStatusHonesty: on-disk VF may set variable:true without axes yet.
+        variable: Boolean(existing.variable),
         tags: tagsForGoogleFamily(
           item.family,
           CATEGORY[item.category ?? ""] ?? existing.category,

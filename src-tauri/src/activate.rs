@@ -3810,15 +3810,15 @@ fn heal_family_google_names(app: &AppHandle, family: &str, include_vars: bool) -
 }
 
 /// Latin/subset shreds land ~35–60KB (CJK) or ~38KB (Gidugu); full Google TTFs are
-/// typically 100KB–MBs. Cap covers both classes without wiping the library.
-const TINY_CJK_FACE_MAX_BYTES: u64 = 96 * 1024;
-const TINY_CJK_FACE_MIN_BYTES: u64 = 16 * 1024;
+/// typically 100KB–MBs. Tight band + allowlist — do **not** flag all official Google
+/// 16–96KB faces Incomplete (collateral risk on legitimately small statics).
+const TINY_CJK_FACE_MAX_BYTES: u64 = 80 * 1024;
+const TINY_CJK_FACE_MIN_BYTES: u64 = 24 * 1024;
 const UNDERSIZED_GOOGLE_FACE_MAX_BYTES: u64 = TINY_CJK_FACE_MAX_BYTES;
 const UNDERSIZED_GOOGLE_FACE_MIN_BYTES: u64 = TINY_CJK_FACE_MIN_BYTES;
 
 /// Families known to ship full CJK statics that Skye sometimes had replaced by
-/// tiny latin-only faces (Chiron / Noto CJK / LXGW). Kept for tests / docs;
-/// undersized replace now applies to **all** official Google families (Gidugu).
+/// tiny latin-only faces (Chiron / Noto CJK / LXGW).
 fn family_may_have_tiny_cjk_statics(family: &str) -> bool {
     let t = family.trim().to_ascii_lowercase();
     t.starts_with("chiron ")
@@ -3837,6 +3837,12 @@ fn family_may_have_tiny_cjk_statics(family: &str) -> bool {
         || t == "noto serif japanese"
 }
 
+/// Non-CJK official Google families known to land latin-subset / undersized remnants
+/// (Gidugu ~38KB vs full ~461KB). Allowlist only — never expand to all Google.
+fn family_may_have_undersized_google_statics(family: &str) -> bool {
+    family.trim().eq_ignore_ascii_case("gidugu")
+}
+
 /// Intact SFNT but tiny → almost certainly a latin-subset / undersized remnant.
 fn is_tiny_latin_subset_face(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else {
@@ -3852,20 +3858,28 @@ fn is_undersized_google_static_face(path: &Path) -> bool {
     is_tiny_latin_subset_face(path)
 }
 
-/// Official Google face that is intact but << typical full TTF (Gidugu 38KB vs ~461KB).
-/// Bust **this face only** on Repair/download — never whole-library wipe.
+/// Allowlisted official Google face intact but << typical full TTF (Gidugu 38KB vs ~461KB).
+/// Bust **this face only** on Repair/download — never whole-library wipe / never all-Google.
 fn face_should_replace_undersized_google(family: &str, path: &Path) -> bool {
-    is_official_google_family(family) && is_undersized_google_static_face(path)
+    is_official_google_family(family)
+        && family_may_have_undersized_google_statics(family)
+        && is_undersized_google_static_face(path)
 }
 
 fn face_should_replace_as_tiny_cjk(family: &str, path: &Path) -> bool {
-    // Backward-compatible name: CJK allowlist OR any official Google undersized face.
+    // Gidugu allowlist OR CJK allowlist (LXGW may not be in google-directory).
+    // Compare-to-upstream still gates the write.
     face_should_replace_undersized_google(family, path)
         || (family_may_have_tiny_cjk_statics(family) && is_tiny_latin_subset_face(path))
 }
 
 fn dir_has_undersized_google_static(dir: &Path, family: &str) -> bool {
     if !is_official_google_family(family) {
+        return false;
+    }
+    if !(family_may_have_undersized_google_statics(family)
+        || family_may_have_tiny_cjk_statics(family))
+    {
         return false;
     }
     let slug = slug_family(family);
@@ -3878,7 +3892,7 @@ fn dir_has_undersized_google_static(dir: &Path, family: &str) -> bool {
         if is_variable_face_filename(name) || filename_has_latin_subset(name, &slug) {
             continue;
         }
-        if face_should_replace_undersized_google(family, &p) {
+        if face_should_replace_as_tiny_cjk(family, &p) {
             return true;
         }
     }
@@ -3910,9 +3924,9 @@ fn download_listed_faces_to_dir(
         let name = google_face_filename(slug, &weight, &style);
         let path = root.join(&name);
         if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
-            // Undersized vs full Google (Gidugu ~38KB, CJK latin shreds ~35–60KB):
+            // Undersized vs full Google (allowlisted Gidugu / CJK latin shreds):
             // do NOT skip-intact / claim done — bust this face only and re-fetch.
-            if face_should_replace_undersized_google(family, &path) {
+            if face_should_replace_as_tiny_cjk(family, &path) {
                 intact_forget(&path);
                 if let Ok(mut p) = bulk().progress.lock() {
                     p.current = format!(
@@ -6294,8 +6308,13 @@ fn replace_tiny_cjk_static_faces(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> usize {
-    // Gidugu + CJK latin shreds: any official Google undersized static.
+    // Allowlisted Gidugu / CJK latin shreds only — not every official Google face.
     if !is_official_google_family(family) {
+        return 0;
+    }
+    if !(family_may_have_undersized_google_statics(family)
+        || family_may_have_tiny_cjk_statics(family))
+    {
         return 0;
     }
     let slug = slug_family(family);
@@ -6318,7 +6337,7 @@ fn replace_tiny_cjk_static_faces(
         if is_variable_face_filename(name) || filename_has_latin_subset(name, &slug) {
             continue;
         }
-        if !face_should_replace_undersized_google(family, p) {
+        if !face_should_replace_as_tiny_cjk(family, p) {
             continue;
         }
         if let Some((weight, style)) = parse_google_instance_face_name(&slug, name) {
@@ -7584,18 +7603,29 @@ mod install_path_tests {
     #[test]
     fn verify_clears_complete_when_official_undersized_static_present() {
         let parent = temp_family_dir("undersized-complete-clear");
-        // Use Nunito (always in offline catalog) as official Google stand-in.
-        let dir = parent.join("Nunito");
+        // Allowlisted Gidugu remnant — not all-Google size band.
+        let dir = parent.join("Gidugu");
         fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(38404, 0);
-        fs::write(dir.join("nunito-400-normal.ttf"), &fake).unwrap();
+        fs::write(dir.join("gidugu-400-normal.ttf"), &fake).unwrap();
         mark_family_complete(&dir, 1);
         assert!(dir_is_complete(&dir));
-        assert!(is_official_google_family("Nunito"));
-        assert!(dir_has_undersized_google_static(&dir, "Nunito"));
+        assert!(is_official_google_family("Gidugu"));
+        assert!(dir_has_undersized_google_static(&dir, "Gidugu"));
         verify_complete_marker(&dir);
         assert!(!dir_is_complete(&dir), "undersized vs Google must clear sticky .complete");
+        // Collateral: ordinary small Google statics must NOT clear .complete on size alone.
+        // Honest .google-planned so catalog-floor lie does not confound the size heuristic.
+        let nunito = parent.join("Nunito");
+        fs::create_dir_all(&nunito).unwrap();
+        fs::write(nunito.join("nunito-400-normal.ttf"), &fake).unwrap();
+        write_google_planned(&nunito, &["nunito-400-normal.ttf".into()]);
+        mark_family_complete(&nunito, 1);
+        assert!(is_official_google_family("Nunito"));
+        assert!(!dir_has_undersized_google_static(&nunito, "Nunito"));
+        verify_complete_marker(&nunito);
+        assert!(dir_is_complete(&nunito), "non-allowlisted Google must not clear on size alone");
         let _ = fs::remove_dir_all(&parent);
     }
 
@@ -7713,9 +7743,11 @@ mod install_path_tests {
         assert!(face_should_replace_as_tiny_cjk("Chiron GoRound TC", &tiny));
         assert!(face_should_replace_as_tiny_cjk("Noto Serif KR", &tiny));
         assert!(face_should_replace_as_tiny_cjk("LXGW WenKai", &tiny));
-        // 1.0.168: Gidugu-class — all official Google undersized statics replace.
-        assert!(face_should_replace_undersized_google("Nunito", &tiny));
-        assert!(face_should_replace_as_tiny_cjk("Nunito", &tiny));
+        // 1.0.168: Gidugu allowlist — not every official Google face in the size band.
+        assert!(face_should_replace_undersized_google("Gidugu", &tiny));
+        assert!(face_should_replace_as_tiny_cjk("Gidugu", &tiny));
+        assert!(!face_should_replace_undersized_google("Nunito", &tiny));
+        assert!(!face_should_replace_as_tiny_cjk("Nunito", &tiny));
         let full = dir.join("full.ttf");
         bytes.resize(200 * 1024, 0);
         fs::write(&full, &bytes).unwrap();

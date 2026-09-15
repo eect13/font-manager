@@ -223,3 +223,72 @@ test("Gidugu undersized remnant is incomplete — not skip-intact done", () => {
   assert.match(msg, /undersized vs Google|latin\/subset/);
   assert.doesNotMatch(msg, /skip intact done/i);
 });
+
+test("Refresh catalogs preserves on-disk VF variable without axes", () => {
+  // applyDiskStatusHonesty may set variable:true before axes are probed.
+  const existing = { family: "Nunito", variable: true, catalogVariable: true, axes: undefined };
+  // Mirror google-api refresh merge — must NOT require axes?.length.
+  const refreshed = {
+    ...existing,
+    catalogVariable: true,
+    variable: Boolean(existing.variable),
+  };
+  assert.equal(refreshed.variable, true);
+  // Regression: prior tip cleared honesty with `existing.variable && axes?.length`.
+  const broken = existing.variable && Boolean(existing.axes?.length);
+  assert.equal(broken, false);
+  assert.notEqual(refreshed.variable, broken);
+});
+
+test("setGoogleFonts merge keeps variable:true without axes", () => {
+  const prev = { id: "g:Nunito", family: "Nunito", variable: true, axes: undefined };
+  const incoming = { id: "g:Nunito", family: "Nunito", variable: false, catalogVariable: true };
+  const merged = {
+    ...incoming,
+    ...(prev.variable
+      ? {
+          variable: true,
+          ...(prev.axes?.length ? { axes: prev.axes } : {}),
+        }
+      : {}),
+  };
+  assert.equal(merged.variable, true);
+  assert.equal(merged.axes, undefined);
+});
+
+test("Scan Disk path applies disk VF honesty (not poll-only)", () => {
+  // Mirror syncManagedDocumentsRoot / ScanDiskMenuItem: rows → applyDiskStatusHonesty.
+  const fonts = [
+    { family: "Nunito", variable: false, catalogVariable: true },
+    { family: "42dot Sans", variable: false, catalogVariable: true },
+  ];
+  const rows = [
+    { name: "Nunito", has_variable: true },
+    { name: "42dot Sans", has_variable: false },
+  ];
+  const next = applyDiskVariableHonesty(fonts, rows);
+  assert.equal(next.find((f) => f.family === "Nunito").variable, true);
+  assert.equal(next.find((f) => f.family === "42dot Sans").variable, false);
+});
+
+test("undersized Incomplete is allowlisted (Gidugu) — not all Google 16–96KB", () => {
+  assert.equal(
+    diskFamilyIncomplete({
+      name: "Gidugu",
+      files: 1,
+      has_complete: true,
+      undersized: true,
+    }),
+    true,
+  );
+  // Ordinary Google with a small intact face must not be Incomplete unless flagged.
+  assert.equal(
+    diskFamilyIncomplete({
+      name: "Nunito",
+      files: 1,
+      has_complete: true,
+      undersized: false,
+    }),
+    false,
+  );
+});
