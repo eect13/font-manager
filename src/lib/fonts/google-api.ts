@@ -217,7 +217,8 @@ async function fetchFontsourceList(force: boolean): Promise<FontsourceItem[] | n
   try {
     const res = await fetch(FONTSOURCE_LIST, {
       signal: ctrl.signal,
-      cache: force ? "no-store" : "default",
+      // Always bypass HTTP cache — Eric wants latest Fontsource/Google on Refresh.
+      cache: "no-store",
     });
     if (!res.ok) return null;
     const data = (await res.json()) as FontsourceItem[];
