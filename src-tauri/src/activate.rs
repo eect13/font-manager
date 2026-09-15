@@ -1367,6 +1367,69 @@ fn plan_session_end_cleanup(
     }
 }
 
+/// Startup recover clear decision after best-effort Remove.
+/// Missing stage files are not write-locked (`path_still_write_locked` → false),
+/// so a naïve "still_locked.is_empty() ⇒ clear all sidecars" wipes
+/// `.session-maps.json` + `.session-active.json` before rebuild can re-stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoverSidecarPlan {
+    clear_paths: bool,
+    clear_maps: bool,
+    clear_active: bool,
+    keep_locked_paths: Vec<PathBuf>,
+}
+
+/// `missing_before_unload`: any unload target was absent on disk before Remove.
+/// When true, do not treat empty `still_locked` as successful unlock → nuke.
+fn plan_recover_sidecar_clear(
+    still_locked: &[PathBuf],
+    missing_before_unload: bool,
+) -> RecoverSidecarPlan {
+    if !still_locked.is_empty() {
+        return RecoverSidecarPlan {
+            clear_paths: false,
+            clear_maps: false,
+            clear_active: false,
+            keep_locked_paths: still_locked.to_vec(),
+        };
+    }
+    if missing_before_unload {
+        // Preserve maps + session-active for validate/rebuild + re-register.
+        return RecoverSidecarPlan {
+            clear_paths: false,
+            clear_maps: false,
+            clear_active: false,
+            keep_locked_paths: Vec::new(),
+        };
+    }
+    // All targets existed and are unlocked — drop the unload ledger only.
+    // Keep maps + session-active so session_begin can re-register.
+    RecoverSidecarPlan {
+        clear_paths: true,
+        clear_maps: false,
+        clear_active: false,
+        keep_locked_paths: Vec::new(),
+    }
+}
+
+fn apply_recover_sidecar_plan(root: &Path, plan: &RecoverSidecarPlan) {
+    if plan.clear_paths {
+        clear_session_paths_in(root);
+    }
+    if plan.clear_maps {
+        crate::session_stage::clear_session_maps_in(root);
+    }
+    if plan.clear_active {
+        clear_session_active_in(root);
+    }
+    if !plan.keep_locked_paths.is_empty() {
+        let still_stage = crate::session_stage::filter_session_paths_refuse_documents(
+            &plan.keep_locked_paths,
+        );
+        save_session_paths_in(root, &still_stage);
+    }
+}
+
 fn session_path(app: &AppHandle) -> Option<PathBuf> {
     documents_root(app).ok().map(|p| session_active_file_in(&p))
 }
@@ -1587,10 +1650,52 @@ fn emit_font_cache_held_toast(app: &AppHandle, locked: usize, access_denied: boo
     let _ = app.emit("font-cache-held", &notice);
 }
 
+/// Unload Documents library paths still listed in `.session-paths.txt`
+/// (legacy 1.0.156). Must run before `rebuild_session_maps_in` rewrites that
+/// file to stage-only. Never re-Adds Documents.
+#[cfg(windows)]
+fn unload_documents_session_leftovers(app: &AppHandle, root: &Path) {
+    let leftover = load_session_paths_in(root);
+    let (docs_paths, _) = crate::session_stage::partition_legacy_session_paths(&leftover);
+    if docs_paths.is_empty() {
+        return;
+    }
+    eprintln!(
+        "Font Manager: refusing {} Documents session path(s) for GDI — unloading leftovers only",
+        docs_paths.len()
+    );
+    let stats = winfont::unload_paths(docs_paths.clone(), false);
+    if plan_font_cache_flush(stats.attempted) {
+        let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
+    }
+    for _ in 0..4 {
+        let still = filter_still_write_locked(&docs_paths);
+        if still.is_empty() {
+            break;
+        }
+        let _ = winfont::unload_paths(still, false);
+        thread::sleep(Duration::from_millis(120));
+    }
+    let still_docs = filter_still_write_locked(&docs_paths);
+    if !still_docs.is_empty() {
+        eprintln!(
+            "Font Manager: startup session recovery — {} Documents path(s) still write-locked after Remove+FontCache (attempted {}). {}",
+            still_docs.len(),
+            stats.attempted,
+            font_cache_held_message(still_docs.len())
+        );
+        emit_session_recovery_toast(
+            app,
+            still_docs.len(),
+            stats.attempted.max(still_docs.len()),
+        );
+    }
+}
+
 /// Recover crash/quit-without-unload leftovers before any fresh Add.
-/// Unloads `.session-paths.txt`, then clears sidecars after best-effort unload
-/// when locks are gone; otherwise keeps remaining locked paths and fail-loud
-/// (eprintln + startup toast) so Heal is not silently stuck on thousands of GDI maps.
+/// Called after maps validate/rebuild (see `session_begin`). Missing stage ≠
+/// unlocked: never wholesale-clear maps + session-active on empty `still_locked`
+/// when targets were absent. Locked leftovers stay + fail-loud.
 #[allow(dead_code)]
 fn recover_stale_session(app: &AppHandle) {
     #[cfg(windows)]
@@ -1605,41 +1710,9 @@ fn recover_stale_session(app: &AppHandle) {
         if leftover.is_empty() && maps.is_empty() && !had_active {
             return;
         }
-        // Partition: Documents paths = unload-only, never re-Add.
-        let (docs_paths, mut keep_paths) =
+        // Documents already peeled in session_begin; keep stage / other only.
+        let (_docs_paths, mut keep_paths) =
             crate::session_stage::partition_legacy_session_paths(&leftover);
-        if !docs_paths.is_empty() {
-            eprintln!(
-                "Font Manager: refusing {} Documents session path(s) for GDI — unloading leftovers only",
-                docs_paths.len()
-            );
-            let stats = winfont::unload_paths(docs_paths.clone(), false);
-            if plan_font_cache_flush(stats.attempted) {
-                let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
-            }
-            for _ in 0..4 {
-                let still = filter_still_write_locked(&docs_paths);
-                if still.is_empty() {
-                    break;
-                }
-                let _ = winfont::unload_paths(still, false);
-                thread::sleep(Duration::from_millis(120));
-            }
-            let still_docs = filter_still_write_locked(&docs_paths);
-            if !still_docs.is_empty() {
-                eprintln!(
-                    "Font Manager: startup session recovery — {} Documents path(s) still write-locked after Remove+FontCache (attempted {}). {}",
-                    still_docs.len(),
-                    stats.attempted,
-                    font_cache_held_message(still_docs.len())
-                );
-                emit_session_recovery_toast(
-                    app,
-                    still_docs.len(),
-                    stats.attempted.max(still_docs.len()),
-                );
-            }
-        }
         // Remember maps (incl. stale) so unload can Remove both stage + legacy.
         for m in &maps {
             winfont::remember_face_map(m.clone());
@@ -1649,6 +1722,8 @@ fn recover_stale_session(app: &AppHandle) {
             }
         }
         if !keep_paths.is_empty() {
+            // Snapshot existence BEFORE Remove — missing files look "unlocked".
+            let missing_before = keep_paths.iter().any(|p| !p.is_file());
             let stats = winfont::unload_paths(keep_paths.clone(), false);
             if plan_font_cache_flush(stats.attempted) {
                 let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
@@ -1662,12 +1737,9 @@ fn recover_stale_session(app: &AppHandle) {
                 thread::sleep(Duration::from_millis(120));
             }
             let still = filter_still_write_locked(&keep_paths);
-            if still.is_empty() {
-                clear_session_sidecars_in(&root);
-            } else {
-                let still_stage =
-                    crate::session_stage::filter_session_paths_refuse_documents(&still);
-                save_session_paths_in(&root, &still_stage);
+            let plan = plan_recover_sidecar_clear(&still, missing_before);
+            apply_recover_sidecar_plan(&root, &plan);
+            if !plan.keep_locked_paths.is_empty() {
                 eprintln!(
                     "Font Manager: startup session recovery — {} path(s) still write-locked after Remove+FontCache (attempted {}). {} Deactivate-all as admin or reboot, then Repair.",
                     still.len(),
@@ -1676,17 +1748,10 @@ fn recover_stale_session(app: &AppHandle) {
                 );
                 emit_session_recovery_toast(app, still.len(), stats.attempted.max(still.len()));
             }
-        } else if docs_paths.is_empty() {
-            clear_session_sidecars_in(&root);
         } else {
-            // Docs unloaded; drop paths/maps so hydrate re-stages cleanly.
+            // No stage keep_paths. Drop legacy Documents ledger only —
+            // never wipe maps / session-active (rebuild + re-register need them).
             clear_session_paths_in(&root);
-            crate::session_stage::clear_session_maps_in(&root);
-            let paths_remain = session_paths_file_in(&root).is_file()
-                && !load_session_paths_in(&root).is_empty();
-            if !paths_remain {
-                clear_session_active_in(&root);
-            }
         }
     }
     #[cfg(not(windows))]
@@ -1699,12 +1764,19 @@ pub fn session_begin(app: &AppHandle) {
     invalidate_google_latin_lies_once(app);
     #[cfg(windows)]
     {
-        recover_stale_session(app);
-        // Rebuild/validate maps against existing LocalAppData stage files;
-        // re-stage missing (copy-only). Refuse Documents in session-paths.
+        // Ordering (Skye HOLD):
+        // 1) Unload Documents leftovers from the existing session-paths ledger
+        //    (rebuild rewrites that file to stage-only and would drop them).
+        // 2) Validate/rebuild maps (preserve valid maps + session-active;
+        //    re-stage missing copy-only) BEFORE recover clear.
+        // 3) recover_stale_session — missing stage ≠ unlock→nuke.
+        if let Ok(root) = documents_root(app) {
+            unload_documents_session_leftovers(app, &root);
+        }
         if let (Ok(root), Some(maps_root)) = (documents_root(app), gdi_maps_root()) {
             let _ = rebuild_session_maps_in(&root, &maps_root);
         }
+        recover_stale_session(app);
         // Targeted dirs only — do not walk all of Documents before the UI is up.
         // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
@@ -7925,24 +7997,100 @@ mod session_sidecar_tests {
     }
 
     #[test]
-    fn stale_sidecars_clear_after_best_effort_when_unlocked() {
-        // Unit stand-in for startup recovery file clear (GDI unload is Windows-only).
+    fn plan_recover_missing_stage_does_not_nuke_maps_or_active() {
+        // Missing stage ⇒ still_locked empty, but must NOT clear maps/active.
+        let missing = vec![PathBuf::from(r"C:\missing\stage.ttf")];
+        let still = filter_still_write_locked(&missing);
+        assert!(still.is_empty(), "absent path is not write-locked");
+        let plan = plan_recover_sidecar_clear(&still, true);
+        assert!(!plan.clear_maps, "missing stage must not clear .session-maps.json");
+        assert!(!plan.clear_active, "missing stage must not clear .session-active.json");
+        assert!(!plan.clear_paths);
+        assert!(plan.keep_locked_paths.is_empty());
+    }
+
+    #[test]
+    fn plan_recover_unlocked_existing_clears_paths_only() {
+        let plan = plan_recover_sidecar_clear(&[], false);
+        assert!(plan.clear_paths, "drop unload ledger after proven unlock");
+        assert!(!plan.clear_maps, "preserve maps for re-register");
+        assert!(!plan.clear_active, "preserve session-active for re-register");
+        assert!(plan.keep_locked_paths.is_empty());
+    }
+
+    #[test]
+    fn plan_recover_keeps_locked_paths() {
+        let locked = vec![PathBuf::from("a.ttf"), PathBuf::from("b.ttf")];
+        let plan = plan_recover_sidecar_clear(&locked, false);
+        assert!(!plan.clear_paths);
+        assert!(!plan.clear_maps);
+        assert!(!plan.clear_active);
+        assert_eq!(plan.keep_locked_paths, locked);
+    }
+
+    #[test]
+    fn apply_recover_preserves_maps_and_active_when_missing() {
+        let root = temp_root("recover-missing");
+        let maps = vec![crate::session_stage::FaceMap {
+            source: r"C:\Users\Eric\Documents\Font Manager\A\a.ttf".into(),
+            stage: root.join("gone.ttf").to_string_lossy().into(),
+            registry_name: String::new(),
+            family: "A".into(),
+        }];
+        crate::session_stage::save_session_maps_in(&root, &maps);
+        fs::write(session_active_file_in(&root), b"[\"A\"]\n").unwrap();
+        save_session_paths_in(&root, &[root.join("gone.ttf")]);
+        let leftover = load_session_paths_in(&root);
+        let still = filter_still_write_locked(&leftover);
+        assert!(still.is_empty());
+        let missing_before = leftover.iter().any(|p| !p.is_file());
+        assert!(missing_before);
+        let plan = plan_recover_sidecar_clear(&still, missing_before);
+        apply_recover_sidecar_plan(&root, &plan);
+        assert!(
+            crate::session_stage::session_maps_file_in(&root).is_file(),
+            "maps must survive missing-stage recover"
+        );
+        assert!(
+            session_active_file_in(&root).is_file(),
+            "session-active must survive missing-stage recover"
+        );
+        // Rebuild can still validate/re-stage from preserved maps.
+        let existing = crate::session_stage::load_session_maps_in(&root);
+        assert_eq!(existing.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_sidecars_clear_paths_after_unlock_keep_active() {
+        // Unit stand-in: existing unlocked path clears ledger only (not active/maps).
         let root = temp_root("stale");
         let fake = root.join("face.ttf");
         fs::write(&fake, b"\x00\x01\x00\x00").unwrap();
         save_session_paths_in(&root, &[fake.clone()]);
         fs::write(session_active_file_in(&root), b"[\"Roboto\"]\n").unwrap();
+        crate::session_stage::save_session_maps_in(
+            &root,
+            &[crate::session_stage::FaceMap {
+                source: "s".into(),
+                stage: fake.to_string_lossy().into(),
+                registry_name: String::new(),
+                family: "Roboto".into(),
+            }],
+        );
         let leftover = load_session_paths_in(&root);
         assert_eq!(leftover.len(), 1);
-        // No GDI here — probe should see the file as writable, so clear both.
+        let missing_before = leftover.iter().any(|p| !p.is_file());
+        assert!(!missing_before);
         let still = filter_still_write_locked(&leftover);
         assert!(still.is_empty(), "temp file must not be write-locked in tests");
-        clear_session_sidecars_in(&root);
+        let plan = plan_recover_sidecar_clear(&still, missing_before);
+        apply_recover_sidecar_plan(&root, &plan);
         assert!(!session_paths_file_in(&root).is_file());
-        assert!(!session_active_file_in(&root).is_file());
+        assert!(session_active_file_in(&root).is_file(), "active preserved");
+        assert!(crate::session_stage::session_maps_file_in(&root).is_file());
         let _ = fs::remove_dir_all(&root);
     }
-
 
     #[test]
     fn font_cache_service_names_include_fontcache() {
