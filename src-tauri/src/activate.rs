@@ -223,9 +223,17 @@ fn gdi_map_dest_for(src: &Path) -> Option<PathBuf> {
 }
 
 /// Copy `src` into gdi-maps when missing or size-mismatched. Never deletes `src`.
-fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> PathBuf {
-    if !src.is_file() || is_gdi_maps_dir_name(src) {
-        return src.to_path_buf();
+/// Returns `None` on failure — never falls back to Documents (must_not_register).
+fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> Option<PathBuf> {
+    if !src.is_file() {
+        return None;
+    }
+    if is_gdi_maps_dir_name(src) {
+        return Some(src.to_path_buf());
+    }
+    // Refuse to "stage" a path that is already Documents — caller must copy.
+    if crate::session_stage::must_not_register_as_gdi_path(src) {
+        // Still OK as *source*; dest is under maps_root.
     }
     let dest = maps_root.join(gdi_map_file_name(src));
     if let Some(parent) = dest.parent() {
@@ -236,7 +244,7 @@ fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> PathBuf {
         .map(|m| m.len() == src_len && src_len >= 256)
         .unwrap_or(false);
     if dest_ok {
-        return dest;
+        return Some(dest);
     }
     let tmp = dest.with_extension("part");
     let _ = fs::remove_file(&tmp);
@@ -245,29 +253,27 @@ fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> PathBuf {
             if fs::rename(&tmp, &dest).is_err() {
                 if fs::copy(&tmp, &dest).is_err() {
                     let _ = fs::remove_file(&tmp);
-                    return src.to_path_buf();
+                    return None;
                 }
                 let _ = fs::remove_file(&tmp);
             }
             if dest.is_file() {
-                dest
+                Some(dest)
             } else {
-                src.to_path_buf()
+                None
             }
         }
         Err(_) => {
             let _ = fs::remove_file(&tmp);
-            src.to_path_buf()
+            None
         }
     }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-fn ensure_gdi_session_copy(src: &Path) -> PathBuf {
-    match gdi_maps_root() {
-        Some(root) => ensure_gdi_session_copy_to(src, &root),
-        None => src.to_path_buf(),
-    }
+fn ensure_gdi_session_copy(src: &Path) -> Option<PathBuf> {
+    let root = gdi_maps_root()?;
+    ensure_gdi_session_copy_to(src, &root)
 }
 
 #[cfg(windows)]
@@ -448,6 +454,65 @@ mod winfont {
             .unwrap_or_default()
     }
 
+    /// LocalAppData stage paths currently mapped for GDI (never Documents).
+    pub fn snapshot_stage_paths() -> Vec<PathBuf> {
+        let loaded = snapshot_loaded();
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        if let Ok(m) = maps().lock() {
+            for src in &loaded {
+                if let Some(gdi) = m.get(src) {
+                    if crate::session_stage::must_not_register_as_gdi_path(gdi) {
+                        continue;
+                    }
+                    if seen.insert(gdi.clone()) {
+                        out.push(gdi.clone());
+                    }
+                    continue;
+                }
+                // Already a stage path (re-Add of gdi-maps file).
+                if super::is_gdi_maps_dir_name(src)
+                    && !crate::session_stage::must_not_register_as_gdi_path(src)
+                    && seen.insert(src.clone())
+                {
+                    out.push(src.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Persistable FaceMap rows for `.session-maps.json`.
+    pub fn snapshot_face_maps() -> Vec<crate::session_stage::FaceMap> {
+        let mut out = Vec::new();
+        if let Ok(m) = maps().lock() {
+            for (src, gdi) in m.iter() {
+                if crate::session_stage::must_not_register_as_gdi_path(gdi) {
+                    continue;
+                }
+                out.push(crate::session_stage::FaceMap {
+                    source: src.to_string_lossy().into_owned(),
+                    stage: gdi.to_string_lossy().into_owned(),
+                    registry_name: String::new(),
+                    family: String::new(),
+                });
+            }
+        }
+        out
+    }
+
+    pub fn remember_face_map(map: crate::session_stage::FaceMap) {
+        let src = PathBuf::from(&map.source);
+        let gdi = PathBuf::from(&map.stage);
+        if src.as_os_str().is_empty() || gdi.as_os_str().is_empty() {
+            return;
+        }
+        if crate::session_stage::must_not_register_as_gdi_path(&gdi) {
+            return;
+        }
+        remember_map(&src, &gdi);
+    }
+
     pub(crate) fn is_windows_fonts_path(path: &Path) -> bool {
         let lower = path.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
         lower.contains("\\windows\\fonts")
@@ -495,9 +560,19 @@ mod winfont {
             return false;
         }
         // Copy to %LOCALAPPDATA%\Font Manager\gdi-maps and Add THAT path.
-        // Adding Documents in-place left family folders locked after Quit
-        // (Font Cache keeps the mapped file; Open Sauce could not overwrite).
-        let gdi = super::ensure_gdi_session_copy(path);
+        // Documents library paths must never reach AddFontResourceExW.
+        let Some(gdi) = super::ensure_gdi_session_copy(path) else {
+            if let Ok(mut g) = loaded().lock() {
+                g.remove(path);
+            }
+            return false;
+        };
+        if crate::session_stage::must_not_register_as_gdi_path(&gdi) {
+            if let Ok(mut g) = loaded().lock() {
+                g.remove(path);
+            }
+            return false;
+        }
         remember_map(path, &gdi);
         in_gdi().fetch_add(1, Ordering::SeqCst);
         let w = wide(&gdi);
@@ -517,6 +592,7 @@ mod winfont {
             return false;
         }
         if n <= 0 {
+            forget_map(path);
             if let Ok(mut g) = loaded().lock() {
                 g.remove(path);
             }
@@ -1105,6 +1181,78 @@ fn clear_session_active_in(root: &Path) {
 fn clear_session_sidecars_in(root: &Path) {
     clear_session_paths_in(root);
     clear_session_active_in(root);
+    crate::session_stage::clear_session_maps_in(root);
+}
+
+#[allow(dead_code)] // Windows session_end / clear_session_maps
+fn clear_session_maps_in_root(root: &Path) {
+    crate::session_stage::clear_session_maps_in(root);
+}
+
+#[cfg(windows)]
+fn clear_session_maps(app: &AppHandle) {
+    if let Ok(root) = documents_root(app) {
+        clear_session_maps_in_root(&root);
+    }
+}
+
+/// Persist stage-only session-paths + source↔stage maps (never Documents paths).
+#[cfg(windows)]
+fn persist_activation_sidecars(app: &AppHandle) {
+    let Ok(root) = documents_root(app) else {
+        return;
+    };
+    let maps = winfont::snapshot_face_maps();
+    let stage_paths = winfont::snapshot_stage_paths();
+    let stage_paths =
+        crate::session_stage::filter_session_paths_refuse_documents(&stage_paths);
+    if maps.is_empty() && stage_paths.is_empty() {
+        return;
+    }
+    crate::session_stage::save_session_maps_in(&root, &maps);
+    save_session_paths_in(&root, &stage_paths);
+}
+
+/// Rebuild/validate `.session-maps.json` against existing stage files; re-stage
+/// missing (copy-only from Documents). Returns stage paths safe for session-paths.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn rebuild_session_maps_in(root: &Path, maps_root: &Path) -> Vec<std::path::PathBuf> {
+    let existing = crate::session_stage::load_session_maps_in(root);
+    let need = crate::session_stage::maps_needing_restage(&existing);
+    let mut restaged: Vec<(String, String)> = Vec::new();
+    for m in &need {
+        let src = Path::new(&m.source);
+        if !src.is_file() {
+            continue;
+        }
+        if let Some(dest) = ensure_gdi_session_copy_to(src, maps_root) {
+            if crate::session_stage::must_not_register_as_gdi_path(&dest) {
+                continue;
+            }
+            restaged.push((
+                src.to_string_lossy().into_owned(),
+                dest.to_string_lossy().into_owned(),
+            ));
+        }
+    }
+    // Also adopt in-memory maps from a live session.
+    #[cfg(windows)]
+    {
+        for m in winfont::snapshot_face_maps() {
+            restaged.push((m.source, m.stage));
+        }
+    }
+    let validated = crate::session_stage::validate_session_maps(&existing, &restaged);
+    crate::session_stage::save_session_maps_in(root, &validated);
+    let stages = crate::session_stage::stage_paths_from_maps(&validated);
+    save_session_paths_in(root, &stages);
+    #[cfg(windows)]
+    {
+        for m in &validated {
+            winfont::remember_face_map(m.clone());
+        }
+    }
+    stages
 }
 
 fn merge_unique_paths(primary: Vec<PathBuf>, extra: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -1184,6 +1332,8 @@ fn on_disk_register_gate(cancel: bool, pause: bool) -> OnDiskRegisterGate {
 struct SessionEndCleanup {
     clear_active: bool,
     clear_paths: bool,
+    /// Successful unload must also drop `.session-maps.json`.
+    clear_maps: bool,
     keep_paths: Vec<PathBuf>,
     fail_loud: Option<String>,
 }
@@ -1196,6 +1346,7 @@ fn plan_session_end_cleanup(
         SessionEndCleanup {
             clear_active: true,
             clear_paths: true,
+            clear_maps: true,
             keep_paths: Vec::new(),
             fail_loud: None,
         }
@@ -1203,6 +1354,8 @@ fn plan_session_end_cleanup(
         SessionEndCleanup {
             clear_active: true,
             clear_paths: false,
+            // Keep maps so next-boot recovery can re-stage / Remove leftovers.
+            clear_maps: false,
             keep_paths: still_locked.to_vec(),
             fail_loud: Some(format!(
                 "Font Manager: session unload incomplete — {} of {} paths still write-locked (Font Cache/svchost, fontdrvhost, or Adobe?). {} Next launch will retry RemoveFontResourceExW; or Deactivate-all as admin / reboot then Repair.",
@@ -1447,29 +1600,74 @@ fn recover_stale_session(app: &AppHandle) {
         };
         winfont::drain_gdi_maps();
         let leftover = load_session_paths_in(&root);
+        let maps = crate::session_stage::load_session_maps_in(&root);
         let had_active = session_active_file_in(&root).is_file();
-        if leftover.is_empty() && !had_active {
+        if leftover.is_empty() && maps.is_empty() && !had_active {
             return;
         }
-        if !leftover.is_empty() {
-            let stats = winfont::unload_paths(leftover.clone(), false);
+        // Partition: Documents paths = unload-only, never re-Add.
+        let (docs_paths, mut keep_paths) =
+            crate::session_stage::partition_legacy_session_paths(&leftover);
+        if !docs_paths.is_empty() {
+            eprintln!(
+                "Font Manager: refusing {} Documents session path(s) for GDI — unloading leftovers only",
+                docs_paths.len()
+            );
+            let stats = winfont::unload_paths(docs_paths.clone(), false);
             if plan_font_cache_flush(stats.attempted) {
                 let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
             }
-            // Legacy 1.0.156 in-place Adds: retry Remove on Documents paths still locked.
             for _ in 0..4 {
-                let still = filter_still_write_locked(&leftover);
+                let still = filter_still_write_locked(&docs_paths);
                 if still.is_empty() {
                     break;
                 }
                 let _ = winfont::unload_paths(still, false);
                 thread::sleep(Duration::from_millis(120));
             }
-            let still = filter_still_write_locked(&leftover);
+            let still_docs = filter_still_write_locked(&docs_paths);
+            if !still_docs.is_empty() {
+                eprintln!(
+                    "Font Manager: startup session recovery — {} Documents path(s) still write-locked after Remove+FontCache (attempted {}). {}",
+                    still_docs.len(),
+                    stats.attempted,
+                    font_cache_held_message(still_docs.len())
+                );
+                emit_session_recovery_toast(
+                    app,
+                    still_docs.len(),
+                    stats.attempted.max(still_docs.len()),
+                );
+            }
+        }
+        // Remember maps (incl. stale) so unload can Remove both stage + legacy.
+        for m in &maps {
+            winfont::remember_face_map(m.clone());
+            let pu = PathBuf::from(&m.stage);
+            if keep_paths.iter().all(|p| p != &pu) {
+                keep_paths.push(pu);
+            }
+        }
+        if !keep_paths.is_empty() {
+            let stats = winfont::unload_paths(keep_paths.clone(), false);
+            if plan_font_cache_flush(stats.attempted) {
+                let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
+            }
+            for _ in 0..4 {
+                let still = filter_still_write_locked(&keep_paths);
+                if still.is_empty() {
+                    break;
+                }
+                let _ = winfont::unload_paths(still, false);
+                thread::sleep(Duration::from_millis(120));
+            }
+            let still = filter_still_write_locked(&keep_paths);
             if still.is_empty() {
                 clear_session_sidecars_in(&root);
             } else {
-                save_session_paths_in(&root, &still);
+                let still_stage =
+                    crate::session_stage::filter_session_paths_refuse_documents(&still);
+                save_session_paths_in(&root, &still_stage);
                 eprintln!(
                     "Font Manager: startup session recovery — {} path(s) still write-locked after Remove+FontCache (attempted {}). {} Deactivate-all as admin or reboot, then Repair.",
                     still.len(),
@@ -1478,8 +1676,17 @@ fn recover_stale_session(app: &AppHandle) {
                 );
                 emit_session_recovery_toast(app, still.len(), stats.attempted.max(still.len()));
             }
-        } else {
+        } else if docs_paths.is_empty() {
             clear_session_sidecars_in(&root);
+        } else {
+            // Docs unloaded; drop paths/maps so hydrate re-stages cleanly.
+            clear_session_paths_in(&root);
+            crate::session_stage::clear_session_maps_in(&root);
+            let paths_remain = session_paths_file_in(&root).is_file()
+                && !load_session_paths_in(&root).is_empty();
+            if !paths_remain {
+                clear_session_active_in(&root);
+            }
         }
     }
     #[cfg(not(windows))]
@@ -1493,13 +1700,18 @@ pub fn session_begin(app: &AppHandle) {
     #[cfg(windows)]
     {
         recover_stale_session(app);
+        // Rebuild/validate maps against existing LocalAppData stage files;
+        // re-stage missing (copy-only). Refuse Documents in session-paths.
+        if let (Ok(root), Some(maps_root)) = (documents_root(app), gdi_maps_root()) {
+            let _ = rebuild_session_maps_in(&root, &maps_root);
+        }
         // Targeted dirs only — do not walk all of Documents before the UI is up.
         // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
         let ready_targets = filter_ready_families_parallel(app, &families);
         let (files, ready) = register_ready_families_parallel(app, &ready_targets);
         if files > 0 {
-            save_session_paths(app, &winfont::snapshot_loaded());
+            persist_activation_sidecars(app);
             notify_fonts_changed();
         }
         if ready.len() != families.len() {
@@ -1536,11 +1748,18 @@ pub fn session_end(app: &AppHandle) {
         bulk().running.store(false, Ordering::SeqCst);
         winfont::begin_unload();
         winfont::wait_in_flight(Duration::from_millis(250));
-        // Persist before Remove so a hung quit watchdog still has a leftover
-        // list for next boot. Do not walk Documents on quit.
+        // Persist stage-only paths before Remove so a hung quit watchdog still
+        // has leftovers for next boot. Never write Documents into session-paths.
         let mut extra = load_session_paths(app);
-        extra = merge_unique_paths(extra, winfont::snapshot_loaded());
-        save_session_paths(app, &extra);
+        extra = merge_unique_paths(extra, winfont::snapshot_stage_paths());
+        extra = crate::session_stage::filter_session_paths_refuse_documents(&extra);
+        if let Ok(root) = documents_root(app) {
+            let maps = winfont::snapshot_face_maps();
+            if !maps.is_empty() {
+                crate::session_stage::save_session_maps_in(&root, &maps);
+            }
+            save_session_paths_in(&root, &extra);
+        }
         let attempted = extra.len();
         let stats = winfont::unload_paths(extra.clone(), false);
         // No write-lock probe of thousands of files — that stalled quit.
@@ -1559,12 +1778,17 @@ pub fn session_end(app: &AppHandle) {
         } else if plan.clear_active {
             clear_session_active(app);
             if !plan.keep_paths.is_empty() {
-                save_session_paths(app, &plan.keep_paths);
+                let keep = crate::session_stage::filter_session_paths_refuse_documents(&plan.keep_paths);
+                save_session_paths(app, &keep);
             }
         } else if plan.clear_paths {
             clear_session_paths(app);
         } else if !plan.keep_paths.is_empty() {
-            save_session_paths(app, &plan.keep_paths);
+            let keep = crate::session_stage::filter_session_paths_refuse_documents(&plan.keep_paths);
+            save_session_paths(app, &keep);
+        }
+        if plan.clear_maps {
+            clear_session_maps(app);
         }
     }
     #[cfg(not(windows))]
@@ -3391,6 +3615,43 @@ fn heal_family_google_names(app: &AppHandle, family: &str, include_vars: bool) -
     stats
 }
 
+/// Latin-subset shreds for CJK families land ~35–60KB; full Google CJK TTFs are MBs.
+const TINY_CJK_FACE_MAX_BYTES: u64 = 80 * 1024;
+const TINY_CJK_FACE_MIN_BYTES: u64 = 24 * 1024;
+
+/// Families known to ship full CJK statics that Skye sometimes had replaced by
+/// tiny latin-only faces (Chiron / Noto CJK / LXGW).
+fn family_may_have_tiny_cjk_statics(family: &str) -> bool {
+    let t = family.trim().to_ascii_lowercase();
+    t.starts_with("chiron ")
+        || t.starts_with("lxgw")
+        || t.starts_with("noto sans jp")
+        || t.starts_with("noto sans kr")
+        || t.starts_with("noto sans hk")
+        || t.starts_with("noto sans tc")
+        || t.starts_with("noto sans sc")
+        || t.starts_with("noto serif jp")
+        || t.starts_with("noto serif kr")
+        || t.starts_with("noto serif hk")
+        || t.starts_with("noto serif tc")
+        || t.starts_with("noto serif sc")
+        || t == "noto sans japanese"
+        || t == "noto serif japanese"
+}
+
+/// Intact SFNT but tiny → almost certainly a latin-subset shred beside full CJK.
+fn is_tiny_latin_subset_face(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let len = meta.len();
+    len >= TINY_CJK_FACE_MIN_BYTES && len <= TINY_CJK_FACE_MAX_BYTES && ttf_intact(path)
+}
+
+fn face_should_replace_as_tiny_cjk(family: &str, path: &Path) -> bool {
+    family_may_have_tiny_cjk_statics(family) && is_tiny_latin_subset_face(path)
+}
+
 /// Fetch listed Google CSS instance TTFs to `root`, patching name tables for
 /// Illustrator-friendly family/style split. Returns (written_or_intact, expected, heal).
 fn download_listed_faces_to_dir(
@@ -3416,13 +3677,20 @@ fn download_listed_faces_to_dir(
         let name = google_face_filename(slug, &weight, &style);
         let path = root.join(&name);
         if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
-            // Intact faces from prior installs may still carry mashed nameID 1/16
-            // ("Nunito ExtraLight"). Re-patch in place so Repair/Activate heals
-            // complete folders without a full re-download.
-            heal.add(heal_google_instance_face_file(&path, family, &weight, &style));
-            register_path(&path);
-            wrote += 1;
-            continue;
+            // Tiny latin-subset shreds (~35–60KB) beside full CJK weights must
+            // be replaced from Google — do not treat as AlreadyIntact.
+            if face_should_replace_as_tiny_cjk(family, &path) {
+                intact_forget(&path);
+                // fall through to re-fetch full TTF for this face only
+            } else {
+                // Intact faces from prior installs may still carry mashed nameID 1/16
+                // ("Nunito ExtraLight"). Re-patch in place so Repair/Activate heals
+                // complete folders without a full re-download.
+                heal.add(heal_google_instance_face_file(&path, family, &weight, &style));
+                register_path(&path);
+                wrote += 1;
+                continue;
+            }
         }
         let Some(bytes) = fetch_url_ttf(client, &url) else {
             continue;
@@ -3815,7 +4083,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         notify_fonts_changed();
         session_add(app, &live);
         #[cfg(windows)]
-        save_session_paths(app, &winfont::snapshot_loaded());
+        persist_activation_sidecars(app);
     }
     emit_name_heal(app, heal);
     emit_progress(app);
@@ -4794,7 +5062,7 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
     }
     notify_fonts_changed();
     #[cfg(windows)]
-    save_session_paths(&app, &winfont::snapshot_loaded());
+    persist_activation_sidecars(&app);
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
         p.current.clear();
@@ -5028,7 +5296,7 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
                 );
                 emit_font_cache_held_toast(app, still.len(), access_denied);
             }
-            save_session_paths(app, &winfont::snapshot_loaded());
+            persist_activation_sidecars(app);
         }
         #[cfg(not(windows))]
         {
@@ -5131,15 +5399,28 @@ pub fn register_existing_on_disk(app: AppHandle, families: Vec<String>) -> Resul
 /// After session register: pull real `*-variable-*` TTFs for catalog-variable
 /// families that only have static instances on disk. Must not run on the boot
 /// invoke thread — CDN METADATA for ~550 families would freeze startup.
+/// Need VF backfill when no intact var, OR dual-VF family missing italic.
+fn dir_needs_variable_backfill(dir: &Path, family: &str) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let has_var = dir_has_intact_variable(dir);
+    let dual_needs_italic = family_expects_dual_variable(family)
+        && !dir_has_intact_variable_italic(dir);
+    !has_var || dual_needs_italic
+}
+
+fn family_needs_variable_backfill(app: &AppHandle, family: &str) -> bool {
+    google_catalog_is_variable(family)
+        && family_locations(app, family)
+            .iter()
+            .any(|dir| dir_needs_variable_backfill(dir, family))
+}
+
 fn backfill_missing_variable_faces(app: &AppHandle, families: &[String]) {
     let need: Vec<String> = families
         .iter()
-        .filter(|family| {
-            google_catalog_is_variable(family)
-                && family_locations(app, family)
-                    .iter()
-                    .any(|dir| dir.is_dir() && !dir_has_intact_variable(dir))
-        })
+        .filter(|family| family_needs_variable_backfill(app, family))
         .cloned()
         .collect();
     if need.is_empty() {
@@ -5162,7 +5443,7 @@ fn backfill_missing_variable_faces(app: &AppHandle, families: &[String]) {
     if wrote > 0 {
         notify_fonts_changed();
         #[cfg(windows)]
-        save_session_paths(app, &winfont::snapshot_loaded());
+        persist_activation_sidecars(app);
     }
 }
 
@@ -5279,7 +5560,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     if !registered.is_empty() {
         notify_fonts_changed();
         #[cfg(windows)]
-        save_session_paths(&app, &winfont::snapshot_loaded());
+        persist_activation_sidecars(&app);
     }
 
     // VF backfill before finishing — do not mark Activate complete while catalog
@@ -5597,6 +5878,86 @@ pub struct RepairResult {
 /// Re-fetch families that have partial faces (no `.complete`).
 /// Complete catalog-variable folders missing `*-variable-*` get vars added in place
 /// (no full bust); incomplete families still go through Retry/bust.
+/// Replace tiny latin-subset statics in-place for known CJK families without
+/// wiping the folder or redownloading the whole library. Returns faces replaced.
+fn replace_tiny_cjk_static_faces(
+    app: &AppHandle,
+    client: &reqwest::blocking::Client,
+    family: &str,
+) -> usize {
+    if !family_may_have_tiny_cjk_statics(family) || !is_official_google_family(family) {
+        return 0;
+    }
+    let slug = slug_family(family);
+    if slug.is_empty() {
+        return 0;
+    }
+    let Ok(root) = family_dir(app, family) else {
+        return 0;
+    };
+    if !root.is_dir() {
+        return 0;
+    }
+    let mut files = Vec::new();
+    walk_font_files(&root, &mut files);
+    let mut tiny_keys: Vec<(String, String, PathBuf)> = Vec::new(); // weight, style, path
+    for p in &files {
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) || filename_has_latin_subset(name, &slug) {
+            continue;
+        }
+        if !face_should_replace_as_tiny_cjk(family, p) {
+            continue;
+        }
+        if let Some((weight, style)) = parse_google_instance_face_name(&slug, name) {
+            tiny_keys.push((weight, style, p.clone()));
+        }
+    }
+    if tiny_keys.is_empty() {
+        return 0;
+    }
+    let listed = discover_richest_google_listing(client, family);
+    if listed.is_empty() {
+        return 0;
+    }
+    let mut replaced = 0usize;
+    for (weight, style, path) in tiny_keys {
+        if bulk().cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        let want = (style.to_ascii_lowercase(), weight.clone());
+        let url = listed.iter().find_map(|(st, wt, u)| {
+            if st.to_ascii_lowercase() == want.0 && wt == &want.1 {
+                Some(u.clone())
+            } else {
+                None
+            }
+        });
+        let Some(url) = url else {
+            continue;
+        };
+        let Some(bytes) = fetch_url_ttf(client, &url) else {
+            continue;
+        };
+        // Only replace if the download is clearly larger than the tiny shred.
+        if (bytes.len() as u64) <= TINY_CJK_FACE_MAX_BYTES {
+            continue;
+        }
+        let patched = crate::namepatch::patch_google_instance_face(
+            &bytes, family, &weight, &style,
+        )
+        .unwrap_or(bytes);
+        intact_forget(&path);
+        if write_font_file(&path, &patched).is_ok() {
+            replaced = replaced.saturating_add(1);
+            let _ = register_family_path(family, &path);
+        }
+    }
+    replaced
+}
+
 /// Name-heal soft-fails on locked faces (Illustrator/fontdrvhost) but returns
 /// `locked` so the UI can fail loud — never looks like silent success.
 #[tauri::command]
@@ -5620,6 +5981,7 @@ pub fn repair_incomplete_families(
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     if is_official_google_family(name) {
                         if let Some(ref c) = client {
+                            let _ = replace_tiny_cjk_static_faces(&app, c, name);
                             let (ve, eh) = ensure_catalog_variable_faces(&app, c, name);
                             var_ensured = var_ensured.saturating_add(ve);
                             heal.add(eh);
@@ -5638,6 +6000,7 @@ pub fn repair_incomplete_families(
                 targets.push(family);
             } else {
                 if let Some(ref c) = client {
+                    let _ = replace_tiny_cjk_static_faces(&app, c, &family);
                     let (ve, eh) = ensure_catalog_variable_faces(&app, c, &family);
                     var_ensured = var_ensured.saturating_add(ve);
                     heal.add(eh);
@@ -6740,6 +7103,71 @@ mod install_path_tests {
     }
 
     #[test]
+    fn dual_vf_roman_only_is_in_variable_backfill_need() {
+        let parent = temp_family_dir("dual-vf-need");
+        let dir = parent.join("Chiron Hei HK");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("chiron-hei-hk-variable-wght.ttf"), &fake).unwrap();
+        assert!(
+            dir_needs_variable_backfill(&dir, "Chiron Hei HK"),
+            "roman-only dual-VF must still need backfill for italic"
+        );
+        fs::write(dir.join("chiron-hei-hk-variable-wght-italic.ttf"), &fake).unwrap();
+        assert!(
+            !dir_needs_variable_backfill(&dir, "Chiron Hei HK"),
+            "roman+italic dual-VF is satisfied"
+        );
+        // Non-dual with any var is satisfied.
+        let nunito = parent.join("Nunito");
+        fs::create_dir_all(&nunito).unwrap();
+        fs::write(nunito.join("nunito-variable-wght.ttf"), &fake).unwrap();
+        assert!(!dir_needs_variable_backfill(&nunito, "Nunito"));
+        // No var at all still needs backfill.
+        let empty = parent.join("Noto Serif KR");
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(empty.join("noto-serif-kr-400-normal.ttf"), &fake).unwrap();
+        assert!(dir_needs_variable_backfill(&empty, "Noto Serif KR"));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn tiny_latin_subset_face_heuristic() {
+        let parent = temp_family_dir("tiny-cjk");
+        let dir = parent.join("faces");
+        fs::create_dir_all(&dir).unwrap();
+        let tiny = dir.join("chiron-hei-hk-400-normal.ttf");
+        let mut bytes = b"\x00\x01\x00\x00".to_vec();
+        bytes.resize(40 * 1024, 0); // ~40KB latin shred
+        fs::write(&tiny, &bytes).unwrap();
+        assert!(is_tiny_latin_subset_face(&tiny));
+        assert!(face_should_replace_as_tiny_cjk("Chiron Hei HK", &tiny));
+        assert!(face_should_replace_as_tiny_cjk("Chiron GoRound TC", &tiny));
+        assert!(face_should_replace_as_tiny_cjk("Noto Serif KR", &tiny));
+        assert!(face_should_replace_as_tiny_cjk("LXGW WenKai", &tiny));
+        assert!(!face_should_replace_as_tiny_cjk("Nunito", &tiny));
+        let full = dir.join("full.ttf");
+        bytes.resize(200 * 1024, 0);
+        fs::write(&full, &bytes).unwrap();
+        assert!(!is_tiny_latin_subset_face(&full));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn session_paths_refuse_documents() {
+        let docs = PathBuf::from(r"C:\Users\Eric\Documents\Font Manager\A\a.ttf");
+        let stage = PathBuf::from(r"C:\Users\Eric\AppData\Local\Font Manager\gdi-maps\aa.ttf");
+        assert!(crate::session_stage::must_not_register_as_gdi_path(&docs));
+        let filtered = crate::session_stage::filter_session_paths_refuse_documents(&[
+            docs.clone(),
+            stage.clone(),
+        ]);
+        assert_eq!(filtered, vec![stage]);
+    }
+
+
+    #[test]
     fn no_public_vf_denylist_is_exact_seven() {
         const EXPECTED: &[&str] = &[
             "Google Sans",
@@ -7375,13 +7803,24 @@ mod session_sidecar_tests {
     #[test]
     fn clear_session_sidecars_removes_paths_and_active() {
         let root = temp_root("clear");
-        fs::write(session_paths_file_in(&root), "C:\\\\a.ttf\n").unwrap();
+        fs::write(session_paths_file_in(&root), "C:\\a.ttf\n").unwrap();
         fs::write(session_active_file_in(&root), b"[\"Nunito\"]\n").unwrap();
+        crate::session_stage::save_session_maps_in(
+            &root,
+            &[crate::session_stage::FaceMap {
+                source: "s".into(),
+                stage: "t".into(),
+                registry_name: String::new(),
+                family: String::new(),
+            }],
+        );
         assert!(session_paths_file_in(&root).is_file());
         assert!(session_active_file_in(&root).is_file());
+        assert!(crate::session_stage::session_maps_file_in(&root).is_file());
         clear_session_sidecars_in(&root);
         assert!(!session_paths_file_in(&root).is_file());
         assert!(!session_active_file_in(&root).is_file());
+        assert!(!crate::session_stage::session_maps_file_in(&root).is_file());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -7410,7 +7849,7 @@ mod session_sidecar_tests {
         fs::create_dir_all(src.parent().unwrap()).unwrap();
         fs::write(&src, vec![0u8; 300]).unwrap();
         let maps = root.join("gdi-maps");
-        let dest = ensure_gdi_session_copy_to(&src, &maps);
+        let dest = ensure_gdi_session_copy_to(&src, &maps).expect("stage copy");
         assert!(src.is_file(), "Documents original must remain");
         assert_ne!(dest, src, "GDI must not map the Documents path");
         assert!(dest.is_file());
@@ -7418,10 +7857,10 @@ mod session_sidecar_tests {
             fs::metadata(&src).unwrap().len(),
             fs::metadata(&dest).unwrap().len()
         );
-        let dest2 = ensure_gdi_session_copy_to(&src, &maps);
+        let dest2 = ensure_gdi_session_copy_to(&src, &maps).expect("reuse");
         assert_eq!(dest, dest2, "same size must reuse the map");
         fs::write(&src, vec![1u8; 400]).unwrap();
-        let dest3 = ensure_gdi_session_copy_to(&src, &maps);
+        let dest3 = ensure_gdi_session_copy_to(&src, &maps).expect("resize");
         assert_eq!(dest3, dest);
         assert_eq!(fs::metadata(&dest3).unwrap().len(), 400);
         let _ = fs::remove_dir_all(&root);
@@ -7457,6 +7896,7 @@ mod session_sidecar_tests {
         let plan = plan_session_end_cleanup(10, &[]);
         assert!(plan.clear_active);
         assert!(plan.clear_paths);
+        assert!(plan.clear_maps, "successful unload must clear .session-maps.json");
         assert!(plan.keep_paths.is_empty());
         assert!(plan.fail_loud.is_none());
     }
@@ -7467,6 +7907,7 @@ mod session_sidecar_tests {
         let plan = plan_session_end_cleanup(100, &locked);
         assert!(plan.clear_active);
         assert!(!plan.clear_paths);
+        assert!(!plan.clear_maps, "keep maps for next-boot recovery while locked");
         assert_eq!(plan.keep_paths, locked);
         let msg = plan.fail_loud.expect("fail-loud");
         assert!(msg.contains("2 of 100"));

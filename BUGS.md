@@ -1,5 +1,10 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.167
+- **Cold-start Activate memory died:** `.session-paths.txt` listed Documents library paths (0 LocalAppData stage). GDI register now refuses Documents (`must_not_register_as_gdi_path`), persists **gdi-maps stage paths** only, and rebuilds/validates `.session-maps.json` against existing stage files on `session_begin` (re-stage missing copy-only; statics/library untouched). Stale maps clear on successful unload. Copy failure no longer falls back to Add'ing Documents.
+- **Dual-VF Hei/Sung still skipped by backfill:** `backfill_missing_variable_faces` need-filter was `!dir_has_intact_variable` only — roman-only counted as done. Widened to `!has_var || (dual && !has_italic)`.
+- **Tiny latin-subset CJK statics (~35–60KB):** Repair/download replaces those faces from full Google TTFs for Chiron / Noto CJK / LXGW without wiping whole folders or redownloading the library.
+
 ## Fixed in tip / 1.0.166
 - **CJK variable TTFs empty on disk:** jsDelivr refuses google/fonts VFs over ~20MB (Chiron / Noto Serif KR·SC are 23–52MB), so ensure/backfill returned 0 while `.complete` matched static counts. Prefer jsDelivr then **GitHub raw** for VF TTFs **and** `METADATA.pb`; raise `MAX_TTF_FETCH_BYTES` to **64MB** (32MB was too small). Do **not** clear `.complete` for missing `*-variable-*` (would Repair/bust and risk wiping statics) — adopt updates planned/expected after vars land; static face bytes untouched. Exact-7 no-public-VF denylist (Google Sans + Edu * Hand packs) skips inventing VFs.
 - **Ensure 0 vars silent:** non-denylist catalog-variable families that still return 0 VF files after CDN attempts now `eprintln` + `remember_failed` (loud), not a quiet `(0, …)`.
