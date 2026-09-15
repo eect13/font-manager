@@ -543,6 +543,29 @@ mod winfont {
         }
     }
 
+    /// True when this source is already Add'd with a size-matched LocalAppData map.
+    pub fn is_session_live_mapped(path: &Path) -> bool {
+        if unloading().load(Ordering::SeqCst) {
+            return false;
+        }
+        let already = loaded()
+            .lock()
+            .map(|g| g.contains(path))
+            .unwrap_or(false);
+        if !already {
+            return false;
+        }
+        let src_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if src_len < 256 {
+            return false;
+        }
+        super::gdi_map_dest_for(path)
+            .and_then(|d| fs::metadata(d).ok())
+            .map(|m| m.len() == src_len)
+            .unwrap_or(false)
+    }
+
+    #[allow(dead_code)]
     pub fn register(path: &Path) -> bool {
         register_detailed(path).ok()
     }
@@ -1080,10 +1103,48 @@ fn register_family_path(family: &str, path: &Path) -> bool {
     fail.is_none()
 }
 
+
+/// Count intact faces already session-live (loaded + size-matched gdi map).
+/// `None` = at least one face still needs copy/Add.
+fn count_already_live_intact_faces(app: &AppHandle, family: &str) -> Option<usize> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, family);
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        let mut n = 0usize;
+        let mut any = false;
+        for dir in family_locations(app, family) {
+            let mut files = Vec::new();
+            walk_font_files(&dir, &mut files);
+            for path in files {
+                if !ttf_intact(&path) {
+                    continue;
+                }
+                any = true;
+                if !winfont::is_session_live_mapped(&path) {
+                    return None;
+                }
+                n = n.saturating_add(1);
+            }
+        }
+        if any && n > 0 {
+            Some(n)
+        } else {
+            None
+        }
+    }
+}
+
 fn register_intact_family_detailed(
     app: &AppHandle,
     family: &str,
 ) -> (usize, RegisterFailKind) {
+    if let Some(live) = count_already_live_intact_faces(app, family) {
+        return (live, RegisterFailKind::NoneTried);
+    }
     let mut n = 0usize;
     let mut fail = RegisterFailKind::NoneTried;
     for dir in family_locations(app, family) {
@@ -4005,21 +4066,23 @@ fn fetch_google_family_faces_to_dir(
     if !official && !ensure_vf {
         return (0, Vec::new(), Vec::new(), HealStats::default());
     }
-    // Try CSS listing for official + ensure families (may 404 for metadata-missing).
-    let listed = discover_richest_google_listing(client, family);
-    let (inst_wrote, _, mut heal) = if listed.is_empty() {
-        (0, 0, HealStats::default())
-    } else {
-        download_listed_faces_to_dir(client, family, slug, root, listed.clone())
-    };
-    // Real variable TTFs from google/fonts (jsDelivr then GitHub raw). Never WOFF2.
+    let mut heal = HealStats::default();
+    // 1) Variable first (complete VF before statics) — google/fonts TTF, never WOFF2.
     let (var_files, var_heal) = if ensure_vf {
         download_google_variable_ttfs(client, family, slug, root)
     } else {
         (Vec::new(), HealStats::default())
     };
     heal.add(var_heal);
-    let wrote = inst_wrote.saturating_add(var_files.len());
+    // 2) Google CSS static instances (may 404 for metadata-missing FS-only).
+    let listed = discover_richest_google_listing(client, family);
+    let (inst_wrote, _, inst_heal) = if listed.is_empty() {
+        (0, 0, HealStats::default())
+    } else {
+        download_listed_faces_to_dir(client, family, slug, root, listed.clone())
+    };
+    heal.add(inst_heal);
+    let wrote = var_files.len().saturating_add(inst_wrote);
     (wrote, listed, var_files, heal)
 }
 
@@ -5120,10 +5183,10 @@ fn download_family(
         clear_google_planned(&root);
     }
 
-    // Fontsource `*-{subset}-*` names can never satisfy Google face keys — skip FS
-    // fill whenever Google planned a set (partial downloads included). Only burn
-    // Fontsource when Google listed nothing.
-    let need_fontsource = google_expected == 0;
+    // Fontsource fills remaining when Google had no static CSS listing.
+    // VF may already be on disk (step 1) — still allow FS statics for FS-only /
+    // metadata-missing families. Never use FS to satisfy Google planned keys.
+    let need_fontsource = google_listed.is_empty();
     if need_fontsource {
         if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();

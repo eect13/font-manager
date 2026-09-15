@@ -1,5 +1,12 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.170
+- **Merge:** main hydrate Activated=GDI-only + scoped skip-failed pending, plus live catalog refresh (fontsource-other 154 / 12 variable flags).
+- **Download order:** VF google/fonts first, then Google CSS statics, then Fontsource when no Google static listing (remaining).
+- **Refresh:** also compares installed `APP_VERSION` to GitHub `releases/latest`.
+- **Register:** session-live size-matched maps skip copy+Add (GDI still serialized).
+- **Maintain:** allow(dead_code) on unused session_stage path helpers; no core Activate/GDI rule change.
+
 ## Fixed in tip / 1.0.169
 - **Hydrate false live:** boot `restoreActivation` treated `result.onDisk` and every persisted local as Activated even when GDI Add failed. Live is now `result.ready` ∪ `session_begin` sidecar (families that actually registered this boot). Documents file presence still updates diskFamilies only.
 - **Skip failed nuclear pending:** `skipFailedDownloads` called `clearPendingActivate(undefined)` when skip names matched no catalog/local ids, wiping every pending Activate. Now no-ops the clear when ids is empty.
@@ -110,5 +117,5 @@
 
 ## Notes
 
-- Tip is 1.0.169 (unreleased pack — ask before NSIS).
+- Tip is 1.0.170 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
