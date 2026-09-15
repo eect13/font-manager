@@ -2,7 +2,7 @@ import { Power, ScanSearch } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { pruneUnknownFolders, repairIncompleteFamilies, scanDiskFamilies } from "@/lib/fonts/os-activate";
+import { pruneUnknownFolders, repairIncompleteFamilies, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
@@ -101,7 +101,8 @@ export function ScanDiskMenuItem() {
     <DropdownMenuItem
       onSelect={() => {
         void (async () => {
-          const rows = await scanDiskFamilies();
+          // syncManagedDocumentsRoot → setDiskFamilies + applyDiskStatusHonesty
+          const rows = await syncManagedDocumentsRoot();
           if (!rows.length) {
             toast.message("No font files on disk yet", {
               description: "Documents → Font Manager is empty. Activate to download.",
@@ -151,7 +152,7 @@ export function ScanDiskMenuItem() {
             toast.success(`Scan: ${rows.length.toLocaleString()} families on disk`, {
               description: [
                 ...baseBits,
-                `${incomplete.length.toLocaleString()} incomplete (face count short / no .complete — Repair)`,
+                `${incomplete.length.toLocaleString()} incomplete (face count short / no .complete / catalog VF missing / undersized vs Google — Repair)`,
                 extras.length
                   ? `${extras.length.toLocaleString()} extras ignored until Repair finishes — Scan again to remove`
                   : "all catalog names match",

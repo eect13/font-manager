@@ -78,7 +78,9 @@ function snapshotToRecord(row: SnapshotRow): FontRecord {
     category,
     weights: Array.isArray(weights) && weights.length ? weights : [400],
     italic,
-    variable,
+    catalogVariable: variable,
+    // Honesty: never badge/facet Variable from catalog alone (disk *-variable-* only).
+    variable: false,
     tags: mergedTags,
     popularity: overlay ? overlay.index : 400 + popularity,
     license,
@@ -101,7 +103,9 @@ function otherToRecord(row: OtherRow): FontRecord {
     category,
     weights: Array.isArray(weights) && weights.length ? weights : [400],
     italic,
-    variable,
+    catalogVariable: variable,
+    // Fontsource-other bundle is 0×variable; live sync must not badge without disk VF.
+    variable: false,
     tags: tagsForGoogleFamily(family, category, Array.isArray(tags) ? tags : []),
     popularity,
     license: hit.license,

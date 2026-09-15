@@ -518,12 +518,41 @@ mod winfont {
         lower.contains("\\windows\\fonts")
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum RegisterOutcome {
+        Ok,
+        StageCopyFailed,
+        AddReturnedZero,
+        Unloading,
+        Refused,
+    }
+
+    impl RegisterOutcome {
+        pub fn ok(self) -> bool {
+            matches!(self, Self::Ok)
+        }
+
+        pub fn label(self) -> &'static str {
+            match self {
+                Self::Ok => "ok",
+                Self::StageCopyFailed => "stage-copy failed (ensure_gdi_session_copy)",
+                Self::AddReturnedZero => "AddFontResourceExW returned 0",
+                Self::Unloading => "unloading — register aborted",
+                Self::Refused => "register refused",
+            }
+        }
+    }
+
     pub fn register(path: &Path) -> bool {
+        register_detailed(path).ok()
+    }
+
+    pub fn register_detailed(path: &Path) -> RegisterOutcome {
         if is_windows_fonts_path(path) {
-            return false;
+            return RegisterOutcome::Refused;
         }
         if unloading().load(Ordering::SeqCst) {
-            return false;
+            return RegisterOutcome::Unloading;
         }
         let already = loaded()
             .lock()
@@ -536,7 +565,7 @@ mod winfont {
                 .map(|m| m.len() == src_len && src_len >= 256)
                 .unwrap_or(false);
             if dest_ok {
-                return true;
+                return RegisterOutcome::Ok;
             }
             // Source changed — drain GDI on the stale map, then recopy below.
             let _ = remove_mapped_keep_file(path);
@@ -547,17 +576,17 @@ mod winfont {
         }
         {
             let Ok(mut g) = loaded().lock() else {
-                return false;
+                return RegisterOutcome::Refused;
             };
             if !g.insert(path.to_path_buf()) {
-                return false;
+                return RegisterOutcome::Refused;
             }
         }
         if unloading().load(Ordering::SeqCst) {
             if let Ok(mut g) = loaded().lock() {
                 g.remove(path);
             }
-            return false;
+            return RegisterOutcome::Unloading;
         }
         // Copy to %LOCALAPPDATA%\Font Manager\gdi-maps and Add THAT path.
         // Documents library paths must never reach AddFontResourceExW.
@@ -565,13 +594,13 @@ mod winfont {
             if let Ok(mut g) = loaded().lock() {
                 g.remove(path);
             }
-            return false;
+            return RegisterOutcome::StageCopyFailed;
         };
         if crate::session_stage::must_not_register_as_gdi_path(&gdi) {
             if let Ok(mut g) = loaded().lock() {
                 g.remove(path);
             }
-            return false;
+            return RegisterOutcome::Refused;
         }
         remember_map(path, &gdi);
         in_gdi().fetch_add(1, Ordering::SeqCst);
@@ -589,17 +618,17 @@ mod winfont {
             if let Ok(mut g) = loaded().lock() {
                 g.remove(path);
             }
-            return false;
+            return RegisterOutcome::Unloading;
         }
         if n <= 0 {
             forget_map(path);
             if let Ok(mut g) = loaded().lock() {
                 g.remove(path);
             }
-            return false;
+            return RegisterOutcome::AddReturnedZero;
         }
         dirty().store(true, Ordering::SeqCst);
-        true
+        RegisterOutcome::Ok
     }
 
     pub fn bind(family: &str, path: &Path) {
@@ -972,23 +1001,116 @@ mod winfont {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegisterFailKind {
+    StageCopyFailed,
+    AddReturnedZero,
+    Unloading,
+    Refused,
+    NoneTried,
+}
+
+impl RegisterFailKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::StageCopyFailed => "stage-copy failed (ensure_gdi_session_copy)",
+            Self::AddReturnedZero => "AddFontResourceExW returned 0",
+            Self::Unloading => "unloading — register aborted",
+            Self::Refused => "register refused",
+            Self::NoneTried => "no intact face tried",
+        }
+    }
+
+    fn worsen(self, other: Self) -> Self {
+        // Prefer concrete GDI/stage failures over refused/none.
+        use RegisterFailKind::*;
+        let rank = |k: RegisterFailKind| match k {
+            StageCopyFailed => 4,
+            AddReturnedZero => 3,
+            Unloading => 2,
+            Refused => 1,
+            NoneTried => 0,
+        };
+        if rank(other) > rank(self) {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+#[cfg(windows)]
+fn outcome_to_fail(o: winfont::RegisterOutcome) -> Option<RegisterFailKind> {
+    match o {
+        winfont::RegisterOutcome::Ok => None,
+        winfont::RegisterOutcome::StageCopyFailed => Some(RegisterFailKind::StageCopyFailed),
+        winfont::RegisterOutcome::AddReturnedZero => Some(RegisterFailKind::AddReturnedZero),
+        winfont::RegisterOutcome::Unloading => Some(RegisterFailKind::Unloading),
+        winfont::RegisterOutcome::Refused => Some(RegisterFailKind::Refused),
+    }
+}
+
 fn register_path(path: &Path) -> bool {
+    register_path_detailed(path).is_none()
+}
+
+fn register_path_detailed(path: &Path) -> Option<RegisterFailKind> {
     #[cfg(windows)]
     {
-        return winfont::register(path);
+        return outcome_to_fail(winfont::register_detailed(path));
     }
     #[cfg(not(windows))]
     {
         let _ = path;
-        false
+        // Desktop product is Windows; Linux unit tests never Add — treat as Add 0.
+        Some(RegisterFailKind::AddReturnedZero)
     }
 }
 
 fn register_family_path(family: &str, path: &Path) -> bool {
-    let added = register_path(path);
+    let fail = register_path_detailed(path);
     #[cfg(windows)]
-    winfont::bind(family, path);
-    added
+    if fail.is_none() {
+        winfont::bind(family, path);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = family;
+    }
+    fail.is_none()
+}
+
+fn register_intact_family_detailed(
+    app: &AppHandle,
+    family: &str,
+) -> (usize, RegisterFailKind) {
+    let mut n = 0usize;
+    let mut fail = RegisterFailKind::NoneTried;
+    for dir in family_locations(app, family) {
+        let mut files = Vec::new();
+        walk_font_files(&dir, &mut files);
+        sort_faces_var_first(&mut files);
+        for path in files {
+            if !ttf_intact(&path) {
+                continue;
+            }
+            match register_path_detailed(&path) {
+                None => {
+                    #[cfg(windows)]
+                    winfont::bind(family, &path);
+                    n += 1;
+                }
+                Some(kind) => fail = fail.worsen(kind),
+            }
+        }
+    }
+    (n, fail)
+}
+
+fn clear_complete_markers_for_family(app: &AppHandle, family: &str) {
+    for dir in family_locations(app, family) {
+        clear_complete_marker(&dir);
+    }
 }
 
 fn unregister_family_session(family: &str) -> u32 {
@@ -3687,9 +3809,13 @@ fn heal_family_google_names(app: &AppHandle, family: &str, include_vars: bool) -
     stats
 }
 
-/// Latin-subset shreds for CJK families land ~35–60KB; full Google CJK TTFs are MBs.
+/// Latin/subset shreds land ~35–60KB (CJK) or ~38KB (Gidugu); full Google TTFs are
+/// typically 100KB–MBs. Tight band + allowlist — do **not** flag all official Google
+/// 16–96KB faces Incomplete (collateral risk on legitimately small statics).
 const TINY_CJK_FACE_MAX_BYTES: u64 = 80 * 1024;
 const TINY_CJK_FACE_MIN_BYTES: u64 = 24 * 1024;
+const UNDERSIZED_GOOGLE_FACE_MAX_BYTES: u64 = TINY_CJK_FACE_MAX_BYTES;
+const UNDERSIZED_GOOGLE_FACE_MIN_BYTES: u64 = TINY_CJK_FACE_MIN_BYTES;
 
 /// Families known to ship full CJK statics that Skye sometimes had replaced by
 /// tiny latin-only faces (Chiron / Noto CJK / LXGW).
@@ -3711,17 +3837,66 @@ fn family_may_have_tiny_cjk_statics(family: &str) -> bool {
         || t == "noto serif japanese"
 }
 
-/// Intact SFNT but tiny → almost certainly a latin-subset shred beside full CJK.
+/// Non-CJK official Google families known to land latin-subset / undersized remnants
+/// (Gidugu ~38KB vs full ~461KB). Allowlist only — never expand to all Google.
+fn family_may_have_undersized_google_statics(family: &str) -> bool {
+    family.trim().eq_ignore_ascii_case("gidugu")
+}
+
+/// Intact SFNT but tiny → almost certainly a latin-subset / undersized remnant.
 fn is_tiny_latin_subset_face(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else {
         return false;
     };
     let len = meta.len();
-    len >= TINY_CJK_FACE_MIN_BYTES && len <= TINY_CJK_FACE_MAX_BYTES && ttf_intact(path)
+    len >= UNDERSIZED_GOOGLE_FACE_MIN_BYTES
+        && len <= UNDERSIZED_GOOGLE_FACE_MAX_BYTES
+        && ttf_intact(path)
+}
+
+fn is_undersized_google_static_face(path: &Path) -> bool {
+    is_tiny_latin_subset_face(path)
+}
+
+/// Allowlisted official Google face intact but << typical full TTF (Gidugu 38KB vs ~461KB).
+/// Bust **this face only** on Repair/download — never whole-library wipe / never all-Google.
+fn face_should_replace_undersized_google(family: &str, path: &Path) -> bool {
+    is_official_google_family(family)
+        && family_may_have_undersized_google_statics(family)
+        && is_undersized_google_static_face(path)
 }
 
 fn face_should_replace_as_tiny_cjk(family: &str, path: &Path) -> bool {
-    family_may_have_tiny_cjk_statics(family) && is_tiny_latin_subset_face(path)
+    // Gidugu allowlist OR CJK allowlist (LXGW may not be in google-directory).
+    // Compare-to-upstream still gates the write.
+    face_should_replace_undersized_google(family, path)
+        || (family_may_have_tiny_cjk_statics(family) && is_tiny_latin_subset_face(path))
+}
+
+fn dir_has_undersized_google_static(dir: &Path, family: &str) -> bool {
+    if !is_official_google_family(family) {
+        return false;
+    }
+    if !(family_may_have_undersized_google_statics(family)
+        || family_may_have_tiny_cjk_statics(family))
+    {
+        return false;
+    }
+    let slug = slug_family(family);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    for p in files {
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) || filename_has_latin_subset(name, &slug) {
+            continue;
+        }
+        if face_should_replace_as_tiny_cjk(family, &p) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Fetch listed Google CSS instance TTFs to `root`, patching name tables for
@@ -3749,11 +3924,16 @@ fn download_listed_faces_to_dir(
         let name = google_face_filename(slug, &weight, &style);
         let path = root.join(&name);
         if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
-            // Tiny latin-subset shreds (~35–60KB) beside full CJK weights must
-            // be replaced from Google — do not treat as AlreadyIntact.
+            // Undersized vs full Google (allowlisted Gidugu / CJK latin shreds):
+            // do NOT skip-intact / claim done — bust this face only and re-fetch.
             if face_should_replace_as_tiny_cjk(family, &path) {
                 intact_forget(&path);
-                // fall through to re-fetch full TTF for this face only
+                if let Ok(mut p) = bulk().progress.lock() {
+                    p.current = format!(
+                        "{family} — undersized vs Google (latin/subset remnant), re-fetching face"
+                    );
+                }
+                // fall through to re-fetch full TTF for this face only — not skip intact
             } else {
                 // Intact faces from prior installs may still carry mashed nameID 1/16
                 // ("Nunito ExtraLight"). Re-patch in place so Repair/Activate heals
@@ -4006,6 +4186,109 @@ fn register_intact_new(app: &AppHandle, family: &str) -> usize {
     added
 }
 
+/// Unload + drop gdi-maps copy, then stage+Add again. Does not touch Documents library files.
+fn reregister_intact_family(app: &AppHandle, family: &str) -> (usize, RegisterFailKind) {
+    // Force re-stage: unload + drop gdi-maps copy, then stage+Add. Library files untouched.
+    for dir in family_locations(app, family) {
+        let mut files = Vec::new();
+        walk_font_files(&dir, &mut files);
+        for path in files {
+            if ttf_intact(&path) {
+                unregister_path(&path);
+            }
+        }
+    }
+    gdi_flush_local();
+    register_intact_family_detailed(app, family)
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct FamilyDiskHonesty {
+    intact: usize,
+    expected: Option<usize>,
+    has_complete: bool,
+    has_variable: bool,
+    missing_variable: bool,
+    undersized: bool,
+}
+
+fn family_disk_honesty_in(dir: &Path, family: &str) -> FamilyDiskHonesty {
+    verify_complete_marker(dir);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    let intact = files.iter().filter(|p| ttf_intact(p)).count();
+    let has_complete = dir_is_complete(dir);
+    let has_variable = dir_has_intact_variable(dir);
+    let missing_variable =
+        catalog_variable_expects_public_vf(family) && !has_variable && intact > 0;
+    let undersized = dir_has_undersized_google_static(dir, family);
+    FamilyDiskHonesty {
+        intact,
+        expected: read_expected_faces(dir),
+        has_complete,
+        has_variable,
+        missing_variable,
+        undersized,
+    }
+}
+
+fn family_disk_honesty(app: &AppHandle, family: &str) -> FamilyDiskHonesty {
+    let mut best = FamilyDiskHonesty {
+        intact: 0,
+        expected: None,
+        has_complete: false,
+        has_variable: false,
+        missing_variable: false,
+        undersized: false,
+    };
+    for dir in family_locations(app, family) {
+        let h = family_disk_honesty_in(&dir, family);
+        if h.intact >= best.intact {
+            best = h;
+        }
+    }
+    best
+}
+
+/// Never claim `.complete` unless the marker exists. Split files / stamp / GDI cause.
+#[allow(dead_code)]
+fn format_register_zero_detail(app: &AppHandle, family: &str) -> String {
+    format_register_zero_detail_with(app, family, RegisterFailKind::AddReturnedZero)
+}
+
+fn format_register_zero_detail_with(
+    app: &AppHandle,
+    family: &str,
+    cause: RegisterFailKind,
+) -> String {
+    let h = family_disk_honesty(app, family);
+    let expected = h
+        .expected
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "—".into());
+    // Re-check marker — never claim .complete when absent (Skye P0 toast).
+    let complete = if h.has_complete { "yes" } else { "no" };
+    let mut msg = format!(
+        "{family} — files on disk {intact}/{expected}, .complete={complete}, GDI live 0 ({cause})",
+        intact = h.intact,
+        cause = cause.label(),
+    );
+    if h.missing_variable {
+        msg.push_str(", catalog VF missing");
+    }
+    if h.undersized {
+        msg.push_str(", undersized vs Google (latin/subset remnant)");
+    }
+    msg
+}
+
+/// Ready-path GDI 0 must not leave sticky `.complete` (Activate without bust).
+fn note_register_zero(app: &AppHandle, family: &str, cause: RegisterFailKind) -> String {
+    clear_complete_markers_for_family(app, family);
+    format_register_zero_detail_with(app, family, cause)
+}
+
 fn alias_keys(name: &str) -> Vec<String> {
     let raw = name.trim();
     let mut keys = vec![
@@ -4114,9 +4397,17 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         } else {
             heal.add(heal_family_google_instance_names(app, family));
         }
-        let added = match index {
-            Some(idx) => register_from_index(app, idx, family),
-            None => register_intact_family(app, family),
+        let (added, cause) = match index {
+            Some(idx) => {
+                let a = register_from_index(app, idx, family);
+                // Index path has no per-face cause; fall back to a fresh detailed pass only on 0.
+                if a > 0 {
+                    (a, RegisterFailKind::NoneTried)
+                } else {
+                    register_intact_family_detailed(app, family)
+                }
+            }
+            None => register_intact_family_detailed(app, family),
         };
         n += added;
         forget_queued(family);
@@ -4135,12 +4426,12 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
                     p.ready_names.push(family.clone());
                 }
             } else {
+                // Sticky ready+.complete after GDI 0 is a lie — clear stamp (Skye P0).
+                let detail = note_register_zero(app, family, cause);
                 p.failed = p.failed.saturating_add(1);
                 if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
                     p.failed_names.push(family.clone());
-                    p.failed_details.push(format!(
-                        "{family} — on disk (.complete) but GDI register returned 0"
-                    ));
+                    p.failed_details.push(detail);
                 }
             }
             p.current = format!("Registering {family}");
@@ -4551,6 +4842,15 @@ fn verify_complete_marker(dir: &Path) {
         clear_complete_marker(dir);
         return;
     }
+    // Gidugu-class: .complete + undersized planned face must not block Repair.
+    let family_name = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if !family_name.is_empty() && dir_has_undersized_google_static(dir, family_name) {
+        clear_complete_marker(dir);
+        return;
+    }
     // When `.google-planned` is a real key list, expected = keys.len() — never an
     // understated `.expected` that could keep a partial Google stamp.
     let expected = if let Some(keys) = read_google_planned_keys(dir) {
@@ -4855,7 +5155,7 @@ fn download_family(
     if needs_compat_pack(&slug) && (wrote > 0 || existing > 0) {
         install_compat_pack(client, &root, family, &slug);
     }
-    let total = register_intact_family(app, family);
+    let (total, reg_cause) = register_intact_family_detailed(app, family);
     if bulk().cancel.load(Ordering::SeqCst) {
         clear_complete_marker(&root);
         return Err("cancelled".into());
@@ -4864,6 +5164,12 @@ fn download_family(
         clear_complete_marker(&root);
         if locked {
             return Err("files locked — close Word or Adobe, then Retry".into());
+        }
+        let intact_now = count_intact_faces(&root);
+        if intact_now > 0 {
+            // Skip-intact Fontsource path can hit this: files on disk, GDI 0.
+            // Clear sticky .complete; split stage vs Add vs unloading (Skye P0).
+            return Err(note_register_zero(app, family, reg_cause));
         }
         return Err("no installable TTF/OTF (Google CSS + Fontsource yielded none)".into());
     }
@@ -4978,9 +5284,9 @@ fn drain_download_queue(
             let (_, mut heal) = ensure_catalog_variable_faces(&app, &client, &family);
             heal.add(heal_family_google_names(&app, &family, false));
             heal_acc.add(heal);
-            let n = register_intact_family(&app, &family);
+            let (n, cause) = register_intact_family_detailed(&app, &family);
             if n == 0 {
-                Err("register failed — files on disk but GDI Add returned 0".into())
+                Err(note_register_zero(&app, &family, cause))
             } else {
                 Ok(n)
             }
@@ -5767,7 +6073,7 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                     }
                     break;
                 }
-                let k = register_intact_family(&app, &family);
+                let (k, cause) = register_intact_family_detailed(&app, &family);
                 forget_queued(&family);
                 if let Ok(mut denied) = bulk().denied.lock() {
                     denied.remove(&family.trim().to_lowercase());
@@ -5792,12 +6098,11 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                             g.push(family.clone());
                         }
                     } else {
+                        let detail = note_register_zero(&app, &family, cause);
                         p.failed = p.failed.saturating_add(1);
                         if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.failed_names.push(family.clone());
-                            p.failed_details.push(format!(
-                                "{family} — on disk (.complete) but GDI register returned 0"
-                            ));
+                            p.failed_details.push(detail);
                         }
                     }
                 } else if k > 0 {
@@ -5909,32 +6214,78 @@ pub fn read_family_font(app: AppHandle, family: String, italic: Option<bool>) ->
 #[tauri::command]
 pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
     let mut locked = Vec::new();
-    let mut queued = Vec::new();
+    let mut need_fetch = Vec::new();
+    let mut live: Vec<String> = Vec::new();
+    let mut reregistered = 0usize;
     for family in &families {
         forget_queued(family);
-        // Empty folder after Explorer-delete counts as missing — purge is a no-op.
+        if family_has_intact(&app, family) {
+            // P0: re-stage+Add (not ambient skip-intact). Do not wipe library.
+            let (n, cause) = reregister_intact_family(&app, family);
+            if n > 0 {
+                reregistered += 1;
+                live.push(family.clone());
+                if let Ok(mut p) = bulk().progress.lock() {
+                    p.failed_names.retain(|n| !n.eq_ignore_ascii_case(family));
+                    p.failed_details
+                        .retain(|d| !d.to_ascii_lowercase().starts_with(&family.to_ascii_lowercase()));
+                    if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                        p.ready_names.push(family.clone());
+                    }
+                    p.failed = p.failed_names.len() as u32;
+                }
+                continue;
+            }
+            // Still GDI 0 — clear sticky .complete; honest cause; no wipe.
+            let detail = note_register_zero(&app, family, cause);
+            if let Ok(mut p) = bulk().progress.lock() {
+                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.failed_names.push(family.clone());
+                    p.failed_details.push(detail);
+                }
+                p.failed = p.failed_names.len() as u32;
+            }
+            // Missing faces / catalog VF — non-bust fetch (ensure), not skip-as-done.
+            if family_is_incomplete(&app, family)
+                || family_needs_variable_backfill(&app, family)
+            {
+                need_fetch.push(family.clone());
+            }
+            continue;
+        }
+        // Empty / missing folder — purge is a no-op; queue fetch.
         if let Err(err) = purge_family_files_result(&app, family) {
             if err.contains("locked") {
                 locked.push(family.clone());
                 continue;
             }
         }
-        queued.push(family.clone());
+        need_fetch.push(family.clone());
     }
-    if !locked.is_empty() && queued.is_empty() {
+    if !live.is_empty() {
+        session_add(&app, &live);
+        notify_fonts_changed();
+        #[cfg(windows)]
+        persist_activation_sidecars(&app);
+        emit_progress(&app);
+    }
+    if !locked.is_empty() && need_fetch.is_empty() && reregistered == 0 {
         return Err(format!(
             "files locked — close Word or Adobe, then Retry ({})",
             locked.join(", ")
         ));
     }
-    if queued.is_empty() {
-        return Ok(0);
+    if need_fetch.is_empty() {
+        emit_progress(&app);
+        return Ok(reregistered);
     }
-    bulk().bust.store(true, Ordering::SeqCst);
+    // Do not bust/wipe intact faces — skip-intact download fills missing/corrupt only.
+    bulk().bust.store(false, Ordering::SeqCst);
     if !bulk().running.load(Ordering::SeqCst) {
         reset_circuits();
     }
-    start_google_downloads(app, queued)
+    let added = start_google_downloads(app, need_fetch)?;
+    Ok(added.saturating_add(reregistered))
 }
 
 /// Repair result: queued downloads + name-heal outcomes (healed vs locked skips).
@@ -5957,7 +6308,13 @@ fn replace_tiny_cjk_static_faces(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> usize {
-    if !family_may_have_tiny_cjk_statics(family) || !is_official_google_family(family) {
+    // Allowlisted Gidugu / CJK latin shreds only — not every official Google face.
+    if !is_official_google_family(family) {
+        return 0;
+    }
+    if !(family_may_have_undersized_google_statics(family)
+        || family_may_have_tiny_cjk_statics(family))
+    {
         return 0;
     }
     let slug = slug_family(family);
@@ -6013,10 +6370,17 @@ fn replace_tiny_cjk_static_faces(
         let Some(bytes) = fetch_url_ttf(client, &url) else {
             continue;
         };
-        // Only replace if the download is clearly larger than the tiny shred.
-        if (bytes.len() as u64) <= TINY_CJK_FACE_MAX_BYTES {
+        let local_len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // Only replace if upstream is clearly larger (full Google vs latin/subset remnant).
+        if (bytes.len() as u64) <= UNDERSIZED_GOOGLE_FACE_MAX_BYTES
+            || (local_len > 0 && (bytes.len() as u64) < local_len.saturating_mul(2))
+        {
             continue;
         }
+        eprintln!(
+            "{family} — undersized vs Google (latin/subset remnant): replacing {local_len}B face with {}B",
+            bytes.len()
+        );
         let patched = crate::namepatch::patch_google_instance_face(
             &bytes, family, &weight, &style,
         )
@@ -6130,8 +6494,16 @@ pub struct DiskFamily {
     pub bytes: u64,
     pub files: usize,
     pub corrupt: usize,
-    /// Intact faces present but honest `.complete` missing (or face-count short) — needs Repair.
+    /// Intact faces present but honest `.complete` missing, face-count short, or catalog VF missing.
     pub incomplete: bool,
+    /// `.complete` marker currently present (after verify).
+    pub has_complete: bool,
+    /// Intact on-disk `*-variable-*` face present.
+    pub has_variable: bool,
+    /// Catalog-variable family expecting a public VF, but no intact `*-variable-*` on disk.
+    pub missing_variable: bool,
+    /// Intact planned face << typical full Google TTF (latin/subset remnant, e.g. Gidugu).
+    pub undersized: bool,
 }
 
 #[tauri::command]
@@ -6171,13 +6543,23 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             return;
         }
         verify_complete_marker(dir);
-        let incomplete = intact > 0 && !dir_is_complete(dir);
+        let has_complete = dir_is_complete(dir);
+        let has_variable = dir_has_intact_variable(dir);
+        let missing_variable =
+            catalog_variable_expects_public_vf(&name) && !has_variable && intact > 0;
+        let undersized = dir_has_undersized_google_static(dir, &name);
+        // `.complete` ≠ vars done; undersized ≠ skip-intact done (Gidugu).
+        let incomplete = (intact > 0 && !has_complete) || missing_variable || undersized;
         out.push(DiskFamily {
             name,
             bytes,
             files: intact,
             corrupt,
             incomplete,
+            has_complete,
+            has_variable,
+            missing_variable,
+            undersized,
         });
     });
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -7116,6 +7498,149 @@ mod install_path_tests {
         let _ = fs::remove_dir_all(&parent);
     }
 
+
+    #[test]
+    fn register_zero_detail_never_claims_complete_without_marker() {
+        let parent = temp_family_dir("honest-toast-complete");
+        let dir = parent.join("Clear Sans");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        for w in [100u16, 300, 400, 500, 700] {
+            fs::write(dir.join(format!("clear-sans-{w}-normal.ttf")), &fake).unwrap();
+        }
+        write_expected_faces(&dir, 5);
+        // NO .complete marker
+        assert!(!dir_is_complete(&dir));
+        let h = family_disk_honesty_in(&dir, "Clear Sans");
+        assert_eq!(h.intact, 5);
+        assert!(!h.has_complete);
+        let msg = format!(
+            "Clear Sans — files on disk {intact}/{expected}, .complete={complete}, GDI live 0 ({cause})",
+            intact = h.intact,
+            expected = h.expected.unwrap_or(0),
+            complete = if h.has_complete { "yes" } else { "no" },
+            cause = RegisterFailKind::AddReturnedZero.label(),
+        );
+        assert!(msg.contains(".complete=no"), "{msg}");
+        assert!(!msg.contains("on disk (.complete)"), "{msg}");
+        assert!(msg.contains("AddFontResourceExW returned 0"), "{msg}");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn note_register_zero_clears_sticky_complete_marker() {
+        let parent = temp_family_dir("sticky-complete-clear");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("nunito-400-normal.ttf"), &fake).unwrap();
+        mark_family_complete(&dir, 1);
+        assert!(dir_is_complete(&dir));
+        clear_complete_marker(&dir);
+        assert!(!dir_is_complete(&dir), "sticky .complete must clear after GDI 0");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn disk_family_missing_variable_marks_incomplete_even_with_complete() {
+        let parent = temp_family_dir("missing-vf-incomplete");
+        let dir = parent.join("Chiron Hei HK");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        // Full-size static so undersized heuristic does not clear .complete first.
+        fake.resize(200 * 1024, 0);
+        fs::write(dir.join("chiron-hei-hk-400-normal.ttf"), &fake).unwrap();
+        write_google_planned(&dir, &["chiron-hei-hk-400-normal.ttf".into()]);
+        mark_family_complete(&dir, 1);
+        assert!(dir_is_complete(&dir));
+        assert!(catalog_variable_expects_public_vf("Chiron Hei HK"));
+        assert!(!dir_has_intact_variable(&dir));
+        let h = family_disk_honesty_in(&dir, "Chiron Hei HK");
+        assert!(h.missing_variable);
+        let incomplete = (h.intact > 0 && !h.has_complete) || h.missing_variable;
+        assert!(incomplete, "catalog-variable without VF must show Incomplete/Repair");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn variable_facet_honesty_requires_disk_vf_filename() {
+        let parent = temp_family_dir("facet-disk-vf");
+        let dir = parent.join("42dot Sans");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        for w in [100u16, 200, 300, 400, 500, 700] {
+            fs::write(dir.join(format!("42dot-sans-{w}-normal.ttf")), &fake).unwrap();
+        }
+        assert!(!dir_has_intact_variable(&dir), "statics must not count as Variable");
+        fs::write(dir.join("42dot-sans-variable-wght.ttf"), &fake).unwrap();
+        assert!(dir_has_intact_variable(&dir));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+
+    #[test]
+    fn undersized_google_face_size_heuristic_matches_gidugu_remnant() {
+        let parent = temp_family_dir("gidugu-undersized");
+        let dir = parent.join("Gidugu");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(38404, 0); // live Documents remnant
+        let path = dir.join("gidugu-400-normal.ttf");
+        fs::write(&path, &fake).unwrap();
+        assert!(is_undersized_google_static_face(&path));
+        assert!(is_tiny_latin_subset_face(&path));
+        // Full upstream ~461KB must not look undersized
+        fake.resize(460988, 0);
+        let full = dir.join("gidugu-400-full.ttf");
+        fs::write(&full, &fake).unwrap();
+        assert!(!is_undersized_google_static_face(&full));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn verify_clears_complete_when_official_undersized_static_present() {
+        let parent = temp_family_dir("undersized-complete-clear");
+        // Allowlisted Gidugu remnant — not all-Google size band.
+        let dir = parent.join("Gidugu");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(38404, 0);
+        fs::write(dir.join("gidugu-400-normal.ttf"), &fake).unwrap();
+        mark_family_complete(&dir, 1);
+        assert!(dir_is_complete(&dir));
+        assert!(is_official_google_family("Gidugu"));
+        assert!(dir_has_undersized_google_static(&dir, "Gidugu"));
+        verify_complete_marker(&dir);
+        assert!(!dir_is_complete(&dir), "undersized vs Google must clear sticky .complete");
+        // Collateral: ordinary small Google statics must NOT clear .complete on size alone.
+        // Honest .google-planned so catalog-floor lie does not confound the size heuristic.
+        let nunito = parent.join("Nunito");
+        fs::create_dir_all(&nunito).unwrap();
+        fs::write(nunito.join("nunito-400-normal.ttf"), &fake).unwrap();
+        write_google_planned(&nunito, &["nunito-400-normal.ttf".into()]);
+        mark_family_complete(&nunito, 1);
+        assert!(is_official_google_family("Nunito"));
+        assert!(!dir_has_undersized_google_static(&nunito, "Nunito"));
+        verify_complete_marker(&nunito);
+        assert!(dir_is_complete(&nunito), "non-allowlisted Google must not clear on size alone");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn register_fail_kind_labels_split_stage_add_unload() {
+        assert!(RegisterFailKind::StageCopyFailed.label().contains("stage-copy"));
+        assert!(RegisterFailKind::AddReturnedZero.label().contains("AddFontResourceExW"));
+        assert!(RegisterFailKind::Unloading.label().contains("unloading"));
+        assert_eq!(
+            RegisterFailKind::Refused.worsen(RegisterFailKind::StageCopyFailed),
+            RegisterFailKind::StageCopyFailed
+        );
+    }
+
+
     #[test]
     fn google_fonts_variable_cdn_urls_jsdelivr_then_github_raw() {
         let urls = google_fonts_variable_cdn_urls("ofl", "chirongoroundtc", "ChironGoRoundTC[wght].ttf");
@@ -7218,6 +7743,10 @@ mod install_path_tests {
         assert!(face_should_replace_as_tiny_cjk("Chiron GoRound TC", &tiny));
         assert!(face_should_replace_as_tiny_cjk("Noto Serif KR", &tiny));
         assert!(face_should_replace_as_tiny_cjk("LXGW WenKai", &tiny));
+        // 1.0.168: Gidugu allowlist — not every official Google face in the size band.
+        assert!(face_should_replace_undersized_google("Gidugu", &tiny));
+        assert!(face_should_replace_as_tiny_cjk("Gidugu", &tiny));
+        assert!(!face_should_replace_undersized_google("Nunito", &tiny));
         assert!(!face_should_replace_as_tiny_cjk("Nunito", &tiny));
         let full = dir.join("full.ttf");
         bytes.resize(200 * 1024, 0);
