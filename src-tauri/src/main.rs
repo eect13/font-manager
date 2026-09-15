@@ -3,6 +3,7 @@
 mod activate;
 mod namepatch;
 mod parse;
+mod session_stage;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
