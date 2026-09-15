@@ -431,11 +431,8 @@ export const useFontStore = create<FontState>()(
               ...withActivated(s.activated.filter((x) => !drop.has(x))),
               ...withPending(s.pendingActivate.filter((x) => !drop.has(x))),
             }));
-            if (font.source === "google") {
-              set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
-            } else {
-              set(withActivated([...get().activated, id]));
-            }
+            // Queue only — Activated badge stays on live activated[] until GDI marks ready.
+            set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
             notifyIfUnusual(font, "activate");
             void syncFontsOnSystem(rivals, false).then(() => {
               void syncFontOnSystem(font, true);
@@ -443,13 +440,8 @@ export const useFontStore = create<FontState>()(
             return;
           }
         }
-        if (font?.source === "google") {
-          set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
-          notifyIfUnusual(font, "activate");
-          void syncFontOnSystem(font, true);
-          return;
-        }
-        set(withActivated([...get().activated, id]));
+        // Google and local both pending until register/download confirms (P0 honesty).
+        set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
         if (font) {
           notifyIfUnusual(font, "activate");
           void syncFontOnSystem(font, true);
@@ -497,19 +489,15 @@ export const useFontStore = create<FontState>()(
           }));
           void syncFontsOnSystem(evict, false);
         }
-        const googleIds: string[] = [];
-        const localIds: string[] = [];
+        const queuedIds: string[] = [];
         const pack: FontRecord[] = [];
         for (const font of chosen) {
           pack.push(font);
-          if (font.source === "google") googleIds.push(font.id);
-          else localIds.push(font.id);
+          queuedIds.push(font.id);
         }
-        if (localIds.length) {
-          set((s) => withActivated(Array.from(new Set([...s.activated, ...localIds]))));
-        }
-        if (googleIds.length) {
-          set((s) => withPending(Array.from(new Set([...s.pendingActivate, ...googleIds]))));
+        // Do not bump activated[] here — wait for markLiveActivated after GDI/register.
+        if (queuedIds.length) {
+          set((s) => withPending(Array.from(new Set([...s.pendingActivate, ...queuedIds]))));
         }
         if (pack.length) {
           const unusual = pack.find((f) => f.colorKind && f.colorKind !== "none");
@@ -1455,6 +1443,22 @@ export function folderDeleteImpact(
 
 export function collectFolderFontIds(collections: Collection[], id: string): Set<string> {
   return new Set(folderFontStats(collections).get(id)?.ids ?? []);
+}
+
+/** Apply auto-hide duplicate ids to folder/collection badge stats (shared). */
+export function folderStatsWithAutoHide(
+  collections: Collection[],
+  hideDupIds: string[],
+): Map<string, { count: number; ids: string[] }> {
+  const raw = folderFontStats(collections);
+  if (!hideDupIds.length) return raw;
+  const hide = new Set(hideDupIds);
+  const next = new Map<string, { count: number; ids: string[] }>();
+  for (const [id, stat] of raw) {
+    const ids = stat.ids.filter((fid) => !hide.has(fid));
+    next.set(id, { count: ids.length, ids });
+  }
+  return next;
 }
 
 export function folderFontStats(

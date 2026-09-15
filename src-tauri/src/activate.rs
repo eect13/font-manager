@@ -1159,6 +1159,25 @@ pub fn session_register_workers(family_count: usize) -> usize {
     family_count.clamp(MIN, MAX)
 }
 
+/// Gate for on-disk parallel register workers (Skye P1).
+/// Cancel aborts the queue; pause waits like download drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnDiskRegisterGate {
+    Run,
+    WaitPaused,
+    StopCancelled,
+}
+
+fn on_disk_register_gate(cancel: bool, pause: bool) -> OnDiskRegisterGate {
+    if cancel {
+        OnDiskRegisterGate::StopCancelled
+    } else if pause {
+        OnDiskRegisterGate::WaitPaused
+    } else {
+        OnDiskRegisterGate::Run
+    }
+}
+
 /// Decision after best-effort unload: clear sidecars on success; on partial
 /// failure keep remaining locked paths for next-boot recovery and fail loud.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2132,9 +2151,11 @@ fn parse_css_faces(css: &str) -> Vec<(String, String, String)> {
     out
 }
 
-/// Hard cap for a single TTF/OTF body (jsDelivr var files included). Prevents
-/// unbounded RAM when a CDN returns a huge or non-font payload.
-const MAX_TTF_FETCH_BYTES: usize = 32 * 1024 * 1024;
+/// Hard cap for a single TTF/OTF body (google/fonts var files included).
+/// CJK VFs (Chiron / Noto Serif KR·SC) are ~23–52MB — jsDelivr's 20MB limit
+/// rejects them, so we fall back to GitHub raw; 32MB was still too small for
+/// Chiron GoRound/Sung. Prevents unbounded RAM on a non-font payload.
+const MAX_TTF_FETCH_BYTES: usize = 64 * 1024 * 1024;
 
 fn fetch_url_ttf(client: &reqwest::blocking::Client, url: &str) -> Option<Vec<u8>> {
     if bulk().cancel.load(Ordering::SeqCst) {
@@ -2436,9 +2457,9 @@ fn parse_metadata_pb_axes_and_files(meta: &str) -> (Vec<String>, Vec<(String, bo
     (axes_order, files)
 }
 
-fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> String {
-    // Bracket axes must be percent-encoded for jsDelivr.
-    let enc: String = filename
+fn encode_google_fonts_filename(filename: &str) -> String {
+    // Bracket axes must be percent-encoded for jsDelivr / GitHub raw.
+    filename
         .chars()
         .map(|c| match c {
             '[' => "%5B".to_string(),
@@ -2446,11 +2467,78 @@ fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> Str
             ' ' => "%20".to_string(),
             _ => c.to_string(),
         })
-        .collect();
+        .collect()
+}
+
+fn jsdelivr_google_fonts_url(license: &str, folder: &str, filename: &str) -> String {
+    let enc = encode_google_fonts_filename(filename);
     format!("https://cdn.jsdelivr.net/gh/google/fonts@main/{license}/{folder}/{enc}")
 }
 
-/// Download real variable TTFs from google/fonts via jsDelivr (never @fontsource-variable WOFF).
+/// GitHub raw fallback — jsDelivr refuses files over ~20MB (CJK variable TTFs).
+fn github_raw_google_fonts_url(license: &str, folder: &str, filename: &str) -> String {
+    let enc = encode_google_fonts_filename(filename);
+    format!("https://raw.githubusercontent.com/google/fonts/main/{license}/{folder}/{enc}")
+}
+
+/// Prefer jsDelivr (fast, cached) then GitHub raw (serves 20MB+ CJK VFs).
+fn google_fonts_variable_cdn_urls(license: &str, folder: &str, filename: &str) -> [String; 2] {
+    [
+        jsdelivr_google_fonts_url(license, folder, filename),
+        github_raw_google_fonts_url(license, folder, filename),
+    ]
+}
+
+/// METADATA.pb: same jsDelivr → GitHub raw order as VF TTFs (jsDelivr can 403/omit).
+fn google_fonts_metadata_cdn_urls(license: &str, folder: &str) -> [String; 2] {
+    [
+        format!("https://cdn.jsdelivr.net/gh/google/fonts@main/{license}/{folder}/METADATA.pb"),
+        format!("https://raw.githubusercontent.com/google/fonts/main/{license}/{folder}/METADATA.pb"),
+    ]
+}
+
+/// Catalog marks these `variable: true` but google/fonts has no public VF file
+/// (Google Sans is proprietary; Edu * Hand packs ship statics only). Do not
+/// invent VFs or clear `.complete` for missing `*-variable-*`.
+fn family_has_no_public_vf(family: &str) -> bool {
+    const NO_PUBLIC_VF: &[&str] = &[
+        "Google Sans",
+        "Edu NSW ACT Cursive",
+        "Edu NSW ACT Hand Pre",
+        "Edu QLD Hand",
+        "Edu SA Hand",
+        "Edu VIC WA NT Hand",
+        "Edu VIC WA NT Hand Pre",
+    ];
+    let t = family.trim();
+    NO_PUBLIC_VF.iter().any(|n| n.eq_ignore_ascii_case(t))
+}
+
+/// Catalog-variable families that should have a real `*-variable-*` / VF on disk.
+fn catalog_variable_expects_public_vf(family: &str) -> bool {
+    google_catalog_is_variable(family) && !family_has_no_public_vf(family)
+}
+
+/// google/fonts ships **two** VFs (roman + italic) for these families. Ensure must
+/// not early-return after roman-only planned/intact — retry italic.
+fn family_expects_dual_variable(family: &str) -> bool {
+    let t = family.trim();
+    t.eq_ignore_ascii_case("Chiron Hei HK") || t.eq_ignore_ascii_case("Chiron Sung HK")
+}
+
+fn dir_has_intact_variable_italic(dir: &Path) -> bool {
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    files.iter().any(|p| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| variable_face_filename_is_italic(n) && ttf_intact(p))
+            .unwrap_or(false)
+    })
+}
+
+/// Download real variable TTFs from google/fonts (jsDelivr, then GitHub raw for large CJK).
+/// Never `@fontsource-variable` WOFF.
 /// Returns on-disk filenames that were written or already intact, plus HealStats from
 /// in-place name heals on intact faces (never discard locked/healed).
 fn download_google_variable_ttfs(
@@ -2459,7 +2547,7 @@ fn download_google_variable_ttfs(
     slug: &str,
     root: &Path,
 ) -> (Vec<String>, HealStats) {
-    if !google_catalog_is_variable(family) {
+    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
         return (Vec::new(), HealStats::default());
     }
     let licenses = ["ofl", "apache", "ufl"];
@@ -2468,26 +2556,33 @@ fn download_google_variable_ttfs(
     let mut heal = HealStats::default();
 
     // 1) Prefer METADATA.pb filenames + axes.
-    for lic in licenses {
+    // partial_wrote: roman landed but METADATA also listed italic (dual-VF) —
+    // seed the axis-pattern fallback so we keep roman and still hunt italic.
+    let mut partial_wrote: Vec<String> = Vec::new();
+    'meta: for lic in licenses {
         for folder in &folders {
             if bulk().cancel.load(Ordering::SeqCst) {
                 return (Vec::new(), heal);
             }
-            let meta_url = format!(
-                "https://cdn.jsdelivr.net/gh/google/fonts@main/{lic}/{folder}/METADATA.pb"
-            );
-            let Ok(resp) = client.get(&meta_url).send() else { continue };
-            if !resp.status().is_success() {
-                continue;
+            let mut meta_text: Option<String> = None;
+            for meta_url in google_fonts_metadata_cdn_urls(lic, folder) {
+                let Ok(resp) = client.get(&meta_url).send() else { continue };
+                if !resp.status().is_success() {
+                    continue;
+                }
+                let Ok(text) = resp.text() else { continue };
+                if text.len() < 16 || !text.contains("filename:") {
+                    continue;
+                }
+                meta_text = Some(text);
+                break;
             }
-            let Ok(text) = resp.text() else { continue };
-            if text.len() < 16 || !text.contains("filename:") {
-                continue;
-            }
+            let Some(text) = meta_text else { continue };
             let (axes, files) = parse_metadata_pb_axes_and_files(&text);
             if files.is_empty() {
                 continue;
             }
+            let meta_wants_italic = files.iter().any(|(_, italic)| *italic);
             let mut wrote = Vec::new();
             for (fname, italic) in &files {
                 let axes_label = if !axes.is_empty() {
@@ -2508,19 +2603,28 @@ fn download_google_variable_ttfs(
                     wrote.push(dest_name);
                     continue;
                 }
-                let url = jsdelivr_google_fonts_url(lic, folder, fname);
-                if let Some(bytes) = fetch_url_ttf(client, &url) {
+                // jsDelivr first; GitHub raw for >20MB CJK VFs jsDelivr rejects.
+                for url in google_fonts_variable_cdn_urls(lic, folder, fname) {
+                    let Some(bytes) = fetch_url_ttf(client, &url) else {
+                        continue;
+                    };
                     // google/fonts vars often mash default-instance style into
                     // nameID 1. Rewrite name only (Regular/Italic); preserve fvar.
                     let patched = crate::namepatch::patch_variable_face(&bytes, family, *italic)
                         .unwrap_or(bytes);
                     if write_font_file(&dest, &patched).is_ok() {
                         wrote.push(dest_name);
+                        break;
                     }
                 }
             }
-            if !wrote.is_empty() {
+            let wrote_italic = wrote.iter().any(|w| variable_face_filename_is_italic(w));
+            if !wrote.is_empty() && !(meta_wants_italic && !wrote_italic) {
                 return (wrote, heal);
+            }
+            if !wrote.is_empty() && meta_wants_italic && !wrote_italic {
+                partial_wrote = wrote;
+                break 'meta;
             }
             // METADATA found but TTFs missing — try next folder/license.
         }
@@ -2534,7 +2638,7 @@ fn download_google_variable_ttfs(
         "wght,wdth",
         "CASL,CRSV,MONO,slnt,wght",
     ];
-    let mut wrote = Vec::new();
+    let mut wrote = partial_wrote;
     for lic in licenses {
         for folder in &folders {
             for axes in axis_patterns {
@@ -2565,20 +2669,27 @@ fn download_google_variable_ttfs(
                             format!("{pascal}-VariableFont_{axes_us}.ttf"),
                         ]
                     };
-                    for remote in remotes {
-                        let url = jsdelivr_google_fonts_url(lic, folder, &remote);
-                        if let Some(bytes) = fetch_url_ttf(client, &url) {
+                    'outer: for remote in remotes {
+                        for url in google_fonts_variable_cdn_urls(lic, folder, &remote) {
+                            let Some(bytes) = fetch_url_ttf(client, &url) else {
+                                continue;
+                            };
                             let patched = crate::namepatch::patch_variable_face(&bytes, family, italic)
                                 .unwrap_or(bytes);
                             if write_font_file(&dest, &patched).is_ok() {
                                 wrote.push(dest_name);
-                                break;
+                                break 'outer;
                             }
                         }
                     }
                 }
-                // If we got a roman var file for this axes pattern, stop trying other axes.
-                if wrote.iter().any(|w| w.contains("-variable-") && !w.contains("-italic")) {
+                // If we got a roman var file for this axes pattern, stop trying other axes
+                // — unless dual-VF (Hei/Sung) still needs italic.
+                let has_roman = wrote
+                    .iter()
+                    .any(|w| w.contains("-variable-") && !variable_face_filename_is_italic(w));
+                let has_italic = wrote.iter().any(|w| variable_face_filename_is_italic(w));
+                if has_roman && (has_italic || !family_expects_dual_variable(family)) {
                     return (wrote, heal);
                 }
             }
@@ -2649,6 +2760,8 @@ fn collect_intact_google_instance_keys(dir: &Path) -> Vec<String> {
 
 /// When variable TTFs land, fold them into `.google-planned` / expected / complete
 /// **alongside** existing static instance keys — never replace statics with var-only.
+/// Stamp honesty only (markers + planned keys); never deletes/renames/rewrites
+/// static face files on disk.
 fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
     if var_files.is_empty() {
         return;
@@ -2672,7 +2785,8 @@ fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
 fn http_download_client() -> Option<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(120))
+        // CJK variable TTFs are ~25–52MB over GitHub raw; 120s was tight on slow links.
+        .timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(6)
         .user_agent("FontManager/1.0")
         .build()
@@ -2680,14 +2794,17 @@ fn http_download_client() -> Option<reqwest::blocking::Client> {
 }
 
 /// Always pull real `*-variable-*` TTFs for catalog-variable families — including
-/// when the folder is already `.complete` / statics-only. Does **not** bust statics;
-/// registers both. Returns (var filenames written/intact, HealStats from intact heals).
+/// when the folder is already `.complete` / statics-only. `.complete` must **not**
+/// block VF fetch. Does **not** delete, rename, rewrite, or purge static faces —
+/// only writes missing var files, then `adopt_variable_files_into_plan` updates
+/// planned/expected/complete. No-public-VF catalog families are skipped (no invent).
+/// Returns (var filenames written/intact, HealStats from intact var heals).
 fn ensure_catalog_variable_faces(
     app: &AppHandle,
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> (usize, HealStats) {
-    if !google_catalog_is_variable(family) {
+    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
         return (0, HealStats::default());
     }
     let slug = slug_family(family);
@@ -2702,15 +2819,19 @@ fn ensure_catalog_variable_faces(
     }
 
     // Fast path: planned already lists intact vars — adopt is a no-op; register only.
+    // Dual-VF (Hei/Sung): roman-only planned/intact must still CDN-fetch italic.
     if let Some(keys) = read_google_planned_keys(&root) {
         let planned_vars: Vec<String> = keys
             .iter()
             .filter(|k| is_variable_face_filename(k))
             .cloned()
             .collect();
-        if !planned_vars.is_empty()
-            && planned_vars.iter().all(|k| ttf_intact(&root.join(k)))
-        {
+        let planned_intact = !planned_vars.is_empty()
+            && planned_vars.iter().all(|k| ttf_intact(&root.join(k)));
+        let dual_needs_italic = family_expects_dual_variable(family)
+            && !planned_vars.iter().any(|k| variable_face_filename_is_italic(k))
+            && !dir_has_intact_variable_italic(&root);
+        if planned_intact && !dual_needs_italic {
             let mut heal = HealStats::default();
             for name in &planned_vars {
                 let path = root.join(name);
@@ -2721,7 +2842,8 @@ fn ensure_catalog_variable_faces(
             return (planned_vars.len(), heal);
         }
     } else if dir_has_intact_variable(&root) {
-        // Vars on disk but missing from planned (legacy complete) — fold in, no CDN.
+        // Vars on disk but missing from planned (legacy complete) — fold in, no CDN
+        // unless dual-VF still missing italic.
         let mut files = Vec::new();
         walk_font_files(&root, &mut files);
         let var_files: Vec<String> = files
@@ -2735,7 +2857,9 @@ fn ensure_catalog_variable_faces(
                 }
             })
             .collect();
-        if !var_files.is_empty() {
+        let dual_needs_italic = family_expects_dual_variable(family)
+            && !var_files.iter().any(|k| variable_face_filename_is_italic(k));
+        if !var_files.is_empty() && !dual_needs_italic {
             adopt_variable_files_into_plan(&root, &var_files);
             let mut heal = HealStats::default();
             for name in &var_files {
@@ -2746,11 +2870,24 @@ fn ensure_catalog_variable_faces(
             }
             return (var_files.len(), heal);
         }
+        if !var_files.is_empty() && dual_needs_italic {
+            // Adopt roman now; fall through to download for italic.
+            adopt_variable_files_into_plan(&root, &var_files);
+        }
     }
 
     // Missing vars (complete statics-only Nunito, etc.) — fetch without busting statics.
     let (var_files, heal) = download_google_variable_ttfs(client, family, &slug, &root);
     if var_files.is_empty() {
+        // Loud fail: catalog expects a public VF and CDN returned nothing.
+        if catalog_variable_expects_public_vf(family) && !dir_has_intact_variable(&root) {
+            let reason = "catalog VF ensure returned 0 (jsDelivr/GitHub raw miss)";
+            eprintln!("{family} — {reason}");
+            remember_failed(family, reason);
+            if let Ok(mut p) = bulk().progress.lock() {
+                p.failed = p.failed.saturating_add(1);
+            }
+        }
         return (0, heal);
     }
     adopt_variable_files_into_plan(&root, &var_files);
@@ -3498,14 +3635,15 @@ fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -
 }
 
 fn register_intact_family(app: &AppHandle, family: &str) -> usize {
+    // Count only successful GDI Adds (or already-mapped session paths).
+    // Intact-on-disk alone must not inflate progress / ready_names.
     let mut n = 0usize;
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
         sort_faces_var_first(&mut files);
         for path in files {
-            if ttf_intact(&path) {
-                let _ = register_family_path(family, &path);
+            if ttf_intact(&path) && register_family_path(family, &path) {
                 n += 1;
             }
         }
@@ -3624,6 +3762,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     // heal mashed instance names — Activate used to name-heal only / skip vars.
     let client = http_download_client();
     let mut n = 0usize;
+    let mut live: Vec<String> = Vec::new();
     let mut heal = HealStats::default();
     let mut last_emit = Instant::now();
     for (i, family) in ready.iter().enumerate() {
@@ -3635,10 +3774,11 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         } else {
             heal.add(heal_family_google_instance_names(app, family));
         }
-        n += match index {
+        let added = match index {
             Some(idx) => register_from_index(app, idx, family),
             None => register_intact_family(app, family),
         };
+        n += added;
         forget_queued(family);
         if let Ok(mut denied) = bulk().denied.lock() {
             denied.remove(&family.trim().to_lowercase());
@@ -3646,12 +3786,24 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         if let Ok(mut p) = bulk().progress.lock() {
             p.kind = "download".into();
             p.running = true;
+            // Progress = families processed; ready_names only when GDI accepted faces.
             p.done = (i + 1) as u32;
-            p.skipped = (i + 1) as u32;
-            p.current = format!("Registering {family}");
-            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                p.ready_names.push(family.clone());
+            if added > 0 {
+                p.skipped = p.skipped.saturating_add(1);
+                live.push(family.clone());
+                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.ready_names.push(family.clone());
+                }
+            } else {
+                p.failed = p.failed.saturating_add(1);
+                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.failed_names.push(family.clone());
+                    p.failed_details.push(format!(
+                        "{family} — on disk (.complete) but GDI register returned 0"
+                    ));
+                }
             }
+            p.current = format!("Registering {family}");
         }
         let last = i + 1 == ready.len();
         if i == 0 || last || last_emit.elapsed() >= Duration::from_millis(150) {
@@ -3661,7 +3813,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     }
     if n > 0 {
         notify_fonts_changed();
-        session_add(app, ready);
+        session_add(app, &live);
         #[cfg(windows)]
         save_session_paths(app, &winfont::snapshot_loaded());
     }
@@ -4010,6 +4162,11 @@ fn dir_only_latin_fontsource_names(dir: &Path) -> bool {
 /// apply the catalog floor (Google CSS often omits edge weights 1/1000, so
 /// planned can be ≪ floor for Sofia Sans / Ysabeau / DM Sans / Nunito / …
 /// without being a latin lie; floor-when-planned caused permanent Repair↔retry).
+///
+/// Missing catalog VFs are **not** cleared here: clearing `.complete` would push
+/// families through Repair/bust and risk touching statics. Ensure/backfill pulls
+/// VFs while `.complete` stays; `adopt_variable_files_into_plan` updates the stamp
+/// after vars land without deleting/renaming/rewriting static faces.
 fn official_google_complete_is_lie(dir: &Path) -> bool {
     let family = dir
         .file_name()
@@ -4475,12 +4632,18 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
-            // Already-complete: still pull missing catalog vars (no bust) + heal names.
+            // Already-complete: still pull missing catalog vars (no bust) + heal names,
+            // then register — do not treat .complete as activated without GDI.
             // Aggregate — do not emit per family (toast storm).
             let (_, mut heal) = ensure_catalog_variable_faces(&app, &client, &family);
             heal.add(heal_family_google_names(&app, &family, false));
             heal_acc.add(heal);
-            Ok(1usize)
+            let n = register_intact_family(&app, &family);
+            if n == 0 {
+                Err("register failed — files on disk but GDI Add returned 0".into())
+            } else {
+                Ok(n)
+            }
         } else {
             match download_family(&app, &client, &family) {
                 Ok((n, heal)) => {
@@ -4571,10 +4734,10 @@ fn run_google_bulk(app: AppHandle, families: Vec<String>) {
         return;
     }
 
-    // CJK full TTFs are ~30MB each; 10s was too short (Chiron Sung HK).
+    // CJK full TTFs / VFs are ~25–52MB; 10s was too short (Chiron Sung HK).
     let client = match reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(6)
         .user_agent("FontManager/1.0")
         .build()
@@ -5008,26 +5171,322 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
     if families.is_empty() {
         return Ok(Vec::new());
     }
-    let ready = filter_ready_families_parallel(&app, &families);
-    if ready.is_empty() {
-        return Ok(ready);
-    }
-    let app2 = app.clone();
-    let ready2 = ready.clone();
-    thread::spawn(move || {
-        // Register only — no CDN. session_begin may already have loaded these;
-        // register() no-ops paths in the in-process set. Missing variable TTFs
-        // are filled after GDI is up so the window is not blocked on jsDelivr.
-        let (added, _) = register_ready_families_parallel(&app2, &ready2);
-        session_add(&app2, &ready2);
-        if added > 0 {
-            notify_fonts_changed();
-            #[cfg(windows)]
-            save_session_paths(&app2, &winfont::snapshot_loaded());
+    // P0 (1.0.165): never run the GDI register loop on the invoke thread —
+    // Activate All of ~2k on-disk families made the window "Not Responding"
+    // even while mid-flight progress events fired. Filter + ≤6 parallel
+    // register_intact_family run on a worker; callers wait on progress
+    // (running=false + ready_names) via poll/event — Ok([]) here means
+    // "accepted / started", NOT "registered none" (invoke fail still catch→[]).
+    // Honesty unchanged: ready_names / session only after successful Add.
+    let state = bulk();
+    let own_progress = !state.running.load(Ordering::SeqCst);
+    if own_progress {
+        // Fresh job — clear leftover cancel/pause from a prior Cancel click.
+        state.cancel.store(false, Ordering::SeqCst);
+        state.pause.store(false, Ordering::SeqCst);
+        if let Ok(mut p) = state.progress.lock() {
+            p.running = true;
+            p.paused = false;
+            p.kind = "download".into();
+            p.done = 0;
+            p.total = families.len() as u32;
+            p.failed = 0;
+            p.skipped = 0;
+            p.current = format!("Checking {} on disk…", families.len());
+            p.ready_names.clear();
+            p.failed_names.clear();
+            p.failed_details.clear();
         }
-        backfill_missing_variable_faces(&app2, &ready2);
+        state.running.store(true, Ordering::SeqCst);
+        emit_progress(&app);
+    } else if let Ok(mut p) = state.progress.lock() {
+        p.kind = "download".into();
+        p.running = true;
+        if p.total < families.len() as u32 {
+            p.total = families.len() as u32;
+        }
+        p.current = format!("Checking {} on disk…", families.len());
+    }
+    if !own_progress {
+        emit_progress(&app);
+    }
+
+    let app2 = app.clone();
+    thread::spawn(move || {
+        activate_on_disk_worker(app2, families, own_progress);
     });
-    Ok(ready)
+    Ok(Vec::new())
+}
+
+/// Worker: disk-ready filter then ≤6 parallel intact register with progress ticks.
+fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: bool) {
+    let ready = filter_ready_families_parallel(&app, &families);
+    let state = bulk();
+    if ready.is_empty() {
+        if own_progress {
+            if let Ok(mut p) = state.progress.lock() {
+                p.failed = 0;
+                p.failed_names.clear();
+                p.failed_details.clear();
+                // Nothing intact — surface as failed so JS clears pending.
+                for family in &families {
+                    let t = family.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    p.failed = p.failed.saturating_add(1);
+                    if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                        p.failed_names.push(t.to_string());
+                        p.failed_details.push(format!(
+                            "{t} — not intact on disk (.complete missing or incomplete)"
+                        ));
+                    }
+                }
+                let n = p.failed_names.len() as u32;
+                p.running = false;
+                p.current.clear();
+                p.done = n;
+                p.total = n.max(1);
+            }
+            state.running.store(false, Ordering::SeqCst);
+            emit_progress(&app);
+        }
+        return;
+    }
+
+    if let Ok(mut p) = state.progress.lock() {
+        p.kind = "download".into();
+        p.running = true;
+        p.done = 0;
+        p.total = ready.len() as u32;
+        p.current = format!("Registering {} already on disk…", ready.len());
+        if own_progress {
+            p.failed = 0;
+            p.skipped = 0;
+            // Keep ready_names if merging into a parent job; own job starts clean.
+            p.ready_names.clear();
+            p.failed_names.clear();
+            p.failed_details.clear();
+        }
+    }
+    emit_progress(&app);
+
+    let registered = register_on_disk_parallel_progress(&app, &ready);
+    let cancelled = state.cancel.load(Ordering::SeqCst);
+    if !registered.is_empty() {
+        session_add(&app, &registered);
+    }
+    if !registered.is_empty() {
+        notify_fonts_changed();
+        #[cfg(windows)]
+        save_session_paths(&app, &winfont::snapshot_loaded());
+    }
+
+    // VF backfill before finishing — do not mark Activate complete while catalog
+    // VFs are still downloading (Skye CJK). Repair remains the sync smoke path
+    // for already-`.complete` folders (ensure on the invoke). Cancel skips backfill.
+    if !cancelled && !registered.is_empty() {
+        if let Ok(mut p) = state.progress.lock() {
+            p.current = "Backfilling variable faces…".into();
+            p.running = true;
+        }
+        emit_progress(&app);
+        backfill_missing_variable_faces(&app, &registered);
+    }
+
+    // Requested but not intact: clear pending via failed_names (poll finalize).
+    // On cancel: running=false + emit; keep ready_names for completed Adds only —
+    // do not mark remaining queue items as ready (or pretend they finished).
+    if own_progress {
+        if let Ok(mut p) = state.progress.lock() {
+            if !cancelled {
+                let ready_l: HashSet<String> = ready
+                    .iter()
+                    .map(|n| n.trim().to_lowercase())
+                    .collect();
+                for family in &families {
+                    let t = family.trim();
+                    if t.is_empty() || ready_l.contains(&t.to_lowercase()) {
+                        continue;
+                    }
+                    p.failed = p.failed.saturating_add(1);
+                    if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                        p.failed_names.push(t.to_string());
+                        p.failed_details.push(format!(
+                            "{t} — not intact on disk (.complete missing or incomplete)"
+                        ));
+                    }
+                }
+                p.done = ready.len() as u32;
+                p.total = ready.len() as u32;
+            }
+            p.running = false;
+            p.paused = false;
+            p.current.clear();
+        }
+        state.running.store(false, Ordering::SeqCst);
+        emit_progress(&app);
+    } else {
+        emit_progress(&app);
+    }
+}
+
+/// ≤6 workers walk/register in parallel; GDI Add stays serialized in gdi_api.
+/// Progress done/total ticks per family; ready_names only when Add returned >0.
+/// Skye P1: honor bulk cancel/pause — Cancel clears the queue so workers stop;
+/// Pause waits like download drain (does not drain GDI while held).
+fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<String> {
+    if ready.is_empty() {
+        return Vec::new();
+    }
+    let workers = session_register_workers(ready.len());
+    let queue = Arc::new(Mutex::new(VecDeque::from(ready.to_vec())));
+    let registered: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let processed = Arc::new(AtomicUsize::new(0));
+    let last_emit = Arc::new(Mutex::new(Instant::now()));
+    let total = ready.len();
+    let mut joins = Vec::with_capacity(workers);
+
+    for _ in 0..workers {
+        let app = app.clone();
+        let queue = queue.clone();
+        let registered = registered.clone();
+        let processed = processed.clone();
+        let last_emit = last_emit.clone();
+        joins.push(thread::spawn(move || {
+            loop {
+                let state = bulk();
+                match on_disk_register_gate(
+                    state.cancel.load(Ordering::SeqCst),
+                    state.pause.load(Ordering::SeqCst),
+                ) {
+                    OnDiskRegisterGate::StopCancelled => {
+                        if let Ok(mut q) = queue.lock() {
+                            q.clear();
+                        }
+                        break;
+                    }
+                    OnDiskRegisterGate::WaitPaused => {
+                        if let Ok(mut p) = state.progress.lock() {
+                            p.paused = true;
+                            p.running = true;
+                        }
+                        emit_progress(&app);
+                        thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                    OnDiskRegisterGate::Run => {
+                        if let Ok(mut p) = state.progress.lock() {
+                            p.paused = false;
+                        }
+                    }
+                }
+                let next = queue.lock().ok().and_then(|mut q| q.pop_front());
+                let Some(family) = next else {
+                    break;
+                };
+                // Re-check after pop: Cancel between pop and Add must not leave
+                // the family half-handled as "ready" if we skip Add — put back
+                // only if we have not started register; here we abort without Add.
+                if state.cancel.load(Ordering::SeqCst) {
+                    if let Ok(mut q) = queue.lock() {
+                        q.clear();
+                    }
+                    break;
+                }
+                while matches!(
+                    on_disk_register_gate(
+                        state.cancel.load(Ordering::SeqCst),
+                        state.pause.load(Ordering::SeqCst),
+                    ),
+                    OnDiskRegisterGate::WaitPaused
+                ) {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.paused = true;
+                        p.running = true;
+                    }
+                    emit_progress(&app);
+                    thread::sleep(Duration::from_millis(200));
+                }
+                if state.cancel.load(Ordering::SeqCst) {
+                    if let Ok(mut q) = queue.lock() {
+                        q.clear();
+                    }
+                    break;
+                }
+                let k = register_intact_family(&app, &family);
+                forget_queued(&family);
+                if let Ok(mut denied) = bulk().denied.lock() {
+                    denied.remove(&family.trim().to_lowercase());
+                }
+                let done_n = processed.fetch_add(1, Ordering::SeqCst) + 1;
+                if let Ok(mut p) = bulk().progress.lock() {
+                    p.kind = "download".into();
+                    p.running = true;
+                    p.done = done_n as u32;
+                    if p.total < total as u32 {
+                        p.total = total as u32;
+                    }
+                    p.current = format!("Registering {family}");
+                    if k > 0 {
+                        // Honesty: this family did Add successfully — count it even
+                        // if Cancel arrived mid-flight after Add returned.
+                        p.skipped = p.skipped.saturating_add(1);
+                        if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                            p.ready_names.push(family.clone());
+                        }
+                        if let Ok(mut g) = registered.lock() {
+                            g.push(family.clone());
+                        }
+                    } else {
+                        p.failed = p.failed.saturating_add(1);
+                        if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                            p.failed_names.push(family.clone());
+                            p.failed_details.push(format!(
+                                "{family} — on disk (.complete) but GDI register returned 0"
+                            ));
+                        }
+                    }
+                } else if k > 0 {
+                    if let Ok(mut g) = registered.lock() {
+                        g.push(family.clone());
+                    }
+                }
+                // After register: Cancel → clear remaining queue (do not mark rest ready).
+                if bulk().cancel.load(Ordering::SeqCst) {
+                    if let Ok(mut q) = queue.lock() {
+                        q.clear();
+                    }
+                    emit_progress(&app);
+                    break;
+                }
+                let last = done_n >= total;
+                let should_emit = last
+                    || done_n == 1
+                    || last_emit
+                        .lock()
+                        .map(|t| t.elapsed() >= Duration::from_millis(150))
+                        .unwrap_or(true);
+                if should_emit {
+                    emit_progress(&app);
+                    if let Ok(mut t) = last_emit.lock() {
+                        *t = Instant::now();
+                    }
+                }
+            }
+        }));
+    }
+    for j in joins {
+        let _ = j.join();
+    }
+    let mut out = registered.lock().map(|g| g.clone()).unwrap_or_default();
+    out.sort_by_key(|a| {
+        ready
+            .iter()
+            .position(|t| t.eq_ignore_ascii_case(a))
+            .unwrap_or(usize::MAX)
+    });
+    out
 }
 
 #[derive(Clone, Serialize)]
@@ -6223,6 +6682,189 @@ mod install_path_tests {
     }
 
     #[test]
+    fn google_fonts_variable_cdn_urls_jsdelivr_then_github_raw() {
+        let urls = google_fonts_variable_cdn_urls("ofl", "chirongoroundtc", "ChironGoRoundTC[wght].ttf");
+        assert!(
+            urls[0].starts_with("https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/chirongoroundtc/"),
+            "jsDelivr first: {}",
+            urls[0]
+        );
+        assert!(
+            urls[0].contains("ChironGoRoundTC%5Bwght%5D.ttf"),
+            "brackets encoded: {}",
+            urls[0]
+        );
+        assert_eq!(
+            urls[1],
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/chirongoroundtc/ChironGoRoundTC%5Bwght%5D.ttf"
+        );
+        assert!(MAX_TTF_FETCH_BYTES >= 64 * 1024 * 1024, "CJK VFs need >52MB headroom");
+    }
+
+    #[test]
+    fn google_fonts_metadata_cdn_urls_jsdelivr_then_github_raw() {
+        let urls = google_fonts_metadata_cdn_urls("ofl", "chironheihk");
+        assert_eq!(
+            urls[0],
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/chironheihk/METADATA.pb"
+        );
+        assert_eq!(
+            urls[1],
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/chironheihk/METADATA.pb"
+        );
+    }
+
+    #[test]
+    fn dual_vf_families_are_hei_and_sung_only() {
+        assert!(family_expects_dual_variable("Chiron Hei HK"));
+        assert!(family_expects_dual_variable("Chiron Sung HK"));
+        assert!(!family_expects_dual_variable("Chiron GoRound TC"));
+        assert!(!family_expects_dual_variable("Nunito"));
+        assert!(!family_expects_dual_variable("Noto Serif KR"));
+    }
+
+    #[test]
+    fn dual_vf_roman_only_on_disk_detected_as_missing_italic() {
+        let parent = temp_family_dir("dual-vf-roman-only");
+        let dir = parent.join("Chiron Hei HK");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        fs::write(dir.join("chiron-hei-hk-variable-wght.ttf"), &fake).unwrap();
+        assert!(dir_has_intact_variable(&dir));
+        assert!(!dir_has_intact_variable_italic(&dir));
+        assert!(family_expects_dual_variable("Chiron Hei HK"));
+        fs::write(dir.join("chiron-hei-hk-variable-wght-italic.ttf"), &fake).unwrap();
+        assert!(dir_has_intact_variable_italic(&dir));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn no_public_vf_denylist_is_exact_seven() {
+        const EXPECTED: &[&str] = &[
+            "Google Sans",
+            "Edu NSW ACT Cursive",
+            "Edu NSW ACT Hand Pre",
+            "Edu QLD Hand",
+            "Edu SA Hand",
+            "Edu VIC WA NT Hand",
+            "Edu VIC WA NT Hand Pre",
+        ];
+        assert_eq!(EXPECTED.len(), 7);
+        for name in EXPECTED {
+            assert!(family_has_no_public_vf(name), "{name}");
+            assert!(!catalog_variable_expects_public_vf(name), "{name}");
+        }
+        // Spot-check: nothing else invents a denylist skip.
+        assert!(!family_has_no_public_vf("Nunito"));
+        assert!(!family_has_no_public_vf("Chiron Hei HK"));
+    }
+
+    #[test]
+    fn no_public_vf_denylist_skips_invented_variable_expectation() {
+        assert!(google_catalog_is_variable("Google Sans"));
+        assert!(family_has_no_public_vf("Google Sans"));
+        assert!(!catalog_variable_expects_public_vf("Google Sans"));
+        assert!(family_has_no_public_vf("Edu NSW ACT Cursive"));
+        assert!(family_has_no_public_vf("Edu VIC WA NT Hand Pre"));
+        // P1 gap families DO expect a public VF.
+        assert!(catalog_variable_expects_public_vf("Chiron GoRound TC"));
+        assert!(catalog_variable_expects_public_vf("Chiron Hei HK"));
+        assert!(catalog_variable_expects_public_vf("Chiron Sung HK"));
+        assert!(catalog_variable_expects_public_vf("Noto Serif KR"));
+        assert!(catalog_variable_expects_public_vf("Noto Serif SC"));
+        assert!(catalog_variable_expects_public_vf("Nunito"));
+    }
+
+    #[test]
+    fn complete_statics_only_keeps_stamp_vars_adopted_without_touching_statics() {
+        // Eric: .complete must not block VF backfill; statics untouched.
+        // Clearing .complete would Repair/bust and risk wiping statics — don't.
+        let parent = temp_family_dir("statics-only-complete");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let varf = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        let static_bytes_before = fs::read(dir.join(inst)).unwrap();
+        write_google_planned(&dir, &[inst.into()]);
+        mark_family_complete(&dir, 1);
+        assert!(dir_is_complete(&dir));
+        assert!(!dir_has_intact_variable(&dir));
+        assert!(
+            !official_google_complete_is_lie(&dir),
+            "missing VF must not clear .complete (would risk static wipe on Repair)"
+        );
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            ".complete stays; ensure/backfill still fetches vars while ready"
+        );
+        // Simulate VF landing (ensure path) then stamp honesty via adopt.
+        fs::write(dir.join(varf), &fake).unwrap();
+        adopt_variable_files_into_plan(&dir, &[varf.into()]);
+        let keys = read_google_planned_keys(&dir).expect("planned");
+        assert!(keys.iter().any(|k| k == varf), "planned gains var: {keys:?}");
+        assert!(keys.iter().any(|k| k == inst), "planned keeps static: {keys:?}");
+        assert_eq!(
+            fs::read(dir.join(inst)).unwrap(),
+            static_bytes_before,
+            "static face bytes must be untouched after adopt"
+        );
+        assert!(dir.is_dir());
+        assert!(dir.join(inst).is_file());
+        assert!(dir_is_complete(&dir), "stamp honest once vars intact");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn verify_keeps_complete_for_no_public_vf_statics_only() {
+        let parent = temp_family_dir("no-public-vf-complete");
+        let dir = parent.join("Google Sans");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "google-sans-400-normal.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        write_google_planned(&dir, &[inst.into()]);
+        mark_family_complete(&dir, 1);
+        assert!(google_catalog_is_variable("Google Sans"));
+        assert!(family_has_no_public_vf("Google Sans"));
+        assert!(
+            !official_google_complete_is_lie(&dir),
+            "do not invent VF requirement for Google Sans"
+        );
+        verify_complete_marker(&dir);
+        assert!(
+            family_complete_marker(&dir).is_file(),
+            "no-public-VF statics-only complete must remain"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn verify_keeps_complete_when_catalog_variable_has_intact_vf() {
+        let parent = temp_family_dir("complete-with-vf");
+        let dir = parent.join("Nunito");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let inst = "nunito-400-normal.ttf";
+        let varf = "nunito-variable-wght.ttf";
+        fs::write(dir.join(inst), &fake).unwrap();
+        fs::write(dir.join(varf), &fake).unwrap();
+        write_google_planned(&dir, &[varf.into(), inst.into()]);
+        mark_family_complete(&dir, 2);
+        assert!(dir_has_intact_variable(&dir));
+        assert!(!official_google_complete_is_lie(&dir));
+        verify_complete_marker(&dir);
+        assert!(family_complete_marker(&dir).is_file());
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
     fn sort_faces_var_first_orders_variable_ahead_of_statics() {
         let mut files = vec![
             PathBuf::from("nunito-400-normal.ttf"),
@@ -6907,6 +7549,25 @@ mod session_sidecar_tests {
         assert_eq!(session_register_workers(1), 1);
         assert_eq!(session_register_workers(3), 3);
         assert_eq!(session_register_workers(100), 6);
+    }
+
+    /// Skye P1: Cancel must abort on-disk register queue; Pause waits (download-like).
+    #[test]
+    fn on_disk_register_gate_cancel_and_pause() {
+        assert_eq!(
+            on_disk_register_gate(true, false),
+            OnDiskRegisterGate::StopCancelled
+        );
+        assert_eq!(
+            on_disk_register_gate(true, true),
+            OnDiskRegisterGate::StopCancelled,
+            "cancel beats pause"
+        );
+        assert_eq!(
+            on_disk_register_gate(false, true),
+            OnDiskRegisterGate::WaitPaused
+        );
+        assert_eq!(on_disk_register_gate(false, false), OnDiskRegisterGate::Run);
     }
 
     /// Documents Skye P1: ≤6 parallel `register_intact_family` workers may walk

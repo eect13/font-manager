@@ -1,10 +1,16 @@
-# Font Manager **1.0.163**
+# Font Manager **1.0.166**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.166.** Catalog-variable CJK VFs over ~20MB (Chiron GoRound/Hei/Sung, Noto Serif KR·SC) no longer fall through empty on jsDelivr — `download_google_variable_ttfs` tries GitHub raw, `MAX_TTF_FETCH_BYTES` is 64MB, METADATA.pb has the same CDN fallback, and dual-VF Hei/Sung retry italic when only roman is planned/intact. Ensure fail-louds when a non-denylist family returns 0 vars. On-disk Activate finishes VF backfill before `running=false` (Repair remains the sync smoke path for complete folders). `.complete` stays for missing VFs; statics untouched; exact-7 no-public-VF denylist unchanged.
+
+**1.0.165.** Activate All on-disk register no longer freezes the window (GDI register runs on a worker with ≤6 parallel `register_intact_family`; invoke returns immediately; progress % + ready_names via poll/event). Cancel/Pause abort or hold that register queue (not only downloads). Pending-until-GDI honesty unchanged. Scroll/sidebar/preview polish when present. Default deploy folder: Desktop\Vibe Apps\Font Manager\Installers.
+
+**1.0.164.** Folders sidebar counts follow auto-hide duplicates the same way Collections do (Local Files stays full). Activate All no longer treats on-disk / `.complete` / queued as activated — progress and the Activated badge wait for real GDI register (locals queue as pending like Google until mark-live). Plan/resume invoke fail returns no live marks; on-disk register emits live %; partial GDI fail clears pending and bumps failed. Mixed Activate All on-disk google finish scopes `clearPending` to google family names (does not wipe local install-queue pending).
 
 **1.0.163.** Activate/Deactivate show a live percent + ETA that ticks while work runs (on-disk register no longer jumps to 100% while GDI is still adding; Deactivate no longer toasts “done” on click or on a leftover idle poll). Collection counts follow auto-hide duplicates; Provider → Local Files still shows the full upload total.
 
@@ -68,7 +74,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 
 **1.0.149 UI honesty.** Activated scope and badge always follow live `activated[]` (never merge download queue / pendingActivate; no freeze while downloads run). Google Fonts drawer count is the official directory size (~1,946), not the full Fontsource-merged list. Catalog refresh toast: `Catalog N (Google 1946 · Fontsource exclusive M)`.
 
-**Google install path.** For catalog-**variable** families, Activate pulls **both** Google CSS instance TTFs (Mozilla/Googlebot; name-patched for Adobe menus) **and** real variable TTFs from `google/fonts` via jsDelivr (`Nunito[wght].ttf` → `nunito-variable-wght.ttf`). Planned = statics + vars (never var-only). Vars are listed/registered first so Illustrator/AI can pick axes; statics stay as backup. Already-`.complete` folders missing `*-variable-*` still fetch vars on Activate/Repair without a full bust. When axis-range CSS only yields range-weight keys (`font-weight: 200 1000` → `200-1000`), planned instance keys prefer the discrete static `ital,wght@0|1,w` listing instead. Google CSS instances **and** real `*-variable-*` TTFs are name-patched so Illustrator sees family `Nunito` (not `Nunito ExtraLight`): statics get style `ExtraLight`/`Bold`/…; vars get `Regular`/`Italic` while keeping `fvar`. Never Chrome/Safari WOFF2 and never `@fontsource-variable` WOFF. `.complete` / `.google-planned` count instances **plus** variable files. Latin remnants are not purged into an empty folder when a Google fetch writes nothing. Fontsource fills only when Google listed **0** faces.
+**Google install path.** For catalog-**variable** families, Activate pulls **both** Google CSS instance TTFs (Mozilla/Googlebot; name-patched for Adobe menus) **and** real variable TTFs from `google/fonts` via jsDelivr then GitHub raw (`Nunito[wght].ttf` → `nunito-variable-wght.ttf`; CJK VFs >~20MB need raw). Planned = statics + vars (never var-only). Vars are listed/registered first so Illustrator/AI can pick axes; statics stay as backup. Already-`.complete` folders missing `*-variable-*` still fetch vars on Activate/Repair without a full bust. When axis-range CSS only yields range-weight keys (`font-weight: 200 1000` → `200-1000`), planned instance keys prefer the discrete static `ital,wght@0|1,w` listing instead. Google CSS instances **and** real `*-variable-*` TTFs are name-patched so Illustrator sees family `Nunito` (not `Nunito ExtraLight`): statics get style `ExtraLight`/`Bold`/…; vars get `Regular`/`Italic` while keeping `fvar`. Never Chrome/Safari WOFF2 and never `@fontsource-variable` WOFF. `.complete` / `.google-planned` count instances **plus** variable files. Latin remnants are not purged into an empty folder when a Google fetch writes nothing. Fontsource fills only when Google listed **0** faces.
 
 **Documents sync.** `Documents / Font Manager` (plus `Activated` / `Library` children) stays in sync with the library via Scan, hydrate, and an app-owned live folder watcher while the window is open. Users still cannot add it (or Windows Fonts) as a watch folder. WOFF/WOFF2 on disk are preview-only — not counted as corrupt.
 
@@ -79,7 +85,7 @@ Captures are from the **installed desktop app** so specimens actually paint (OS 
 1. [Node.js 22 LTS](https://nodejs.org) (Node 24 also builds).
 2. Clone or unzip → open the **inner** project folder in VS Code (not an empty wrapper). A name like `font-manager-main (1)` is fine.
 3. Double-click **`deploy.bat`** and leave it open through all three phases: pack UI → compile Rust (first time 5–15 min) → write installers.
-4. Install from `src-tauri\target\release\bundle\nsis\` (or `bundle\msi\` if WiX built one).
+4. Installers land under **`Desktop\Vibe Apps\Font Manager\Installers\`** (created if missing; override with `node scripts/deploy.mjs --out <path>`). Bundle also stays under `src-tauri\target\release\bundle\`.
 5. If an older setup fights the new one: run **`fix-install.bat`**.
 
 **`desktop-setup.bat`** only runs the app in a dev window — it does **not** make installers.

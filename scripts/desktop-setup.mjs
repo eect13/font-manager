@@ -186,6 +186,7 @@ if (wantBuild) {
   console.log(`
 ✓ Installers are in:
   src-tauri/target/release/bundle/
+  (deploy.bat also copies to Desktop\\Vibe Apps\\Font Manager\\Installers\\)
 `);
   process.exit(0);
 }
