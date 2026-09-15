@@ -104,7 +104,7 @@ function otherToRecord(row: OtherRow): FontRecord {
     weights: Array.isArray(weights) && weights.length ? weights : [400],
     italic,
     catalogVariable: variable,
-    // Fontsource-other bundle is 0×variable; live sync must not badge without disk VF.
+    // Fontsource-other may mark catalogVariable; UI badge still needs on-disk VF.
     variable: false,
     tags: tagsForGoogleFamily(family, category, Array.isArray(tags) ? tags : []),
     popularity,

@@ -543,6 +543,29 @@ mod winfont {
         }
     }
 
+    /// True when this source is already Add'd with a size-matched LocalAppData map.
+    pub fn is_session_live_mapped(path: &Path) -> bool {
+        if unloading().load(Ordering::SeqCst) {
+            return false;
+        }
+        let already = loaded()
+            .lock()
+            .map(|g| g.contains(path))
+            .unwrap_or(false);
+        if !already {
+            return false;
+        }
+        let src_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if src_len < 256 {
+            return false;
+        }
+        super::gdi_map_dest_for(path)
+            .and_then(|d| fs::metadata(d).ok())
+            .map(|m| m.len() == src_len)
+            .unwrap_or(false)
+    }
+
+    #[allow(dead_code)]
     pub fn register(path: &Path) -> bool {
         register_detailed(path).ok()
     }
@@ -1080,10 +1103,48 @@ fn register_family_path(family: &str, path: &Path) -> bool {
     fail.is_none()
 }
 
+
+/// Count intact faces already session-live (loaded + size-matched gdi map).
+/// `None` = at least one face still needs copy/Add.
+fn count_already_live_intact_faces(app: &AppHandle, family: &str) -> Option<usize> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, family);
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        let mut n = 0usize;
+        let mut any = false;
+        for dir in family_locations(app, family) {
+            let mut files = Vec::new();
+            walk_font_files(&dir, &mut files);
+            for path in files {
+                if !ttf_intact(&path) {
+                    continue;
+                }
+                any = true;
+                if !winfont::is_session_live_mapped(&path) {
+                    return None;
+                }
+                n = n.saturating_add(1);
+            }
+        }
+        if any && n > 0 {
+            Some(n)
+        } else {
+            None
+        }
+    }
+}
+
 fn register_intact_family_detailed(
     app: &AppHandle,
     family: &str,
 ) -> (usize, RegisterFailKind) {
+    if let Some(live) = count_already_live_intact_faces(app, family) {
+        return (live, RegisterFailKind::NoneTried);
+    }
     let mut n = 0usize;
     let mut fail = RegisterFailKind::NoneTried;
     for dir in family_locations(app, family) {
@@ -2776,11 +2837,75 @@ fn google_catalog_is_variable(family: &str) -> bool {
     google_catalog_meta(family).map(|m| m.variable).unwrap_or(false)
 }
 
-/// Fontsource-only families that still ship a public TTF VF under google/fonts
-/// (missing from Google metadata / google-catalog). Never WOFF2 / never @fontsource-variable.
-/// Material Symbols* omitted — no google/fonts TTF VF path found.
-fn fs_only_google_vf_folder(family: &str) -> Option<&'static str> {
-    match family.trim().to_ascii_lowercase().as_str() {
+#[derive(Clone, Copy)]
+struct FontsourceOtherMeta {
+    variable: bool,
+}
+
+fn fontsource_other_meta_maps() -> &'static (HashMap<String, FontsourceOtherMeta>, HashMap<String, FontsourceOtherMeta>) {
+    static META: OnceLock<(HashMap<String, FontsourceOtherMeta>, HashMap<String, FontsourceOtherMeta>)> =
+        OnceLock::new();
+    META.get_or_init(|| {
+        let raw = include_str!("../../src/lib/fonts/fontsource-other.json");
+        let mut by_lower = HashMap::new();
+        let mut by_slug = HashMap::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
+                for row in arr {
+                    let Some(row) = row.as_array() else { continue };
+                    if row.len() < 5 {
+                        continue;
+                    }
+                    let Some(name) = row[0].as_str() else { continue };
+                    let variable = row[4].as_bool().unwrap_or(false);
+                    let t = name.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    let meta = FontsourceOtherMeta { variable };
+                    by_lower.insert(t.to_ascii_lowercase(), meta);
+                    by_slug.insert(slug_family(t), meta);
+                }
+            }
+        }
+        (by_lower, by_slug)
+    })
+}
+
+fn fontsource_other_meta(family: &str) -> Option<FontsourceOtherMeta> {
+    let (by_lower, by_slug) = fontsource_other_meta_maps();
+    let key = family.trim().to_ascii_lowercase();
+    by_lower
+        .get(&key)
+        .or_else(|| by_slug.get(&slug_family(family)))
+        .copied()
+}
+
+
+/// Fontsource-other `variable:true` families with a public google/fonts TTF VF.
+/// Folder = alphanumeric compact lower (`42dot Sans` → `42dotsans`).
+/// Never WOFF2 / never `@fontsource-variable`. Material Symbols* have WOFF2-only
+/// on Fontsource and no google/fonts TTF — excluded.
+fn fontsource_other_is_variable(family: &str) -> bool {
+    fontsource_other_meta(family).map(|m| m.variable).unwrap_or(false)
+}
+
+fn family_is_woff2_only_variable(family: &str) -> bool {
+    let t = family.trim().to_ascii_lowercase();
+    t == "material symbols outlined"
+        || t == "material symbols rounded"
+        || t == "material symbols sharp"
+        || t == "material symbols"
+}
+
+/// google/fonts repo folder override for FS-other (and known slug fixes).
+fn fs_only_google_vf_folder(family: &str) -> Option<String> {
+    if family_is_woff2_only_variable(family) {
+        return None;
+    }
+    // Known explicit folders (keep even if compact differs).
+    let key = family.trim().to_ascii_lowercase();
+    let fixed = match key.as_str() {
         "42dot sans" => Some("42dotsans"),
         "big shoulders display" => Some("bigshouldersdisplay"),
         "big shoulders text" => Some("bigshoulderstext"),
@@ -2791,16 +2916,34 @@ fn fs_only_google_vf_folder(family: &str) -> Option<&'static str> {
         "briem hand" => Some("briemhand"),
         "finlandica" => Some("finlandica"),
         _ => None,
+    };
+    if let Some(f) = fixed {
+        return Some(f.to_string());
     }
+    if fontsource_other_is_variable(family) {
+        let compact: String = family
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if !compact.is_empty() {
+            return Some(compact);
+        }
+    }
+    None
 }
 
 /// True when Activate/Repair should pull a real google/fonts `*-variable-*` TTF.
+/// Covers: google-catalog variable + all Fontsource-other variable with a TTF path.
 fn family_ensures_google_vf(family: &str) -> bool {
-    if family_has_no_public_vf(family) {
+    if family_has_no_public_vf(family) || family_is_woff2_only_variable(family) {
         return false;
     }
-    google_catalog_is_variable(family) || fs_only_google_vf_folder(family).is_some()
+    google_catalog_is_variable(family)
+        || fontsource_other_is_variable(family)
+        || fs_only_google_vf_folder(family).is_some()
 }
+
 
 /// CSS axis strings for catalog-variable families (real `min..max` ranges).
 /// Mozilla/Googlebot expand these to installable instance TTFs — never Chrome WOFF2.
@@ -2843,7 +2986,7 @@ fn google_fonts_repo_folders(family: &str) -> Vec<String> {
     let mut out = Vec::new();
     // FS-only / slug overrides first (42dot Sans → 42dotsans, not 42dot-sans miss).
     if let Some(fixed) = fs_only_google_vf_folder(family) {
-        out.push(fixed.to_string());
+        out.push(fixed);
     }
     if !compact.is_empty() && !out.iter().any(|s| s == &compact) {
         out.push(compact);
@@ -4005,21 +4148,23 @@ fn fetch_google_family_faces_to_dir(
     if !official && !ensure_vf {
         return (0, Vec::new(), Vec::new(), HealStats::default());
     }
-    // Try CSS listing for official + ensure families (may 404 for metadata-missing).
-    let listed = discover_richest_google_listing(client, family);
-    let (inst_wrote, _, mut heal) = if listed.is_empty() {
-        (0, 0, HealStats::default())
-    } else {
-        download_listed_faces_to_dir(client, family, slug, root, listed.clone())
-    };
-    // Real variable TTFs from google/fonts (jsDelivr then GitHub raw). Never WOFF2.
+    let mut heal = HealStats::default();
+    // 1) Variable first (complete VF before statics) — google/fonts TTF, never WOFF2.
     let (var_files, var_heal) = if ensure_vf {
         download_google_variable_ttfs(client, family, slug, root)
     } else {
         (Vec::new(), HealStats::default())
     };
     heal.add(var_heal);
-    let wrote = inst_wrote.saturating_add(var_files.len());
+    // 2) Google CSS static instances (may 404 for metadata-missing FS-only).
+    let listed = discover_richest_google_listing(client, family);
+    let (inst_wrote, _, inst_heal) = if listed.is_empty() {
+        (0, 0, HealStats::default())
+    } else {
+        download_listed_faces_to_dir(client, family, slug, root, listed.clone())
+    };
+    heal.add(inst_heal);
+    let wrote = var_files.len().saturating_add(inst_wrote);
     (wrote, listed, var_files, heal)
 }
 
@@ -5120,10 +5265,10 @@ fn download_family(
         clear_google_planned(&root);
     }
 
-    // Fontsource `*-{subset}-*` names can never satisfy Google face keys — skip FS
-    // fill whenever Google planned a set (partial downloads included). Only burn
-    // Fontsource when Google listed nothing.
-    let need_fontsource = google_expected == 0;
+    // Fontsource fills remaining when Google had no static CSS listing.
+    // VF may already be on disk (step 1) — still allow FS statics for FS-only /
+    // metadata-missing families. Never use FS to satisfy Google planned keys.
+    let need_fontsource = google_listed.is_empty();
     if need_fontsource {
         if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();

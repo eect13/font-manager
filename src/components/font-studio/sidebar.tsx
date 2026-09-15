@@ -126,8 +126,8 @@ function ProviderRefresh() {
   const label = busy
     ? "Updating Fontsource and Google Fonts…"
     : syncedAt
-      ? `Refresh the catalog list. Last updated ${relativeSync(syncedAt)}. Does not replace TTF files — Retry a family for that.`
-      : "Refresh Fontsource and Google Fonts. The shipped list is already loaded. Does not replace TTF files on disk.";
+      ? `Refresh catalogs and check the latest GitHub app release. Last updated ${relativeSync(syncedAt)}. Does not replace TTF files — Retry a family for that.`
+      : "Refresh Fontsource and Google Fonts, and check whether a newer app release is on GitHub. Does not replace TTF files on disk.";
   return (
     <HelpTip label={label} side="right" wide>
       <button
