@@ -40,6 +40,8 @@ export interface FontRecord {
   weights: number[];
   italic: boolean;
   variable: boolean;
+  /** Catalog claims VF; UI badge/facet use `variable` = on-disk *-variable-* only. */
+  catalogVariable?: boolean;
   tags: string[];
   popularity: number;
   license: FontLicense;

@@ -115,6 +115,8 @@ interface FontState extends PersistedSlice {
   setPreviewAxis: (id: string, tag: string, value: number) => void;
   setDiskFamilies: (names: string[]) => void;
   addDiskFamilies: (names: string[]) => void;
+  /** P0: variable badge/facet = on-disk *-variable-* only; clear axes without VF. */
+  applyDiskStatusHonesty: (rows: { name: string; has_variable?: boolean; hasVariable?: boolean }[]) => void;
   setSystemFonts: (fonts: FontRecord[]) => void;
   setSystemBusy: (value: boolean) => void;
   autoHideDuplicates: boolean;
@@ -353,7 +355,13 @@ export const useFontStore = create<FontState>()(
               ...(prev.licenseUserSet
                 ? { license: prev.license, licenseName: prev.licenseName, licenseUserSet: true as const }
                 : {}),
-              ...(prev.axes?.length ? { axes: prev.axes, variable: true as const } : {}),
+              // Keep disk-VF honesty across catalog refresh even before axes are probed.
+              ...(prev.variable
+                ? {
+                    variable: true as const,
+                    ...(prev.axes?.length ? { axes: prev.axes } : {}),
+                  }
+                : {}),
             };
           });
           const ids = new Set(googleFonts.map((f) => f.id));
@@ -363,8 +371,15 @@ export const useFontStore = create<FontState>()(
         }),
       patchFontAxes: (id, axes) =>
         set((s) => {
+          // Real fvar from a loaded VF file → Variable. Empty axes must not keep a catalog lie.
           const patch = (font: FontRecord) =>
-            font.id !== id ? font : { ...font, axes, variable: axes.length > 0 };
+            font.id !== id
+              ? font
+              : {
+                  ...font,
+                  axes: axes.length ? axes : undefined,
+                  variable: axes.length > 0,
+                };
           const gi = s.googleFonts.findIndex((f) => f.id === id);
           if (gi >= 0) {
             const googleFonts = s.googleFonts.slice();
@@ -593,6 +608,27 @@ export const useFontStore = create<FontState>()(
         setLiveAxis(id, tag, value);
       },
       setDiskFamilies: (names) => set(withDisk(names)),
+      applyDiskStatusHonesty: (rows) =>
+        set((s) => {
+          const vf = new Set<string>();
+          for (const row of rows) {
+            const on = Boolean(row.has_variable ?? row.hasVariable);
+            if (!on) continue;
+            const n = row.name.trim();
+            if (!n) continue;
+            vf.add(n.toLowerCase());
+          }
+          const googleFonts = s.googleFonts.map((font) => {
+            const onDiskVf = vf.has(font.family.trim().toLowerCase());
+            if (onDiskVf) {
+              return { ...font, variable: true };
+            }
+            // Not on disk as VF — never catalog.variable / live API alone.
+            if (!font.variable && !font.axes?.length) return font;
+            return { ...font, variable: false, axes: undefined };
+          });
+          return { googleFonts };
+        }),
       addDiskFamilies: (names) =>
         set((s) => {
           if (!names.length) return s;

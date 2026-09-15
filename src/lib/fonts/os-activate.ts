@@ -255,8 +255,8 @@ export async function retryFailedDownloads(): Promise<void> {
     const added = await tauriInvoke<number>("retry_google_downloads", { families: capped });
     if (added) {
       lastFailedNames = exhausted.slice();
-      toast.message("Retrying — old files are replaced", {
-        description: `${added.toLocaleString()} ${added === 1 ? "family" : "families"} (attempt capped at ${MAX_RETRY_ATTEMPTS}). Cancel anytime. Close Word or Adobe if a file stays locked.`,
+      toast.message("Retrying — re-stage + register (no library wipe)", {
+        description: `${added.toLocaleString()} ${added === 1 ? "family" : "families"} (attempt capped at ${MAX_RETRY_ATTEMPTS}). Intact files re-Add; missing faces download without wiping the folder.`,
       });
       startGooglePoll("download");
       return;
@@ -366,6 +366,10 @@ export type DiskFamilyInfo = {
   files: number;
   corrupt?: number;
   incomplete?: boolean;
+  has_complete?: boolean;
+  has_variable?: boolean;
+  missing_variable?: boolean;
+  undersized?: boolean;
 };
 
 export async function managedDocumentsRoot(): Promise<string | null> {
@@ -392,7 +396,10 @@ export async function syncManagedDocumentsRoot(): Promise<DiskFamilyInfo[]> {
   if (!rows.length) return rows;
   const names = rows.map((r) => r.name);
   void import("./store").then(({ useFontStore }) => {
-    useFontStore.getState().setDiskFamilies(names);
+    const store = useFontStore.getState();
+    store.setDiskFamilies(names);
+    // Variable badge/facet = intact on-disk *-variable-* only (never catalog alone).
+    store.applyDiskStatusHonesty(rows);
   });
   void import("./loader").then(({ noteDiskFamilies }) => {
     noteDiskFamilies(names);

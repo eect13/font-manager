@@ -119,7 +119,9 @@ function fromFontsource(item: FontsourceItem, popularity: number, existing?: Fon
     category,
     weights: item.weights?.length ? item.weights : existing?.weights ?? [400],
     italic: item.styles?.includes("italic") ?? existing?.italic ?? false,
-    variable: Boolean(item.variable) || Boolean(existing?.variable),
+    catalogVariable: Boolean(item.variable) || Boolean(existing?.catalogVariable),
+    // Live Fontsource sync can claim variable:true — UI badge needs on-disk VF only.
+    variable: false,
     tags: tagsForGoogleFamily(item.family, category, extra),
     popularity: existing?.popularity ?? popularity,
     license,
@@ -137,6 +139,7 @@ function slimRecord(font: FontRecord): FontRecord {
     category: font.category,
     weights: font.weights,
     italic: font.italic,
+    catalogVariable: font.catalogVariable,
     variable: font.variable,
     tags: font.tags,
     popularity: font.popularity,
@@ -270,7 +273,9 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
         category: CATEGORY[item.category ?? ""] ?? existing.category,
         weights: item.weights?.length ? item.weights : existing.weights,
         italic: item.styles?.includes("italic") ?? existing.italic,
-        variable: Boolean(item.variable) || existing.variable,
+        catalogVariable: Boolean(item.variable) || Boolean(existing.catalogVariable),
+        // Preserve applyDiskStatusHonesty: on-disk VF may set variable:true without axes yet.
+        variable: Boolean(existing.variable),
         tags: tagsForGoogleFamily(
           item.family,
           CATEGORY[item.category ?? ""] ?? existing.category,

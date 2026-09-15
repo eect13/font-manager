@@ -75,12 +75,9 @@ export function axesForFont(font: Pick<FontRecord, "weights" | "variable" | "ita
       )
       .filter((axis) => isBinaryAxis(axis) || axis.max > axis.min);
   }
-  if (!font.variable) return [];
-  const weights = font.weights.length ? font.weights : [400];
-  const min = Math.min(...weights);
-  const max = Math.max(...weights);
-  const def = weights.includes(400) ? 400 : clampAxis({ tag: "wght", name: "", min, max, def: min }, 400);
-  return [{ tag: "wght", name: "Weight", min: min === max ? 100 : min, max: min === max ? 900 : max, def }];
+  // Do not invent wght from catalog.variable / font.variable alone (42dot statics, Fontsource-other).
+  // Axes come from on-disk VF fvar (or upload parse) only.
+  return [];
 }
 
 /** fvar default, else Regular (400) if the family has it, else the first listed weight. */

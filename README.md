@@ -1,10 +1,14 @@
-# Font Manager **1.0.166**
+# Font Manager **1.0.168**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.168.** Variable/status honesty: Variable badge + facet count = intact on-disk `*-variable-*` only (never `catalog.variable` / live Fontsource alone — 42dot Sans statics stay non-Variable; no synthesized wght axes without a VF file). Clear Sans–style toasts split files-on-disk / `.complete` yes|no / GDI cause (stage-copy vs Add≤0 vs unloading) and never claim `.complete` without the marker; ready-path GDI 0 clears sticky `.complete`. Retry re-stages+Adds (no library wipe; not ambient skip-intact-only). Catalog-variable folders with `.complete` but missing VF show Incomplete/Repair (`.complete` ≠ vars done; ensure still pulls VFs). Gidugu undersized remnants (allowlist + tight 24–80KB band; not all Google 16–96KB) clear sticky `.complete`, Repair/Activate re-fetches **that face only** (compare-to-upstream on write; toast: undersized vs Google / latin subset remnant). Refresh catalogs preserves on-disk VF `variable:true` without axes; Scan Disk applies `applyDiskStatusHonesty`. Packed NSIS to `Desktop\Vibe Apps\Font Manager\Installers`. Variable sort/facet matches on-disk `*-variable-*` only (same rule as the badge).
+
+**1.0.167.** Session restore: `.session-maps.json` validates/rebuilds **before** stale recover (missing stage ≠ unlock→nuke maps/active); re-stages missing (copy-only); `.session-paths.txt` stores stage paths only (Documents refused for GDI); stale maps clear on successful quit unload. VF backfill need-filter includes dual-VF roman-only (Hei/Sung italic). Repair replaces tiny latin-subset CJK statics (~35–60KB) from full Google TTFs without wiping folders. No pack/NSIS this tip.
 
 **1.0.166.** Catalog-variable CJK VFs over ~20MB (Chiron GoRound/Hei/Sung, Noto Serif KR·SC) no longer fall through empty on jsDelivr — `download_google_variable_ttfs` tries GitHub raw, `MAX_TTF_FETCH_BYTES` is 64MB, METADATA.pb has the same CDN fallback, and dual-VF Hei/Sung retry italic when only roman is planned/intact. Ensure fail-louds when a non-denylist family returns 0 vars. On-disk Activate finishes VF backfill before `running=false` (Repair remains the sync smoke path for complete folders). `.complete` stays for missing VFs; statics untouched; exact-7 no-public-VF denylist unchanged.
 
@@ -40,7 +44,11 @@ The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is t
 | --- | --- |
 | ![Library](screenshots/library.png) | ![System](screenshots/system.png) |
 
-Captures are from the **installed desktop app** so specimens actually paint (OS faces + catalog CSS). The website preview cannot register fonts for Word.
+| Variable facet (on-disk VF only) | Weight / axes |
+| --- | --- |
+| ![Variable](screenshots/variable-chip.png) | ![Axes](screenshots/variable-slider.png) |
+
+Captures are from the **installed desktop app** so specimens actually paint (OS faces + catalog CSS). The website preview cannot register fonts for Word. **Variable** in sort/facet/badge means an intact `*-variable-*` file is on disk — catalog flags alone never put a family in Variable.
 
 ---
 

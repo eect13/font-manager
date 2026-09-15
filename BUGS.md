@@ -1,5 +1,20 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.168
+- **Gidugu undersized remnant:** Documents had `.complete` + `.expected=1` + `gidugu-400-normal.ttf` ~38KB while official ofl/gidugu Regular is ~461KB. Skip-intact treated it as done. Now **allowlisted** Gidugu (+ CJK tiny-latin allowlist) with a tight 24–80KB band clear sticky `.complete`, scan Incomplete, and Repair/Activate busts **that face only** (compare-to-upstream on write) — never expand Incomplete to all official Google 16–96KB faces.
+- **Refresh/Scan VF honesty (Skye HOLD):** `refreshGoogleCatalog` no longer clears `variable:true` when axes are empty (`existing.variable && axes?.length`); `setGoogleFonts` keeps disk-VF honesty without probed axes; Scan Disk calls `syncManagedDocumentsRoot` → `applyDiskStatusHonesty`.
+
+- **Variable facet lied:** sidebar/filter used `catalog.variable` (and synthesized wght axes) so 42dot Sans (statics only) looked Variable while disk had ~547 VF folders vs UI Variable(12). Badge/facet now require intact on-disk `*-variable-*`; Fontsource-other / live sync cannot mark Variable without a VF file; `axesForFont` no longer invents wght without fvar.
+- **Clear Sans toast claimed `.complete`:** ready/register-0 paths hardcoded “on disk (.complete) but GDI register returned 0” without re-checking the marker. Toasts now report files/expected, `.complete=yes|no`, and split stage-copy fail vs Add≤0 vs unloading. Ready-path GDI 0 clears sticky `.complete`.
+- **Retry loop only skip-intact:** Fontsource intact-skip without bust re-hit register_path → GDI 0 again; Retry now force re-stages+Adds (unload/drop gdi-maps, then Add) without wiping Documents; incomplete/missing VF still non-bust fetch.
+- **Four Google VF looked “done Variable”:** Chiron Hei/Sung HK + Noto Serif KR/SC with `.complete` + statics but no `*-variable-*` now scan as Incomplete/missing VF (Repair/ensure); `.complete` ≠ vars done.
+
+## Fixed in tip / 1.0.167
+- **Cold-start Activate memory died:** `.session-paths.txt` listed Documents library paths (0 LocalAppData stage). GDI register now refuses Documents (`must_not_register_as_gdi_path`), persists **gdi-maps stage paths** only, and rebuilds/validates `.session-maps.json` against existing stage files on `session_begin` (re-stage missing copy-only; statics/library untouched). Stale maps clear on successful unload. Copy failure no longer falls back to Add'ing Documents.
+- **session_begin recover ordering (Skye HOLD):** `recover_stale_session` ran **before** `rebuild_session_maps_in`. Missing stage files are not write-locked → naïve unlock treated as success → `clear_session_sidecars` wiped maps (+ often active) → rebuild no-op'd. Now validate/rebuild (preserve valid maps + session-active; re-stage missing) **before** recover; missing stage ≠ unlock→nuke (paths ledger only on proven unlock; maps/active kept for re-register).
+- **Dual-VF Hei/Sung still skipped by backfill:** `backfill_missing_variable_faces` need-filter was `!dir_has_intact_variable` only — roman-only counted as done. Widened to `!has_var || (dual && !has_italic)`.
+- **Tiny latin-subset CJK statics (~35–60KB):** Repair/download replaces those faces from full Google TTFs for Chiron / Noto CJK / LXGW without wiping whole folders or redownloading the library.
+
 ## Fixed in tip / 1.0.166
 - **CJK variable TTFs empty on disk:** jsDelivr refuses google/fonts VFs over ~20MB (Chiron / Noto Serif KR·SC are 23–52MB), so ensure/backfill returned 0 while `.complete` matched static counts. Prefer jsDelivr then **GitHub raw** for VF TTFs **and** `METADATA.pb`; raise `MAX_TTF_FETCH_BYTES` to **64MB** (32MB was too small). Do **not** clear `.complete` for missing `*-variable-*` (would Repair/bust and risk wiping statics) — adopt updates planned/expected after vars land; static face bytes untouched. Exact-7 no-public-VF denylist (Google Sans + Edu * Hand packs) skips inventing VFs.
 - **Ensure 0 vars silent:** non-denylist catalog-variable families that still return 0 VF files after CDN attempts now `eprintln` + `remember_failed` (loud), not a quiet `(0, …)`.
@@ -90,4 +105,5 @@
 
 ## Notes
 
-- Tip is 1.0.166 (unreleased pack — ask before NSIS).
+- Tip is 1.0.168 (unreleased pack — ask before NSIS).
+- `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
