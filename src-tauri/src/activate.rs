@@ -223,7 +223,8 @@ fn gdi_map_dest_for(src: &Path) -> Option<PathBuf> {
 }
 
 /// Copy `src` into gdi-maps when missing or size-mismatched. Never deletes `src`.
-/// Returns `None` on failure — never falls back to Documents (must_not_register).
+/// Throughput: same-size dest skips the copy (TTF edits that keep size are vanishingly
+/// rare; avoids a full-file hash on the hot path). Never falls back to Documents.
 fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> Option<PathBuf> {
     if !src.is_file() {
         return None;
@@ -541,6 +542,29 @@ mod winfont {
                 Self::Refused => "register refused",
             }
         }
+    }
+
+    /// True when this Documents (or stage) source is already Add'd with a
+    /// size-matched LocalAppData map — safe to skip copy + Add.
+    pub fn is_session_live_mapped(path: &Path) -> bool {
+        if unloading().load(Ordering::SeqCst) {
+            return false;
+        }
+        let already = loaded()
+            .lock()
+            .map(|g| g.contains(path))
+            .unwrap_or(false);
+        if !already {
+            return false;
+        }
+        let src_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if src_len < 256 {
+            return false;
+        }
+        super::gdi_map_dest_for(path)
+            .and_then(|d| fs::metadata(d).ok())
+            .map(|m| m.len() == src_len)
+            .unwrap_or(false)
     }
 
     pub fn register(path: &Path) -> bool {
@@ -1080,10 +1104,51 @@ fn register_family_path(family: &str, path: &Path) -> bool {
     fail.is_none()
 }
 
+
+/// Count intact faces already session-live (loaded + size-matched gdi map).
+/// `None` = at least one face still needs copy/Add (do not skip).
+fn count_already_live_intact_faces(app: &AppHandle, family: &str) -> Option<usize> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, family);
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        let mut n = 0usize;
+        let mut any = false;
+        for dir in family_locations(app, family) {
+            let mut files = Vec::new();
+            walk_font_files(&dir, &mut files);
+            for path in files {
+                if !ttf_intact(&path) {
+                    continue;
+                }
+                any = true;
+                let live = winfont::is_session_live_mapped(&path);
+                if !live {
+                    return None;
+                }
+                n = n.saturating_add(1);
+            }
+        }
+        if any && n > 0 {
+            Some(n)
+        } else {
+            None
+        }
+    }
+}
+
 fn register_intact_family_detailed(
     app: &AppHandle,
     family: &str,
 ) -> (usize, RegisterFailKind) {
+    // Throughput (safe): if every intact face is already live with a matching
+    // LocalAppData map, skip copy + Add — GDI serialize stays for real work only.
+    if let Some(live) = count_already_live_intact_faces(app, family) {
+        return (live, RegisterFailKind::NoneTried);
+    }
     let mut n = 0usize;
     let mut fail = RegisterFailKind::NoneTried;
     for dir in family_locations(app, family) {
@@ -2776,6 +2841,32 @@ fn google_catalog_is_variable(family: &str) -> bool {
     google_catalog_meta(family).map(|m| m.variable).unwrap_or(false)
 }
 
+/// Fontsource-only families that still ship a public TTF VF under google/fonts
+/// (missing from Google metadata / google-catalog). Never WOFF2 / never @fontsource-variable.
+/// Material Symbols* omitted — no google/fonts TTF VF path found.
+fn fs_only_google_vf_folder(family: &str) -> Option<&'static str> {
+    match family.trim().to_ascii_lowercase().as_str() {
+        "42dot sans" => Some("42dotsans"),
+        "big shoulders display" => Some("bigshouldersdisplay"),
+        "big shoulders text" => Some("bigshoulderstext"),
+        "big shoulders inline display" => Some("bigshouldersinlinedisplay"),
+        "big shoulders inline text" => Some("bigshouldersinlinetext"),
+        "big shoulders stencil display" => Some("bigshouldersstencildisplay"),
+        "big shoulders stencil text" => Some("bigshouldersstenciltext"),
+        "briem hand" => Some("briemhand"),
+        "finlandica" => Some("finlandica"),
+        _ => None,
+    }
+}
+
+/// True when Activate/Repair should pull a real google/fonts `*-variable-*` TTF.
+fn family_ensures_google_vf(family: &str) -> bool {
+    if family_has_no_public_vf(family) {
+        return false;
+    }
+    google_catalog_is_variable(family) || fs_only_google_vf_folder(family).is_some()
+}
+
 /// CSS axis strings for catalog-variable families (real `min..max` ranges).
 /// Mozilla/Googlebot expand these to installable instance TTFs — never Chrome WOFF2.
 fn variable_axis_specs(family: &str) -> Vec<String> {
@@ -2815,7 +2906,11 @@ fn google_fonts_repo_folders(family: &str) -> Vec<String> {
         .to_ascii_lowercase();
     let slug = slug_family(family);
     let mut out = Vec::new();
-    if !compact.is_empty() {
+    // FS-only / slug overrides first (42dot Sans → 42dotsans, not 42dotsans vs 42dot-sans miss).
+    if let Some(fixed) = fs_only_google_vf_folder(family) {
+        out.push(fixed.to_string());
+    }
+    if !compact.is_empty() && !out.iter().any(|s| s == &compact) {
         out.push(compact);
     }
     if !slug.is_empty() && !out.iter().any(|s| s == &slug) {
@@ -2934,14 +3029,16 @@ fn family_has_no_public_vf(family: &str) -> bool {
 
 /// Catalog-variable families that should have a real `*-variable-*` / VF on disk.
 fn catalog_variable_expects_public_vf(family: &str) -> bool {
-    google_catalog_is_variable(family) && !family_has_no_public_vf(family)
+    family_ensures_google_vf(family)
 }
 
 /// google/fonts ships **two** VFs (roman + italic) for these families. Ensure must
 /// not early-return after roman-only planned/intact — retry italic.
 fn family_expects_dual_variable(family: &str) -> bool {
     let t = family.trim();
-    t.eq_ignore_ascii_case("Chiron Hei HK") || t.eq_ignore_ascii_case("Chiron Sung HK")
+    t.eq_ignore_ascii_case("Chiron Hei HK")
+        || t.eq_ignore_ascii_case("Chiron Sung HK")
+        || t.eq_ignore_ascii_case("Finlandica")
 }
 
 fn dir_has_intact_variable_italic(dir: &Path) -> bool {
@@ -2965,7 +3062,7 @@ fn download_google_variable_ttfs(
     slug: &str,
     root: &Path,
 ) -> (Vec<String>, HealStats) {
-    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
+    if !family_ensures_google_vf(family) {
         return (Vec::new(), HealStats::default());
     }
     let licenses = ["ofl", "apache", "ufl"];
@@ -3222,7 +3319,7 @@ fn ensure_catalog_variable_faces(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> (usize, HealStats) {
-    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
+    if !family_ensures_google_vf(family) {
         return (0, HealStats::default());
     }
     let slug = slug_family(family);
@@ -6892,6 +6989,17 @@ mod complete_marker_tests {
         assert_eq!(google_catalog_face_floor("Roboto"), Some(18));
         assert_eq!(google_catalog_face_floor("Cormorant"), Some(10));
         assert_eq!(google_catalog_face_floor("libre-baskerville"), Some(8));
+    }
+
+    #[test]
+    #[test]
+    fn fs_only_google_vf_folder_maps_42dot_and_skips_material() {
+        assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans"));
+        assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica"));
+        assert_eq!(fs_only_google_vf_folder("Big Shoulders Display"), Some("bigshouldersdisplay"));
+        assert!(fs_only_google_vf_folder("Material Symbols Outlined").is_none());
+        assert!(family_ensures_google_vf("42dot Sans"));
+        assert!(!family_ensures_google_vf("Material Symbols Outlined"));
     }
 
     #[test]
