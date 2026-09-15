@@ -5,6 +5,7 @@
 - **Download order:** VF google/fonts first, then Google CSS statics, then Fontsource when no Google static listing (remaining).
 - **All Fontsource VF (TTF):** ensure uses fontsource-other `variable:true` + google-catalog variable; Material Symbols* excluded (WOFF2-only / no google/fonts TTF — never `@fontsource-variable`).
 - **Refresh:** also compares installed `APP_VERSION` to GitHub `releases/latest`.
+- **CSP:** `connect-src` allows `https://api.github.com` (+ `https://fonts.google.com` for live metadata) so Refresh release-check / Google meta are not blocked in the webview.
 - **Register:** session-live size-matched maps skip copy+Add (GDI still serialized).
 - **Maintain:** allow(dead_code) on unused session_stage path helpers; no core Activate/GDI rule change.
 
