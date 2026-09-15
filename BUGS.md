@@ -1,5 +1,10 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.169
+- **Hydrate false live:** boot `restoreActivation` treated `result.onDisk` and every persisted local as Activated even when GDI Add failed. Live is now `result.ready` ∪ `session_begin` sidecar (families that actually registered this boot). Documents file presence still updates diskFamilies only.
+- **Skip failed nuclear pending:** `skipFailedDownloads` called `clearPendingActivate(undefined)` when skip names matched no catalog/local ids, wiping every pending Activate. Now no-ops the clear when ids is empty.
+- **FS-only VF gap:** Variable honesty requires on-disk `*-variable-*`, but ensure/backfill gated on `google_catalog_is_variable` only — 42dot Sans / Big Shoulders* / Briem Hand / Finlandica never got google/fonts VF files. `family_ensures_google_vf` + folder map; Finlandica dual-VF italic; Material Symbols* still skipped (no TTF). Repair-all complete folders also ensure those families. **Not taken:** PR #22 size-matched skip of copy+Add.
+
 ## Fixed in tip / 1.0.168
 - **Gidugu undersized remnant:** Documents had `.complete` + `.expected=1` + `gidugu-400-normal.ttf` ~38KB while official ofl/gidugu Regular is ~461KB. Skip-intact treated it as done. Now **allowlisted** Gidugu (+ CJK tiny-latin allowlist) with a tight 24–80KB band clear sticky `.complete`, scan Incomplete, and Repair/Activate busts **that face only** (compare-to-upstream on write) — never expand Incomplete to all official Google 16–96KB faces.
 - **Refresh/Scan VF honesty (Skye HOLD):** `refreshGoogleCatalog` no longer clears `variable:true` when axes are empty (`existing.variable && axes?.length`); `setGoogleFonts` keeps disk-VF honesty without probed axes; Scan Disk calls `syncManagedDocumentsRoot` → `applyDiskStatusHonesty`.
@@ -105,5 +110,5 @@
 
 ## Notes
 
-- Tip is 1.0.168 (unreleased pack — ask before NSIS).
+- Tip is 1.0.169 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

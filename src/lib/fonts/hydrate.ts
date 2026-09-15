@@ -155,8 +155,11 @@ export function useHydrateFonts() {
             useFontStore.getState().setDiskFamilies(diskNames);
           }
           const allow = new Set<string>();
+          // Live = GDI-registered only. `onDisk` is files in Documents (already
+          // fed to setDiskFamilies). sessionNames is session_begin's sidecar after
+          // it pruned to families that actually Add'd this boot. A local upload
+          // without a successful Add is not Activated.
           for (const n of result.ready) allow.add(n.trim().toLowerCase());
-          for (const n of result.onDisk) allow.add(n.trim().toLowerCase());
           for (const n of sessionNames) allow.add(n.trim().toLowerCase());
           const live: string[] = [];
           const seen = new Set<string>();
@@ -173,7 +176,7 @@ export function useHydrateFonts() {
               }
               return;
             }
-            if (font.source === "local" || allow.has(font.family.toLowerCase())) {
+            if (allow.has(font.family.toLowerCase())) {
               seen.add(id);
               live.push(id);
             }

@@ -293,7 +293,7 @@ export async function skipFailedDownloads(): Promise<void> {
     const ids = [...googleFonts, ...localFonts]
       .filter((font) => drop.has(font.family.toLowerCase()))
       .map((font) => font.id);
-    clearPendingActivate(ids.length ? ids : undefined);
+    if (ids.length) clearPendingActivate(ids);
   });
   toast.message(`Skipped ${names.length.toLocaleString()} — not downloaded`, {
     description: "They stay in the catalog. Activate one later, or Retry.",

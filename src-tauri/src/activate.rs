@@ -2776,6 +2776,32 @@ fn google_catalog_is_variable(family: &str) -> bool {
     google_catalog_meta(family).map(|m| m.variable).unwrap_or(false)
 }
 
+/// Fontsource-only families that still ship a public TTF VF under google/fonts
+/// (missing from Google metadata / google-catalog). Never WOFF2 / never @fontsource-variable.
+/// Material Symbols* omitted — no google/fonts TTF VF path found.
+fn fs_only_google_vf_folder(family: &str) -> Option<&'static str> {
+    match family.trim().to_ascii_lowercase().as_str() {
+        "42dot sans" => Some("42dotsans"),
+        "big shoulders display" => Some("bigshouldersdisplay"),
+        "big shoulders text" => Some("bigshoulderstext"),
+        "big shoulders inline display" => Some("bigshouldersinlinedisplay"),
+        "big shoulders inline text" => Some("bigshouldersinlinetext"),
+        "big shoulders stencil display" => Some("bigshouldersstencildisplay"),
+        "big shoulders stencil text" => Some("bigshouldersstenciltext"),
+        "briem hand" => Some("briemhand"),
+        "finlandica" => Some("finlandica"),
+        _ => None,
+    }
+}
+
+/// True when Activate/Repair should pull a real google/fonts `*-variable-*` TTF.
+fn family_ensures_google_vf(family: &str) -> bool {
+    if family_has_no_public_vf(family) {
+        return false;
+    }
+    google_catalog_is_variable(family) || fs_only_google_vf_folder(family).is_some()
+}
+
 /// CSS axis strings for catalog-variable families (real `min..max` ranges).
 /// Mozilla/Googlebot expand these to installable instance TTFs — never Chrome WOFF2.
 fn variable_axis_specs(family: &str) -> Vec<String> {
@@ -2815,7 +2841,11 @@ fn google_fonts_repo_folders(family: &str) -> Vec<String> {
         .to_ascii_lowercase();
     let slug = slug_family(family);
     let mut out = Vec::new();
-    if !compact.is_empty() {
+    // FS-only / slug overrides first (42dot Sans → 42dotsans, not 42dot-sans miss).
+    if let Some(fixed) = fs_only_google_vf_folder(family) {
+        out.push(fixed.to_string());
+    }
+    if !compact.is_empty() && !out.iter().any(|s| s == &compact) {
         out.push(compact);
     }
     if !slug.is_empty() && !out.iter().any(|s| s == &slug) {
@@ -2934,14 +2964,16 @@ fn family_has_no_public_vf(family: &str) -> bool {
 
 /// Catalog-variable families that should have a real `*-variable-*` / VF on disk.
 fn catalog_variable_expects_public_vf(family: &str) -> bool {
-    google_catalog_is_variable(family) && !family_has_no_public_vf(family)
+    family_ensures_google_vf(family)
 }
 
 /// google/fonts ships **two** VFs (roman + italic) for these families. Ensure must
 /// not early-return after roman-only planned/intact — retry italic.
 fn family_expects_dual_variable(family: &str) -> bool {
     let t = family.trim();
-    t.eq_ignore_ascii_case("Chiron Hei HK") || t.eq_ignore_ascii_case("Chiron Sung HK")
+    t.eq_ignore_ascii_case("Chiron Hei HK")
+        || t.eq_ignore_ascii_case("Chiron Sung HK")
+        || t.eq_ignore_ascii_case("Finlandica")
 }
 
 fn dir_has_intact_variable_italic(dir: &Path) -> bool {
@@ -2965,7 +2997,7 @@ fn download_google_variable_ttfs(
     slug: &str,
     root: &Path,
 ) -> (Vec<String>, HealStats) {
-    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
+    if !family_ensures_google_vf(family) {
         return (Vec::new(), HealStats::default());
     }
     let licenses = ["ofl", "apache", "ufl"];
@@ -3222,7 +3254,7 @@ fn ensure_catalog_variable_faces(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> (usize, HealStats) {
-    if !google_catalog_is_variable(family) || family_has_no_public_vf(family) {
+    if !family_ensures_google_vf(family) {
         return (0, HealStats::default());
     }
     let slug = slug_family(family);
@@ -3556,7 +3588,7 @@ fn discover_richest_google_listing(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> Vec<(String, String, String)> {
-    if google_catalog_is_variable(family) {
+    if family_ensures_google_vf(family) {
         if let Some(listed) = discover_variable_google_listing(client, family) {
             // Axis-range CSS sometimes yields `font-weight: 200 1000` → key `200-1000`
             // (2 faces) instead of discrete static instances. Prefer discrete static
@@ -3966,17 +3998,26 @@ fn fetch_google_family_faces_to_dir(
     slug: &str,
     root: &Path,
 ) -> (usize, Vec<(String, String, String)>, Vec<String>, HealStats) {
-    if !is_official_google_family(family) {
+    let official = is_official_google_family(family);
+    let ensure_vf = family_ensures_google_vf(family);
+    // Official Google OR FS-only ensure (42dot → google/fonts TTF). Never empty-return
+    // before VF download for ensure families.
+    if !official && !ensure_vf {
         return (0, Vec::new(), Vec::new(), HealStats::default());
     }
+    // Try CSS listing for official + ensure families (may 404 for metadata-missing).
     let listed = discover_richest_google_listing(client, family);
     let (inst_wrote, _, mut heal) = if listed.is_empty() {
         (0, 0, HealStats::default())
     } else {
         download_listed_faces_to_dir(client, family, slug, root, listed.clone())
     };
-    // Catalog-variable: ALSO pull real variable TTFs from google/fonts (jsDelivr).
-    let (var_files, var_heal) = download_google_variable_ttfs(client, family, slug, root);
+    // Real variable TTFs from google/fonts (jsDelivr then GitHub raw). Never WOFF2.
+    let (var_files, var_heal) = if ensure_vf {
+        download_google_variable_ttfs(client, family, slug, root)
+    } else {
+        (Vec::new(), HealStats::default())
+    };
     heal.add(var_heal);
     let wrote = inst_wrote.saturating_add(var_files.len());
     (wrote, listed, var_files, heal)
@@ -5789,7 +5830,8 @@ fn dir_needs_variable_backfill(dir: &Path, family: &str) -> bool {
 }
 
 fn family_needs_variable_backfill(app: &AppHandle, family: &str) -> bool {
-    google_catalog_is_variable(family)
+    // Include FS-only google/fonts VF ensure (42dot etc.) — not google-catalog alone.
+    family_ensures_google_vf(family)
         && family_locations(app, family)
             .iter()
             .any(|dir| dir_needs_variable_backfill(dir, family))
@@ -6415,7 +6457,7 @@ pub fn repair_incomplete_families(
             } else if dir_is_complete(dir) {
                 // Complete Google folders: name-heal + pull missing catalog vars (no bust).
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
-                    if is_official_google_family(name) {
+                    if is_official_google_family(name) || family_ensures_google_vf(name) {
                         if let Some(ref c) = client {
                             let _ = replace_tiny_cjk_static_faces(&app, c, name);
                             let (ve, eh) = ensure_catalog_variable_faces(&app, c, name);
@@ -6892,6 +6934,28 @@ mod complete_marker_tests {
         assert_eq!(google_catalog_face_floor("Roboto"), Some(18));
         assert_eq!(google_catalog_face_floor("Cormorant"), Some(10));
         assert_eq!(google_catalog_face_floor("libre-baskerville"), Some(8));
+    }
+
+    #[test]
+    fn fs_only_google_vf_folder_maps_42dot_and_skips_material() {
+        assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans"));
+        assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica"));
+        assert_eq!(
+            fs_only_google_vf_folder("Big Shoulders Display"),
+            Some("bigshouldersdisplay")
+        );
+        assert!(fs_only_google_vf_folder("Material Symbols Outlined").is_none());
+        assert!(family_ensures_google_vf("42dot Sans"));
+        assert!(!family_ensures_google_vf("Material Symbols Outlined"));
+    }
+
+    #[test]
+    fn family_ensures_drives_backfill_gate_not_google_catalog_alone() {
+        assert!(family_ensures_google_vf("42dot Sans"));
+        assert!(!google_catalog_is_variable("42dot Sans"));
+        assert!(fs_only_google_vf_folder("42dot Sans").is_some());
+        assert!(family_expects_dual_variable("Finlandica"));
+        assert!(!family_expects_dual_variable("42dot Sans"));
     }
 
     #[test]
