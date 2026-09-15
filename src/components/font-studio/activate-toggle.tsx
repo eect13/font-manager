@@ -151,7 +151,7 @@ export function ScanDiskMenuItem() {
             toast.success(`Scan: ${rows.length.toLocaleString()} families on disk`, {
               description: [
                 ...baseBits,
-                `${incomplete.length.toLocaleString()} incomplete (face count short / no .complete — Repair)`,
+                `${incomplete.length.toLocaleString()} incomplete (face count short / no .complete / catalog VF missing / undersized vs Google — Repair)`,
                 extras.length
                   ? `${extras.length.toLocaleString()} extras ignored until Repair finishes — Scan again to remove`
                   : "all catalog names match",

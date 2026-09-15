@@ -164,9 +164,10 @@ async function loadGoogleFromLocal(font: FontRecord, mode: FontLoadMode = "previ
         const { useFontStore } = await import("./store");
         useFontStore.getState().patchFontAxes(font.id, axes);
         font.axes = axes;
-        font.variable = true;
+        font.variable = true; // real fvar from on-disk face
       }
-      const isVf = Boolean(axes?.length) || font.variable;
+      // Never treat catalog.variable alone as VF (42dot statics / Fontsource-other).
+      const isVf = Boolean(axes?.length) || (font.variable && Boolean(font.axes?.length));
       const url = convertFileSrc(path);
       const face = new FontFace(font.family, `url(${JSON.stringify(url)})`, {
         display: "swap",

@@ -1,5 +1,13 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.168
+- **Gidugu undersized remnant:** Documents had `.complete` + `.expected=1` + `gidugu-400-normal.ttf` ~38KB while official ofl/gidugu Regular is ~461KB. Skip-intact treated it as done. Now undersized official-Google statics (same class as tiny CJK 35–60KB shreds) clear sticky `.complete`, scan as Incomplete, and Repair/Activate busts **that face only** (Google-first re-fetch) — toast says undersized vs Google / latin subset remnant, never whole-library wipe.
+
+- **Variable facet lied:** sidebar/filter used `catalog.variable` (and synthesized wght axes) so 42dot Sans (statics only) looked Variable while disk had ~547 VF folders vs UI Variable(12). Badge/facet now require intact on-disk `*-variable-*`; Fontsource-other / live sync cannot mark Variable without a VF file; `axesForFont` no longer invents wght without fvar.
+- **Clear Sans toast claimed `.complete`:** ready/register-0 paths hardcoded “on disk (.complete) but GDI register returned 0” without re-checking the marker. Toasts now report files/expected, `.complete=yes|no`, and split stage-copy fail vs Add≤0 vs unloading. Ready-path GDI 0 clears sticky `.complete`.
+- **Retry loop only skip-intact:** Fontsource intact-skip without bust re-hit register_path → GDI 0 again; Retry now force re-stages+Adds (unload/drop gdi-maps, then Add) without wiping Documents; incomplete/missing VF still non-bust fetch.
+- **Four Google VF looked “done Variable”:** Chiron Hei/Sung HK + Noto Serif KR/SC with `.complete` + statics but no `*-variable-*` now scan as Incomplete/missing VF (Repair/ensure); `.complete` ≠ vars done.
+
 ## Fixed in tip / 1.0.167
 - **Cold-start Activate memory died:** `.session-paths.txt` listed Documents library paths (0 LocalAppData stage). GDI register now refuses Documents (`must_not_register_as_gdi_path`), persists **gdi-maps stage paths** only, and rebuilds/validates `.session-maps.json` against existing stage files on `session_begin` (re-stage missing copy-only; statics/library untouched). Stale maps clear on successful unload. Copy failure no longer falls back to Add'ing Documents.
 - **session_begin recover ordering (Skye HOLD):** `recover_stale_session` ran **before** `rebuild_session_maps_in`. Missing stage files are not write-locked → naïve unlock treated as success → `clear_session_sidecars` wiped maps (+ often active) → rebuild no-op'd. Now validate/rebuild (preserve valid maps + session-active; re-stage missing) **before** recover; missing stage ≠ unlock→nuke (paths ledger only on proven unlock; maps/active kept for re-register).
@@ -96,5 +104,5 @@
 
 ## Notes
 
-- Tip is 1.0.167 (unreleased pack — ask before NSIS).
+- Tip is 1.0.168 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
