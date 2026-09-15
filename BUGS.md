@@ -1,5 +1,10 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.169
+- **FS-only VF ensure on Activate All / cold Activate:** `family_needs_variable_backfill` and `fetch_google_family_faces_to_dir` now use `family_ensures_google_vf` (not `google_catalog_is_variable` / official-only). First Activate and Activate All pull google/fonts TTFs for 42dot / Big Shoulders* / Briem Hand / Finlandica; Material Symbols* still skipped (no TTF path).
+- **Safe register skip:** session-live size-matched gdi-maps skip copy+Add; GDI Add still serialized.
+- **Catalog currency:** live google-catalog 1946 / fontsource-other exclusives with 12 variable flags (badge still on-disk VF only).
+
 ## Fixed in tip / 1.0.168
 - **Gidugu undersized remnant:** Documents had `.complete` + `.expected=1` + `gidugu-400-normal.ttf` ~38KB while official ofl/gidugu Regular is ~461KB. Skip-intact treated it as done. Now **allowlisted** Gidugu (+ CJK tiny-latin allowlist) with a tight 24–80KB band clear sticky `.complete`, scan Incomplete, and Repair/Activate busts **that face only** (compare-to-upstream on write) — never expand Incomplete to all official Google 16–96KB faces.
 - **Refresh/Scan VF honesty (Skye HOLD):** `refreshGoogleCatalog` no longer clears `variable:true` when axes are empty (`existing.variable && axes?.length`); `setGoogleFonts` keeps disk-VF honesty without probed axes; Scan Disk calls `syncManagedDocumentsRoot` → `applyDiskStatusHonesty`.
@@ -105,5 +110,5 @@
 
 ## Notes
 
-- Tip is 1.0.168 (unreleased pack — ask before NSIS).
+- Tip is 1.0.169 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

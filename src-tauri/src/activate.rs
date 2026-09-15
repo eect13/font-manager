@@ -3653,7 +3653,7 @@ fn discover_richest_google_listing(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> Vec<(String, String, String)> {
-    if google_catalog_is_variable(family) {
+    if family_ensures_google_vf(family) {
         if let Some(listed) = discover_variable_google_listing(client, family) {
             // Axis-range CSS sometimes yields `font-weight: 200 1000` → key `200-1000`
             // (2 faces) instead of discrete static instances. Prefer discrete static
@@ -4063,17 +4063,26 @@ fn fetch_google_family_faces_to_dir(
     slug: &str,
     root: &Path,
 ) -> (usize, Vec<(String, String, String)>, Vec<String>, HealStats) {
-    if !is_official_google_family(family) {
+    let official = is_official_google_family(family);
+    let ensure_vf = family_ensures_google_vf(family);
+    // Official Google OR FS-only ensure (42dot → google/fonts TTF). Never empty-return
+    // before VF download for ensure families (Skye P1 cold Activate).
+    if !official && !ensure_vf {
         return (0, Vec::new(), Vec::new(), HealStats::default());
     }
+    // Try CSS listing for official + ensure families (may 404 for metadata-missing).
     let listed = discover_richest_google_listing(client, family);
     let (inst_wrote, _, mut heal) = if listed.is_empty() {
         (0, 0, HealStats::default())
     } else {
         download_listed_faces_to_dir(client, family, slug, root, listed.clone())
     };
-    // Catalog-variable: ALSO pull real variable TTFs from google/fonts (jsDelivr).
-    let (var_files, var_heal) = download_google_variable_ttfs(client, family, slug, root);
+    // Real variable TTFs from google/fonts (jsDelivr then GitHub raw). Never WOFF2.
+    let (var_files, var_heal) = if ensure_vf {
+        download_google_variable_ttfs(client, family, slug, root)
+    } else {
+        (Vec::new(), HealStats::default())
+    };
     heal.add(var_heal);
     let wrote = inst_wrote.saturating_add(var_files.len());
     (wrote, listed, var_files, heal)
@@ -5886,7 +5895,8 @@ fn dir_needs_variable_backfill(dir: &Path, family: &str) -> bool {
 }
 
 fn family_needs_variable_backfill(app: &AppHandle, family: &str) -> bool {
-    google_catalog_is_variable(family)
+    // Include FS-only google/fonts VF ensure (42dot etc.) — not google-catalog alone.
+    family_ensures_google_vf(family)
         && family_locations(app, family)
             .iter()
             .any(|dir| dir_needs_variable_backfill(dir, family))
@@ -6992,7 +7002,6 @@ mod complete_marker_tests {
     }
 
     #[test]
-    #[test]
     fn fs_only_google_vf_folder_maps_42dot_and_skips_material() {
         assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans"));
         assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica"));
@@ -7001,6 +7010,14 @@ mod complete_marker_tests {
         assert!(family_ensures_google_vf("42dot Sans"));
         assert!(!family_ensures_google_vf("Material Symbols Outlined"));
     }
+
+    #[test]
+    fn family_ensures_drives_backfill_gate_not_google_catalog_alone() {
+        assert!(family_ensures_google_vf("42dot Sans"));
+        assert!(!google_catalog_is_variable("42dot Sans"));
+        assert!(fs_only_google_vf_folder("42dot Sans").is_some());
+    }
+
 
     #[test]
     fn catalog_variable_axis_specs_use_weight_span() {
