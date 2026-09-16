@@ -1232,6 +1232,7 @@ fn family_skip_live_success(app: &AppHandle, family: &str) -> Option<usize> {
 /// - size-matched gdi-map ⇒ skip re-copy only
 /// - skip-Add only when this process already has the face in `loaded()` (real Add)
 /// - sticky toast exemption needs session-active + maps (never maps alone)
+/// - known GDI-incapable + intact ⇒ suppress failed_names (not a download fail)
 #[cfg_attr(not(test), allow(dead_code))]
 fn face_may_skip_add(in_loaded_this_process: bool) -> bool {
     in_loaded_this_process
@@ -1240,6 +1241,29 @@ fn face_may_skip_add(in_loaded_this_process: bool) -> bool {
 #[cfg_attr(not(test), allow(dead_code))]
 fn family_toast_exempt_already_live(session_active: bool, all_faces_size_matched_mapped: bool) -> bool {
     session_active && all_faces_size_matched_mapped
+}
+
+/// Known GDI-session-incapable + intact on-disk official TTF ⇒ suppress `failed_names` /
+/// DownloadBar "Couldn't load". Keep files for OT/preview; do **not** claim Activated.
+#[cfg_attr(not(test), allow(dead_code))]
+fn family_toast_exempt_known_gdi_incapable(known_incapable: bool, intact_on_disk: bool) -> bool {
+    known_incapable && intact_on_disk
+}
+
+fn suppress_fail_toast_known_incapable(app: &AppHandle, family: &str) -> bool {
+    family_toast_exempt_known_gdi_incapable(
+        family_known_gdi_session_incapable(family),
+        family_has_intact(app, family),
+    )
+}
+
+/// Quiet settle: clear JS pending without failed toast or Activated mark.
+fn note_settled_quiet(family: &str) {
+    if let Ok(mut p) = bulk().progress.lock() {
+        if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+            p.settled_names.push(family.to_string());
+        }
+    }
 }
 
 fn register_intact_family_detailed(
@@ -4905,6 +4929,14 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
             } else if family_skip_live_success(app, family).is_some() {
                 // Toast only: session-active + maps + Add 0 ⇒ do not push failed_names.
                 // Do not claim activated / ready_names (requires real in-process Add).
+            } else if suppress_fail_toast_known_incapable(app, family) {
+                // Gidugu-class: intact official TTF, known GDI-incapable — keep on disk
+                // for OT/preview; no failed_names / Couldn't load (not a download fail).
+                // Push settled while holding progress (note_settled_quiet would deadlock).
+                clear_complete_markers_for_family(app, family);
+                if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.settled_names.push(family.clone());
+                }
             } else {
                 // Sticky ready+.complete after GDI 0 is a lie — clear stamp (Skye P0).
                 let detail = note_register_zero(app, family, cause);
@@ -5414,6 +5446,9 @@ pub struct GoogleDlProgress {
     pub paused: bool,
     pub ready_names: Vec<String>,
     pub skipped: u32,
+    /// Quiet settle (e.g. Gidugu known GDI-incapable + intact): clear pending, no toast.
+    #[serde(default)]
+    pub settled_names: Vec<String>,
     /// "download" | "remove" — JS bar uses this so Deactivate is not labelled Downloading.
     #[serde(default)]
     pub kind: String,
@@ -5449,6 +5484,7 @@ fn bulk() -> &'static Bulk {
             paused: false,
             ready_names: Vec::new(),
             skipped: 0,
+            settled_names: Vec::new(),
             kind: String::new(),
         }),
         pending: Mutex::new(VecDeque::new()),
@@ -5848,7 +5884,13 @@ fn drain_download_queue(
         match &result {
             Err(reason) => {
                 forget_queued(&family);
-                remember_failed(&family, reason);
+                if suppress_fail_toast_known_incapable(&app, &family) {
+                    // Intact official TTF + known GDI-incapable: not a download fail toast.
+                    clear_complete_markers_for_family(&app, &family);
+                    note_settled_quiet(&family);
+                } else {
+                    remember_failed(&family, reason);
+                }
             }
             Ok(_) => {
                 session_add(&app, &[family.clone()]);
@@ -5865,7 +5907,7 @@ fn drain_download_queue(
         {
             let mut p = state.progress.lock().unwrap();
             p.done += 1;
-            if result.is_err() {
+            if result.is_err() && !suppress_fail_toast_known_incapable(&app, &family) {
                 p.failed += 1;
             }
         }
@@ -6108,6 +6150,7 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
             p.ready_names.clear();
             p.failed_names.clear();
             p.failed_details.clear();
+            p.settled_names.clear();
         }
         emit_progress(app);
     }
@@ -6259,6 +6302,7 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
             p.ready_names.clear();
             p.failed_names.clear();
             p.failed_details.clear();
+            p.settled_names.clear();
         }
         emit_progress(&app);
     }
@@ -6393,6 +6437,7 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
             p.ready_names.clear();
             p.failed_names.clear();
             p.failed_details.clear();
+            p.settled_names.clear();
         }
         state.running.store(true, Ordering::SeqCst);
         emit_progress(&app);
@@ -6425,6 +6470,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
                 p.failed = 0;
                 p.failed_names.clear();
                 p.failed_details.clear();
+                p.settled_names.clear();
                 // Nothing intact — surface as failed so JS clears pending.
                 for family in &families {
                     let t = family.trim();
@@ -6464,6 +6510,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
             p.ready_names.clear();
             p.failed_names.clear();
             p.failed_details.clear();
+            p.settled_names.clear();
         }
     }
     emit_progress(&app);
@@ -6647,6 +6694,13 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                     } else if family_skip_live_success(&app, &family).is_some() {
                         // Toast only: session-active + maps — suppress failed_names,
                         // do not claim activated / ready_names.
+                    } else if suppress_fail_toast_known_incapable(&app, &family) {
+                        // Gidugu-class: intact + known GDI-incapable — quiet settle.
+                        // Push settled while holding progress (avoid note_settled_quiet deadlock).
+                        clear_complete_markers_for_family(&app, &family);
+                        if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                            p.settled_names.push(family.clone());
+                        }
                     } else {
                         let detail = note_register_zero(&app, &family, cause);
                         p.failed = p.failed.saturating_add(1);
@@ -6775,16 +6829,10 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
                 need_fetch.push(family.clone());
                 continue;
             }
-            // Gidugu: official TTF still Add=0 — honest refuse, no infinite Retry loop.
+            // Gidugu: official TTF still Add=0 — keep on disk; no failed_names / Retry toast.
             if family_known_gdi_session_incapable(family) {
-                let detail = note_register_zero(&app, family, RegisterFailKind::AddReturnedZero);
-                if let Ok(mut p) = bulk().progress.lock() {
-                    if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                        p.failed_names.push(family.clone());
-                        p.failed_details.push(detail);
-                    }
-                    p.failed = p.failed_names.len() as u32;
-                }
+                clear_complete_markers_for_family(&app, family);
+                note_settled_quiet(family);
                 continue;
             }
             // P0: re-stage+Add (not ambient skip-intact). Do not wipe library.
@@ -7050,6 +7098,7 @@ pub fn skip_google_failures(families: Vec<String>) -> Result<usize, String> {
     if let Ok(mut p) = bulk().progress.lock() {
         p.failed_names.clear();
         p.failed_details.clear();
+        p.settled_names.clear();
         p.failed = 0;
         if !p.running {
             p.current.clear();
@@ -7200,6 +7249,7 @@ pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
             p.total = added as u32;
             p.failed_names.clear();
             p.failed_details.clear();
+            p.settled_names.clear();
             p.paused = false;
             p.ready_names.clear();
             reset_circuits();
@@ -7281,6 +7331,7 @@ pub fn google_download_progress() -> GoogleDlProgress {
             paused: false,
             ready_names: Vec::new(),
             skipped: 0,
+            settled_names: Vec::new(),
             kind: String::new(),
         })
 }
@@ -8868,6 +8919,35 @@ mod install_path_tests {
             "session-active + maps ⇒ toast-only already-live"
         );
         assert!(!family_toast_exempt_already_live(false, false));
+    }
+
+    #[test]
+    fn known_gdi_incapable_intact_skips_fail_toast() {
+        // 1.0.173: Gidugu intact official TTF ⇒ not failed_names / Couldn't load.
+        assert!(
+            family_toast_exempt_known_gdi_incapable(
+                family_known_gdi_session_incapable("Gidugu"),
+                true,
+            ),
+            "known-incapable + intact must skip fail toast"
+        );
+        assert!(
+            !family_toast_exempt_known_gdi_incapable(
+                family_known_gdi_session_incapable("Gidugu"),
+                false,
+            ),
+            "known-incapable without intact is still a real fail"
+        );
+        assert!(
+            !family_toast_exempt_known_gdi_incapable(
+                family_known_gdi_session_incapable("Nunito"),
+                true,
+            ),
+            "capable families with intact files still use normal fail path"
+        );
+        assert!(family_toast_exempt_known_gdi_incapable(true, true));
+        assert!(!family_toast_exempt_known_gdi_incapable(true, false));
+        assert!(!family_toast_exempt_known_gdi_incapable(false, true));
     }
 
     #[test]

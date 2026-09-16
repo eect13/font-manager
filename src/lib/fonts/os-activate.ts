@@ -561,6 +561,7 @@ type OnDiskProgressSnap = {
   failed_names?: string[];
   failed_details?: string[];
   ready_names?: string[];
+  settled_names?: string[];
   skipped?: number;
   kind?: string;
 };
@@ -892,6 +893,7 @@ function applyPayload(p: {
   failed_names?: string[];
   failed_details?: string[];
   ready_names?: string[];
+  settled_names?: string[];
   skipped?: number;
   kind?: string;
 }) {
@@ -910,6 +912,7 @@ function applyPayload(p: {
     p.skipped ?? 0,
     readyLen,
     p.failed_names?.length ?? 0,
+    p.settled_names?.length ?? 0,
     (p.failed_details ?? []).join("\x1e"),
     p.current,
     kind,
@@ -993,9 +996,11 @@ function applyPayload(p: {
     }
     notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? []);
     // Scope to this google job — do not wipe local install-queue pending (mixed Activate All).
+    // settled_names: Gidugu-class quiet settle (intact + known GDI-incapable) — clear pending, no toast.
     void finalizeReadyAndClearPending([
       ...readyCumulative,
       ...(p.failed_names ?? []),
+      ...(p.settled_names ?? []),
     ]);
   }
 }
@@ -1012,6 +1017,7 @@ async function pollRustProgress() {
       failed_names?: string[];
       failed_details?: string[];
       ready_names?: string[];
+      settled_names?: string[];
       skipped?: number;
       kind?: string;
     }>("google_download_progress");
