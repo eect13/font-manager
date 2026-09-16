@@ -1,10 +1,12 @@
-# Font Manager **1.0.174**
+# Font Manager **1.0.175**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.175.** Gidugu (known GDI-session-incapable) with intact official TTF is **disk settled** (`.complete`) so Scan no longer flags Repair; still never Activated / GDI-live. 1.0.173 toast suppress kept. opsz slider from 1.0.174 unchanged.
 
 **1.0.174.** Optical size (`opsz`) slider drives preview via `font-variation-settings` + `font-optical-sizing: none` (Chromium has no numeric CSS opsz). Cards keep `auto` until the user overrides opsz. Gidugu / Clear Sans / Skip-Add HOLD unchanged from 1.0.173.
 

@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.175
+- **Gidugu Scan Repair churn (P0):** Intact official google/fonts TTF + `family_known_gdi_session_incapable` is now **disk settled**: stamp `.complete` (and keep it through verify) so Scan does not report Incomplete / Repair-1. Quiet `settled_names` + 1.0.173 toast suppress unchanged; still never Activated / GDI-live / `markLiveActivated` (Add=0 honesty). Undersized 24–80KB remnants still clear stamp and Repair that face only.
+
 ## Fixed in tip / 1.0.174
 - **Optical size (`opsz`) slider (P1):** `opsz` was listed in `HIGH_LEVEL_AXES`, so `variationStyle` stripped it from `font-variation-settings` while CSS has no numeric opsz (only `font-optical-sizing: auto|none`). Slider in AxisSliders / inspector / Playground now emits `"opsz" N` in FVS and sets `fontOpticalSizing: "none"` so auto does not fight. Library cards keep `auto` until the user overrides opsz (stored axis). Never force opsz = preview font-size.
 

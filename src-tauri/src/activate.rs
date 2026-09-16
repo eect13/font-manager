@@ -1233,6 +1233,8 @@ fn family_skip_live_success(app: &AppHandle, family: &str) -> Option<usize> {
 /// - skip-Add only when this process already has the face in `loaded()` (real Add)
 /// - sticky toast exemption needs session-active + maps (never maps alone)
 /// - known GDI-incapable + intact ⇒ suppress failed_names (not a download fail)
+/// - known GDI-incapable + intact + !undersized ⇒ disk settled (`.complete` / Scan OK);
+///   still never session-Activated / markLiveActivated (Add=0 honesty)
 #[cfg_attr(not(test), allow(dead_code))]
 fn face_may_skip_add(in_loaded_this_process: bool) -> bool {
     in_loaded_this_process
@@ -1248,6 +1250,23 @@ fn family_toast_exempt_already_live(session_active: bool, all_faces_size_matched
 #[cfg_attr(not(test), allow(dead_code))]
 fn family_toast_exempt_known_gdi_incapable(known_incapable: bool, intact_on_disk: bool) -> bool {
     known_incapable && intact_on_disk
+}
+
+/// Disk settled for Scan/Repair: known GDI-incapable + intact full-size official TTF.
+/// Stamp `.complete` so Incomplete/Repair-1 does not churn; never means GDI-live.
+#[cfg_attr(not(test), allow(dead_code))]
+fn family_disk_settled_known_gdi_incapable(
+    known_incapable: bool,
+    intact_on_disk: bool,
+    undersized: bool,
+) -> bool {
+    known_incapable && intact_on_disk && !undersized
+}
+
+/// Activated / markLiveActivated only after real GDI Add — never for known-incapable.
+#[cfg_attr(not(test), allow(dead_code))]
+fn family_may_claim_session_activated(known_incapable: bool, gdi_faces_added: usize) -> bool {
+    !known_incapable && gdi_faces_added > 0
 }
 
 fn suppress_fail_toast_known_incapable(app: &AppHandle, family: &str) -> bool {
@@ -1302,6 +1321,54 @@ fn clear_complete_markers_for_family(app: &AppHandle, family: &str) {
     for dir in family_locations(app, family) {
         clear_complete_marker(&dir);
     }
+}
+
+/// Gidugu-class: intact full-size official TTF ⇒ stamp `.complete` (disk settled).
+/// Undersized remnants stay Incomplete so Repair can replace that face only.
+/// Never claims Activated / GDI-live.
+fn stamp_known_incapable_disk_settled(app: &AppHandle, family: &str) {
+    if !family_known_gdi_session_incapable(family) {
+        return;
+    }
+    for dir in family_locations(app, family) {
+        stamp_known_incapable_dir_settled(&dir, family);
+    }
+}
+
+fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
+    if !family_known_gdi_session_incapable(family) || !dir_has_intact(dir) {
+        return;
+    }
+    if dir_has_undersized_google_static(dir, family) {
+        return;
+    }
+    // Ensure `.google-planned` so verify trusts the stamp (official Google lie check).
+    if read_google_planned_keys(dir).is_none() {
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        let keys: Vec<String> = files
+            .iter()
+            .filter(|p| ttf_intact(p))
+            .filter_map(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        if !keys.is_empty() {
+            write_google_planned(dir, &keys);
+        }
+    }
+    let expected = if let Some(keys) = read_google_planned_keys(dir) {
+        let intact = count_intact_planned_keys(dir, &keys);
+        if intact == 0 || intact < keys.len() {
+            return;
+        }
+        keys.len()
+    } else {
+        count_intact_faces(dir).max(1)
+    };
+    mark_family_complete(dir, expected);
 }
 
 fn unregister_family_session(family: &str) -> u32 {
@@ -4931,9 +4998,10 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
                 // Do not claim activated / ready_names (requires real in-process Add).
             } else if suppress_fail_toast_known_incapable(app, family) {
                 // Gidugu-class: intact official TTF, known GDI-incapable — keep on disk
-                // for OT/preview; no failed_names / Couldn't load (not a download fail).
+                // for OT/preview; stamp `.complete` (disk settled); no failed_names /
+                // Couldn't load; never ready_names / Activated.
                 // Push settled while holding progress (note_settled_quiet would deadlock).
-                clear_complete_markers_for_family(app, family);
+                stamp_known_incapable_disk_settled(app, family);
                 if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
                     p.settled_names.push(family.clone());
                 }
@@ -5319,6 +5387,15 @@ fn official_google_complete_is_lie(dir: &Path) -> bool {
     if family.is_empty() || !is_official_google_family(family) {
         return false;
     }
+    // Gidugu-class disk settled: intact full-size official TTF — Add=0 does not
+    // make `.complete` a lie; Scan must not churn Repair.
+    if family_disk_settled_known_gdi_incapable(
+        family_known_gdi_session_incapable(family),
+        dir_has_intact(dir),
+        dir_has_undersized_google_static(dir, family),
+    ) {
+        return false;
+    }
     // Honest plan present → verify_complete_marker uses keys.len() only.
     if read_google_planned_keys(dir).is_some() {
         return dir_only_latin_fontsource_names(dir);
@@ -5386,6 +5463,8 @@ fn family_is_ready(app: &AppHandle, family: &str) -> bool {
     family_locations(app, family).iter().any(|dir| {
         heal_clear_sans_expected_plan(dir, family);
         verify_complete_marker(dir);
+        // Known-incapable + intact full-size ⇒ disk settled (Scan/Repair honesty).
+        stamp_known_incapable_dir_settled(dir, family);
         dir_is_complete(dir) && dir_has_intact(dir)
     })
 }
@@ -5724,11 +5803,21 @@ fn download_family(
         return Err("cancelled".into());
     }
     if total == 0 {
+        let intact_now = count_intact_faces(&root);
+        if family_disk_settled_known_gdi_incapable(
+            family_known_gdi_session_incapable(family),
+            intact_now > 0,
+            dir_has_undersized_google_static(&root, family),
+        ) {
+            // Disk settled: stamp `.complete` so Scan does not Repair-churn.
+            // Err so caller quiet-settles — never Activated / ready_names.
+            stamp_known_incapable_dir_settled(&root, family);
+            return Err(format_register_zero_detail_with(app, family, reg_cause));
+        }
         clear_complete_marker(&root);
         if locked {
             return Err("files locked — close Word or Adobe, then Retry".into());
         }
-        let intact_now = count_intact_faces(&root);
         if intact_now > 0 {
             // Skip-intact Fontsource path can hit this: files on disk, GDI 0.
             // Clear sticky .complete; split stage vs Add vs unloading (Skye P0).
@@ -5859,7 +5948,15 @@ fn drain_download_queue(
             heal_acc.add(heal);
             let (n, cause) = register_intact_family_detailed(&app, &family);
             if n == 0 {
-                Err(note_register_zero(&app, &family, cause))
+                if family_known_gdi_session_incapable(&family)
+                    && family_has_intact(&app, &family)
+                {
+                    // Keep / stamp disk settled — do not clear `.complete` (Scan honesty).
+                    stamp_known_incapable_disk_settled(&app, &family);
+                    Err(format_register_zero_detail_with(&app, &family, cause))
+                } else {
+                    Err(note_register_zero(&app, &family, cause))
+                }
             } else {
                 Ok(n)
             }
@@ -5885,8 +5982,8 @@ fn drain_download_queue(
             Err(reason) => {
                 forget_queued(&family);
                 if suppress_fail_toast_known_incapable(&app, &family) {
-                    // Intact official TTF + known GDI-incapable: not a download fail toast.
-                    clear_complete_markers_for_family(&app, &family);
+                    // Intact official TTF + known GDI-incapable: disk settled + quiet toast.
+                    stamp_known_incapable_disk_settled(&app, &family);
                     note_settled_quiet(&family);
                 } else {
                     remember_failed(&family, reason);
@@ -6695,9 +6792,9 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                         // Toast only: session-active + maps — suppress failed_names,
                         // do not claim activated / ready_names.
                     } else if suppress_fail_toast_known_incapable(&app, &family) {
-                        // Gidugu-class: intact + known GDI-incapable — quiet settle.
+                        // Gidugu-class: intact + known GDI-incapable — disk settled + quiet.
                         // Push settled while holding progress (avoid note_settled_quiet deadlock).
-                        clear_complete_markers_for_family(&app, &family);
+                        stamp_known_incapable_disk_settled(&app, &family);
                         if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.settled_names.push(family.clone());
                         }
@@ -6829,9 +6926,9 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
                 need_fetch.push(family.clone());
                 continue;
             }
-            // Gidugu: official TTF still Add=0 — keep on disk; no failed_names / Retry toast.
+            // Gidugu: official TTF still Add=0 — disk settled; no failed_names / Retry toast.
             if family_known_gdi_session_incapable(family) {
-                clear_complete_markers_for_family(&app, family);
+                stamp_known_incapable_disk_settled(&app, family);
                 note_settled_quiet(family);
                 continue;
             }
@@ -7026,6 +7123,9 @@ pub fn repair_incomplete_families(
                 heal_clear_sans_expected_plan(dir, name);
             }
             verify_complete_marker(dir);
+            if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
+                stamp_known_incapable_dir_settled(dir, name);
+            }
             if dir_has_intact(dir) && !dir_is_complete(dir) {
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                     targets.push(name.to_string());
@@ -7162,13 +7262,24 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             return;
         }
         verify_complete_marker(dir);
+        // Known GDI-incapable + intact full-size ⇒ disk settled (no Repair-1 churn).
+        stamp_known_incapable_dir_settled(dir, &name);
         let has_complete = dir_is_complete(dir);
         let has_variable = dir_has_intact_variable(dir);
         let missing_variable =
             catalog_variable_expects_public_vf(&name) && !has_variable && intact > 0;
         let undersized = dir_has_undersized_google_static(dir, &name);
-        // `.complete` ≠ vars done; undersized ≠ skip-intact done (Gidugu).
-        let incomplete = (intact > 0 && !has_complete) || missing_variable || undersized;
+        // `.complete` ≠ vars done; undersized ≠ skip-intact done (Gidugu remnant).
+        // Disk-settled known-incapable never Incomplete from missing `.complete` alone.
+        let incomplete = if family_disk_settled_known_gdi_incapable(
+            family_known_gdi_session_incapable(&name),
+            intact > 0,
+            undersized,
+        ) {
+            missing_variable
+        } else {
+            (intact > 0 && !has_complete) || missing_variable || undersized
+        };
         out.push(DiskFamily {
             name,
             bytes,
@@ -8948,6 +9059,84 @@ mod install_path_tests {
         assert!(family_toast_exempt_known_gdi_incapable(true, true));
         assert!(!family_toast_exempt_known_gdi_incapable(true, false));
         assert!(!family_toast_exempt_known_gdi_incapable(false, true));
+    }
+
+    #[test]
+    fn known_incapable_intact_disk_settled_scan_not_incomplete() {
+        // 1.0.175: known-incapable + intact full-size ⇒ verify/scan treats complete;
+        // still never session-activated / markLiveActivated.
+        assert!(
+            family_disk_settled_known_gdi_incapable(
+                family_known_gdi_session_incapable("Gidugu"),
+                true,
+                false,
+            ),
+            "intact full-size Gidugu must be disk settled"
+        );
+        assert!(
+            !family_disk_settled_known_gdi_incapable(
+                family_known_gdi_session_incapable("Gidugu"),
+                true,
+                true,
+            ),
+            "undersized remnant must not settle"
+        );
+        assert!(
+            !family_disk_settled_known_gdi_incapable(
+                family_known_gdi_session_incapable("Nunito"),
+                true,
+                false,
+            ),
+            "capable families are not auto-settled"
+        );
+        assert!(
+            !family_may_claim_session_activated(
+                family_known_gdi_session_incapable("Gidugu"),
+                0,
+            ),
+            "Add=0 must not claim Activated"
+        );
+        assert!(
+            !family_may_claim_session_activated(
+                family_known_gdi_session_incapable("Gidugu"),
+                1,
+            ),
+            "known-incapable never markLiveActivated even if counter lied"
+        );
+        assert!(family_may_claim_session_activated(false, 1));
+
+        let parent = temp_family_dir("gidugu-disk-settled");
+        let dir = parent.join("Gidugu");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(460988, 0); // full official size, not 24–80KB remnant band
+        fs::write(dir.join("gidugu-400-normal.ttf"), &fake).unwrap();
+        write_google_planned(&dir, &["gidugu-400-normal.ttf".into()]);
+        assert!(!dir_has_undersized_google_static(&dir, "Gidugu"));
+        stamp_known_incapable_dir_settled(&dir, "Gidugu");
+        assert!(dir_is_complete(&dir), "settle must stamp .complete");
+        verify_complete_marker(&dir);
+        assert!(
+            dir_is_complete(&dir),
+            "settled .complete must survive verify (Scan honesty)"
+        );
+        let has_complete = dir_is_complete(&dir);
+        let undersized = dir_has_undersized_google_static(&dir, "Gidugu");
+        let incomplete = if family_disk_settled_known_gdi_incapable(
+            family_known_gdi_session_incapable("Gidugu"),
+            true,
+            undersized,
+        ) {
+            false
+        } else {
+            !has_complete || undersized
+        };
+        assert!(!incomplete, "Scan must not flag Repair for settled Gidugu");
+        assert!(
+            family_toast_exempt_known_gdi_incapable(true, true),
+            "1.0.173 toast suppress still intact"
+        );
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
