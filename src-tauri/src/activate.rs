@@ -544,9 +544,8 @@ mod winfont {
     }
 
     /// True when this source has a size-matched LocalAppData gdi-map.
-    /// Hydrates `loaded()` when the map proves the face was staged for this
-    /// session — covers cold-start / failed re-Add where sidecars remain but
-    /// in-memory `loaded()` was empty (sticky CJK "Couldn't load").
+    /// Map file = skip **copy** only (`ensure_gdi_session_copy`). Never hydrate
+    /// `loaded()` — skip-Add requires a real in-process AddFontResourceEx success.
     pub fn is_session_live_mapped(path: &Path) -> bool {
         if unloading().load(Ordering::SeqCst) {
             return false;
@@ -559,53 +558,25 @@ mod winfont {
             .and_then(|d| fs::metadata(d).ok())
             .map(|m| m.len() == src_len)
             .unwrap_or(false);
-        if !dest_ok {
-            // Also accept an explicit maps() entry (legacy path key variants).
-            let mapped_ok = maps()
-                .lock()
-                .ok()
-                .and_then(|m| m.get(path).cloned())
-                .and_then(|d| fs::metadata(d).ok())
-                .map(|m| m.len() == src_len)
-                .unwrap_or(false);
-            if !mapped_ok {
-                return false;
-            }
+        if dest_ok {
+            return true;
         }
-        // Size-matched map ⇒ treat as session-live; hydrate loaded so skip-Add works.
-        if let Ok(mut g) = loaded().lock() {
-            g.insert(path.to_path_buf());
-        }
-        if let Some(gdi) = super::gdi_map_dest_for(path) {
-            remember_map(path, &gdi);
-        }
-        true
+        // Also accept an explicit maps() entry (legacy path key variants).
+        maps()
+            .lock()
+            .ok()
+            .and_then(|m| m.get(path).cloned())
+            .and_then(|d| fs::metadata(d).ok())
+            .map(|m| m.len() == src_len)
+            .unwrap_or(false)
     }
 
-    /// Rebuild `loaded()` from in-memory size-matched maps before ready-register.
-    pub fn hydrate_loaded_from_size_matched_maps() {
-        let pairs: Vec<(PathBuf, PathBuf)> = maps()
+    /// True when this process already successfully Add'd `path` (in-memory only).
+    pub fn is_loaded(path: &Path) -> bool {
+        loaded()
             .lock()
-            .map(|m| m.iter().map(|(s, d)| (s.clone(), d.clone())).collect())
-            .unwrap_or_default();
-        for (src, gdi) in pairs {
-            if crate::session_stage::must_not_register_as_gdi_path(&gdi) {
-                continue;
-            }
-            let src_len = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
-            if src_len < 256 {
-                continue;
-            }
-            let ok = fs::metadata(&gdi)
-                .map(|m| m.len() == src_len)
-                .unwrap_or(false);
-            if !ok {
-                continue;
-            }
-            if let Ok(mut g) = loaded().lock() {
-                g.insert(src);
-            }
-        }
+            .map(|g| g.contains(path))
+            .unwrap_or(false)
     }
 
     #[allow(dead_code)]
@@ -1147,9 +1118,48 @@ fn register_family_path(family: &str, path: &Path) -> bool {
 }
 
 
-/// Count intact faces already session-live (loaded + size-matched gdi map).
-/// `None` = at least one face still needs copy/Add.
+/// Count intact faces already live **this process** (in `loaded()` from a real
+/// Add) with a size-matched gdi-map. Map alone is never enough — that only skips
+/// re-copy. `None` = at least one face still needs Add (or is not loaded).
 fn count_already_live_intact_faces(app: &AppHandle, family: &str) -> Option<usize> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, family);
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        let mut n = 0usize;
+        let mut any = false;
+        for dir in family_locations(app, family) {
+            let mut files = Vec::new();
+            walk_font_files(&dir, &mut files);
+            for path in files {
+                if !ttf_intact(&path) {
+                    continue;
+                }
+                any = true;
+                // Skip-Add only when this process already Add'd successfully.
+                if !winfont::is_loaded(&path) {
+                    return None;
+                }
+                if !winfont::is_session_live_mapped(&path) {
+                    return None;
+                }
+                n = n.saturating_add(1);
+            }
+        }
+        if any && n > 0 {
+            Some(n)
+        } else {
+            None
+        }
+    }
+}
+
+/// Size-matched gdi-maps for every intact face (disk only — never touches `loaded()`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn count_size_matched_mapped_faces(app: &AppHandle, family: &str) -> Option<usize> {
     #[cfg(not(windows))]
     {
         let _ = (app, family);
@@ -1200,16 +1210,15 @@ fn family_in_session_active(app: &AppHandle, family: &str) -> bool {
         .any(|n| n.eq_ignore_ascii_case(family))
 }
 
-/// Size-matched maps + prior session-active ⇒ skip-live success (no failed_names).
+/// Session-active + size-matched maps ⇒ toast exemption only (no failed_names).
+/// Does **not** authorize skip-Add / activated — that needs real in-process Add.
 fn family_skip_live_success(app: &AppHandle, family: &str) -> Option<usize> {
     #[cfg(windows)]
     {
-        winfont::hydrate_loaded_from_size_matched_maps();
-        let live = count_already_live_intact_faces(app, family)?;
-        if family_in_session_active(app, family) || live > 0 {
-            return Some(live);
+        if !family_in_session_active(app, family) {
+            return None;
         }
-        None
+        count_size_matched_mapped_faces(app, family)
     }
     #[cfg(not(windows))]
     {
@@ -1218,13 +1227,27 @@ fn family_skip_live_success(app: &AppHandle, family: &str) -> Option<usize> {
     }
 }
 
+
+/// Product rules for unit tests (no AppHandle / GDI):
+/// - size-matched gdi-map ⇒ skip re-copy only
+/// - skip-Add only when this process already has the face in `loaded()` (real Add)
+/// - sticky toast exemption needs session-active + maps (never maps alone)
+#[cfg_attr(not(test), allow(dead_code))]
+fn face_may_skip_add(in_loaded_this_process: bool) -> bool {
+    in_loaded_this_process
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn family_toast_exempt_already_live(session_active: bool, all_faces_size_matched_mapped: bool) -> bool {
+    session_active && all_faces_size_matched_mapped
+}
+
 fn register_intact_family_detailed(
     app: &AppHandle,
     family: &str,
 ) -> (usize, RegisterFailKind) {
-    if let Some(live) = family_skip_live_success(app, family) {
-        return (live, RegisterFailKind::NoneTried);
-    }
+    // Skip-Add only when every face is already in `loaded()` from a real Add this process.
+    // Map-only / family_skip_live_success must never early-return here.
     if let Some(live) = count_already_live_intact_faces(app, family) {
         return (live, RegisterFailKind::NoneTried);
     }
@@ -2043,9 +2066,8 @@ pub fn session_begin(app: &AppHandle) {
             let _ = rebuild_session_maps_in(&root, &maps_root);
         }
         recover_stale_session(app);
-        // Rebuild loaded() from size-matched maps before ready-register so
-        // already-live CJK (session-active + sidecars) skips re-Add / failed_names.
-        winfont::hydrate_loaded_from_size_matched_maps();
+        // Do NOT hydrate loaded() from gdi-maps — maps skip copy only; always Add
+        // after drain / new process (session-active + maps = toast exemption only).
         // Targeted dirs only — do not walk all of Documents before the UI is up.
         // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
@@ -4565,7 +4587,7 @@ fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -
 }
 
 fn register_intact_family(app: &AppHandle, family: &str) -> usize {
-    // Prefer size-matched session-live skip (same as detailed path).
+    // Same as detailed: skip-Add only when already in loaded() this process.
     register_intact_family_detailed(app, family).0
 }
 
@@ -4785,8 +4807,6 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     if ready.is_empty() {
         return;
     }
-    #[cfg(windows)]
-    winfont::hydrate_loaded_from_size_matched_maps();
     // Complete folders still pull missing catalog variable TTFs (no bust) and
     // heal mashed instance names — Activate used to name-heal only / skip vars.
     let client = http_download_client();
@@ -4831,14 +4851,9 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
                 if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
                     p.ready_names.push(family.clone());
                 }
-            } else if let Some(live_n) = family_skip_live_success(app, family) {
-                // Size-matched maps + session-active: already live — not a failure.
-                let _ = live_n;
-                p.skipped = p.skipped.saturating_add(1);
-                live.push(family.clone());
-                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                    p.ready_names.push(family.clone());
-                }
+            } else if family_skip_live_success(app, family).is_some() {
+                // Toast only: session-active + maps + Add 0 ⇒ do not push failed_names.
+                // Do not claim activated / ready_names (requires real in-process Add).
             } else {
                 // Sticky ready+.complete after GDI 0 is a lie — clear stamp (Skye P0).
                 let detail = note_register_zero(app, family, cause);
@@ -6527,9 +6542,8 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                         if let Ok(mut g) = registered.lock() {
                             g.push(family.clone());
                         }
-                    } else if family_session_maps_live(&app, &family)
-                        || family_skip_live_success(&app, &family).is_some()
-                    {
+                    } else if family_session_maps_live(&app, &family) {
+                        // Already in loaded() from real Add this process.
                         p.skipped = p.skipped.saturating_add(1);
                         if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.ready_names.push(family.clone());
@@ -6537,6 +6551,9 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                         if let Ok(mut g) = registered.lock() {
                             g.push(family.clone());
                         }
+                    } else if family_skip_live_success(&app, &family).is_some() {
+                        // Toast only: session-active + maps — suppress failed_names,
+                        // do not claim activated / ready_names.
                     } else {
                         let detail = note_register_zero(&app, &family, cause);
                         p.failed = p.failed.saturating_add(1);
@@ -8648,8 +8665,8 @@ mod install_path_tests {
     }
 
     #[test]
-    fn size_matched_map_marks_session_live_without_loaded_first() {
-        // Pure helper: dest size match is the live-map gate (loaded hydrate follows).
+    fn size_matched_map_skips_copy_not_add() {
+        // Size-matched gdi-map ⇒ skip re-copy only; never authorizes skip-Add.
         let parent = temp_family_dir("live-map-skip");
         let src = parent.join("src.ttf");
         let dest = parent.join("dest.ttf");
@@ -8658,11 +8675,60 @@ mod install_path_tests {
         fs::write(&src, &fake).unwrap();
         fs::write(&dest, &fake).unwrap();
         let src_len = fs::metadata(&src).unwrap().len();
-        let matched = fs::metadata(&dest).map(|m| m.len() == src_len && src_len >= 256).unwrap_or(false);
-        assert!(matched, "size-matched map must count as session-live gate");
+        let matched = fs::metadata(&dest)
+            .map(|m| m.len() == src_len && src_len >= 256)
+            .unwrap_or(false);
+        assert!(matched, "size-matched map must allow skip-copy");
+        // Map alone must NOT satisfy skip-Add (loaded() empty ⇒ must Add).
+        assert!(
+            !face_may_skip_add(false),
+            "map-only must not skip AddFontResourceEx"
+        );
+        assert!(
+            face_may_skip_add(true),
+            "in-process loaded (real Add) may skip re-Add"
+        );
         fs::write(&dest, &fake[..512]).unwrap();
         let mismatched = fs::metadata(&dest).map(|m| m.len() == src_len).unwrap_or(false);
         assert!(!mismatched);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn skip_live_toast_requires_session_active_not_maps_alone() {
+        // Sticky CJK toast fix: session-active + maps ⇒ no failed_names.
+        // Maps alone (post-Quit leftover) must NOT claim live / suppress fail.
+        assert!(
+            !family_toast_exempt_already_live(false, true),
+            "maps without session-active must not toast-exempt"
+        );
+        assert!(
+            !family_toast_exempt_already_live(true, false),
+            "session-active without maps must not toast-exempt"
+        );
+        assert!(
+            family_toast_exempt_already_live(true, true),
+            "session-active + maps ⇒ toast-only already-live"
+        );
+        assert!(!family_toast_exempt_already_live(false, false));
+    }
+
+    #[test]
+    fn ensure_gdi_session_copy_reuses_size_matched_without_loaded() {
+        // Skip-copy still works when maps exist and loaded() is empty.
+        let parent = temp_family_dir("skip-copy-only");
+        let maps = parent.join("gdi-maps");
+        fs::create_dir_all(&maps).unwrap();
+        let src = parent.join("Face.ttf");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(4096, 0);
+        fs::write(&src, &fake).unwrap();
+        let dest = ensure_gdi_session_copy_to(&src, &maps).expect("first copy");
+        assert!(dest.is_file());
+        let dest2 = ensure_gdi_session_copy_to(&src, &maps).expect("reuse size-matched");
+        assert_eq!(dest, dest2);
+        // Reuse is skip-copy — still does not imply skip-Add.
+        assert!(!face_may_skip_add(false));
         let _ = fs::remove_dir_all(&parent);
     }
 
