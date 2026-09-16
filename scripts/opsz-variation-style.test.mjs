@@ -104,3 +104,62 @@ test("card path: stripping opsz keeps auto-compatible FVS", () => {
   assert.equal(style.fontVariationSettings.includes('"opsz"'), false);
   assert.equal(style.fontOpticalSizing, undefined);
 });
+
+const versionSrc = readFileSync(join(root, "src/version.ts"), "utf8");
+const inspectorSrc = readFileSync(join(root, "src/components/font-studio/font-inspector.tsx"), "utf8");
+const playgroundSrc = readFileSync(join(root, "src/components/font-studio/playground.tsx"), "utf8");
+const cardSrc = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
+
+test("version.ts APP_VERSION is 1.0.174", () => {
+  assert.match(versionSrc, /export const APP_VERSION = "1\.0\.174"/);
+});
+
+test("italicPreviewStyle does not emit full-axis FVS (no variationCss call)", () => {
+  const fn = axesSrc.match(/export function italicPreviewStyle[\s\S]*?\n\}/);
+  assert.ok(fn, "italicPreviewStyle function");
+  assert.equal(fn[0].includes("variationCss("), false);
+  assert.match(fn[0], /fontVariationSettings:\s*undefined/);
+});
+
+test("inspector: variable FVS prefers axisStyle, not italicCss", () => {
+  assert.match(
+    inspectorSrc,
+    /fontVariationSettings:\s*font\.variable\s*\?\s*axisStyle\.fontVariationSettings/,
+  );
+  assert.equal(inspectorSrc.includes("italicCss.fontVariationSettings ?? axisStyle.fontVariationSettings"), false);
+  assert.match(inspectorSrc, /fontOpticalSizing:\s*font\.variable \? axisStyle\.fontOpticalSizing/);
+});
+
+test("playground: both panes spread leftVarStyle/rightVarStyle from variationStyle", () => {
+  assert.match(playgroundSrc, /const leftVarStyle = left\?\.variable/);
+  assert.match(playgroundSrc, /const rightVarStyle = right\?\.variable/);
+  assert.match(playgroundSrc, /variationStyle\(/);
+  const spreads = playgroundSrc.match(/\.\.\.\(leftVarStyle \?\? \{\}\)/g) || [];
+  const spreadsR = playgroundSrc.match(/\.\.\.\(rightVarStyle \?\? \{\}\)/g) || [];
+  assert.equal(spreads.length, 2, "left pane edit+preview");
+  assert.equal(spreadsR.length, 2, "right pane edit+preview");
+});
+
+test("card keeps auto until storedAxes.opsz override", () => {
+  assert.match(cardSrc, /userOpsz = typeof storedAxes\?\.opsz === "number"/);
+  assert.match(cardSrc, /fontOpticalSizing:\s*vs\?\.fontOpticalSizing \?\? \(font\.variable \? "auto"/);
+});
+
+test("wght stays high-level: opsz+wght together does not put wght in FVS", () => {
+  const axes = [
+    { tag: "wght", name: "Weight", min: 100, max: 900, def: 400 },
+    { tag: "wdth", name: "Width", min: 75, max: 125, def: 100 },
+    { tag: "slnt", name: "Slant", min: -15, max: 0, def: 0 },
+    { tag: "ital", name: "Italic", min: 0, max: 1, def: 0 },
+    { tag: "opsz", name: "Optical size", min: 8, max: 144, def: 14 },
+  ];
+  const style = variationStyle({ wght: 700, wdth: 90, slnt: -10, ital: 1, opsz: 48 }, axes);
+  assert.match(style.fontVariationSettings, /"opsz"\s+48/);
+  for (const tag of ["wght", "wdth", "slnt", "ital"]) {
+    assert.equal(style.fontVariationSettings.includes(`"${tag}"`), false, tag);
+  }
+  assert.equal(style.fontWeight, 700);
+  assert.equal(style.fontStretch, "90%");
+  assert.equal(style.fontStyle, "italic");
+  assert.equal(style.fontOpticalSizing, "none");
+});

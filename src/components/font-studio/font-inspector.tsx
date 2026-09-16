@@ -176,8 +176,10 @@ export function FontInspector() {
                 fontWeight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
                 fontStyle: italicCss.fontStyle ?? "normal",
                 fontStretch: font.variable ? axisStyle.fontStretch : undefined,
+                // Variable: always variationStyle FVS (opsz + custom). italicPreviewStyle
+                // must not win — its old full-tuple FVS clobbered opsz and put wght in FVS.
                 fontVariationSettings: font.variable
-                  ? (italicCss.fontVariationSettings ?? axisStyle.fontVariationSettings)
+                  ? axisStyle.fontVariationSettings
                   : italicCss.fontVariationSettings,
                 fontOpticalSizing: font.variable ? axisStyle.fontOpticalSizing : undefined,
                 fontSynthesis: italicCss.fontSynthesis ?? synthesisForFont(font, {
