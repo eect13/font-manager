@@ -179,6 +179,7 @@ export function FontInspector() {
                 fontVariationSettings: font.variable
                   ? (italicCss.fontVariationSettings ?? axisStyle.fontVariationSettings)
                   : italicCss.fontVariationSettings,
+                fontOpticalSizing: font.variable ? axisStyle.fontOpticalSizing : undefined,
                 fontSynthesis: italicCss.fontSynthesis ?? synthesisForFont(font, {
                   italicOn,
                   weight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,

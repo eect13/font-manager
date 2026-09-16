@@ -133,12 +133,18 @@ export function variationCss(values: Record<string, number>, axes: FontAxis[] = 
 }
 
 /**
- * High-level CSS for registered axes + font-variation-settings for the full tuple.
- * font-weight/style keep GDI-ish apps and older Chromium in sync with wght/ital.
- * Do not put wght/wdth/slnt/ital/opsz in FVS when the high-level property is set —
- * Chromium then ignores both and the card slider looks stuck on Regular.
+ * High-level CSS for registered axes + font-variation-settings for the rest.
+ * font-weight / font-stretch / font-style keep GDI-ish apps and older Chromium
+ * in sync with wght / wdth / ital / slnt. Do not put those four in FVS when the
+ * high-level property is set — Chromium then ignores both and the card slider
+ * looks stuck on Regular.
+ *
+ * opsz is NOT high-level: CSS only offers font-optical-sizing: auto|none (no
+ * numeric opsz). Chromium needs `"opsz" N` in font-variation-settings for a
+ * manual Optical size slider. When FVS includes opsz, callers should set
+ * font-optical-sizing: none so auto does not fight the axis value.
  */
-const HIGH_LEVEL_AXES = new Set(["wght", "wdth", "slnt", "ital", "opsz"]);
+const HIGH_LEVEL_AXES = new Set(["wght", "wdth", "slnt", "ital"]);
 
 export function variationStyle(
   values: Record<string, number>,
@@ -148,6 +154,8 @@ export function variationStyle(
   fontWeight?: number;
   fontStyle?: string;
   fontStretch?: string;
+  /** Set when opsz is emitted in FVS — prefer over font-optical-sizing: auto. */
+  fontOpticalSizing?: "auto" | "none";
 } {
   const wght = values.wght;
   const ital = values.ital;
@@ -158,10 +166,13 @@ export function variationStyle(
   for (const [tag, n] of Object.entries(values)) {
     if (!HIGH_LEVEL_AXES.has(tag) && Number.isFinite(n)) customValues[tag] = n;
   }
-  return {
-    fontVariationSettings: customAxes.length || Object.keys(customValues).length
+  const fvs =
+    customAxes.length || Object.keys(customValues).length
       ? variationCss(customValues, customAxes)
-      : "normal",
+      : "normal";
+  const opszInFvs = fvs.includes('"opsz"');
+  return {
+    fontVariationSettings: fvs,
     fontWeight: typeof wght === "number" ? Math.round(clampAxis({ tag: "wght", name: "", min: 1, max: 1000, def: 400 }, wght)) : undefined,
     fontStretch: typeof wdth === "number" ? `${wdth}%` : undefined,
     fontStyle:
@@ -170,6 +181,7 @@ export function variationStyle(
         : typeof slnt === "number" && slnt !== 0
           ? `oblique ${Number((-slnt).toFixed(1))}deg`
           : "normal",
+    ...(opszInFvs ? { fontOpticalSizing: "none" as const } : {}),
   };
 }
 

@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.174
+- **Optical size (`opsz`) slider (P1):** `opsz` was listed in `HIGH_LEVEL_AXES`, so `variationStyle` stripped it from `font-variation-settings` while CSS has no numeric opsz (only `font-optical-sizing: auto|none`). Slider in AxisSliders / inspector / Playground now emits `"opsz" N` in FVS and sets `fontOpticalSizing: "none"` so auto does not fight. Library cards keep `auto` until the user overrides opsz (stored axis). Never force opsz = preview font-size.
+
 ## Fixed in tip / 1.0.173
 - **Gidugu sticky “Couldn’t load” (P0):** Official google/fonts TTF intact + `family_known_gdi_session_incapable` no longer pushes `failed_names` / DownloadBar Retry toast. Files stay on disk for OT/preview; quiet `settled_names` clears pending without claiming Activated/GDI-live. Clear Sans Intel-8 and Skip-Add HOLD (maps = skip-copy only) unchanged.
 

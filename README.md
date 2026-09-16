@@ -1,4 +1,4 @@
-# Font Manager **1.0.173**
+# Font Manager **1.0.174**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -6,7 +6,7 @@ FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
 
-**1.0.173.** Gidugu intact official Google TTF + known GDI-session-incapable: no `failed_names` / DownloadBar “Couldn’t load”; files kept for OT/preview; not Activated until real Add. Clear Sans Intel-8 and Skip-Add HOLD untouched.
+**1.0.174.** Optical size (`opsz`) slider drives preview via `font-variation-settings` + `font-optical-sizing: none` (Chromium has no numeric CSS opsz). Cards keep `auto` until the user overrides opsz. Gidugu / Clear Sans / Skip-Add HOLD unchanged from 1.0.173.
 
 **1.0.172.** Clear Sans planned/expected = Intel’s **8** TTFs (not Fontsource 10). Heal rewrites sticky `.expected=10` → 8; 8/8 Intel faces + Add → complete. Skip-Add HOLD unchanged.
 
