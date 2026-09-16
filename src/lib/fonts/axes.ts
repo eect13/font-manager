@@ -270,7 +270,12 @@ export function isItalicOnlyFace(
 }
 
 /** Library-card italic: real ital/slnt or a real italic cut. Never synthesize a slant
- *  on roman-only families (Impact, etc.). Header I still toggles families that have italic. */
+ *  on roman-only families (Impact, etc.). Header I still toggles families that have italic.
+ *
+ *  Do NOT emit a full-axis font-variation-settings tuple here. Callers already apply
+ *  variationStyle / live axes for opsz and other custom axes; a default-axis FVS from
+ *  this helper would clobber opsz and re-introduce wght/wdth/slnt/ital into FVS (card
+ *  weight slider stuck on Regular). High-level font-style is enough for italic/oblique. */
 export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" | "axes" | "weights">, on: boolean) {
   if (!on || !hasRealItalic(font)) {
     return {
@@ -281,29 +286,23 @@ export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" 
   }
   const { ital, slnt } = realItalicAxes(font);
   if (ital) {
-    const values = defaultAxisValues(axesForFont(font));
-    values.ital = 1;
     return {
       fontStyle: "italic" as const,
-      fontVariationSettings: variationCss(values, axesForFont(font)),
+      fontVariationSettings: undefined as string | undefined,
       fontSynthesis: "none" as const,
     };
   }
   if (slnt) {
-    const values = defaultAxisValues(axesForFont(font));
     const lean = slnt.min < 0 ? slnt.min : slnt.max;
-    values.slnt = lean;
     return {
       fontStyle: `oblique ${Number((-lean).toFixed(1))}deg` as const,
-      fontVariationSettings: variationCss(values, axesForFont(font)),
+      fontVariationSettings: undefined as string | undefined,
       fontSynthesis: "none" as const,
     };
   }
   return {
     fontStyle: "italic" as const,
-    fontVariationSettings: font.variable
-      ? variationCss(defaultAxisValues(axesForFont(font)), axesForFont(font))
-      : undefined,
+    fontVariationSettings: undefined as string | undefined,
     fontSynthesis: "none" as const,
   };
 }

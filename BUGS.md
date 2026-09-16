@@ -2,6 +2,9 @@
 
 ## Fixed in tip / 1.0.174
 - **Optical size (`opsz`) slider (P1):** `opsz` was listed in `HIGH_LEVEL_AXES`, so `variationStyle` stripped it from `font-variation-settings` while CSS has no numeric opsz (only `font-optical-sizing: auto|none`). Slider in AxisSliders / inspector / Playground now emits `"opsz" N` in FVS and sets `fontOpticalSizing: "none"` so auto does not fight. Library cards keep `auto` until the user overrides opsz (stored axis). Never force opsz = preview font-size.
+- **version.ts still 1.0.173 (P0):** Refresh release-check uses `APP_VERSION` — bumped to **1.0.174** to match package/Cargo/tauri/BUGS.
+- **Inspector italic clobbered opsz FVS:** preferred `italicPreviewStyle` full-tuple FVS over `variationStyle`, so opsz slider did not move the specimen when italic was on (and reintroduced wght into FVS). Inspector now always uses `axisStyle.fontVariationSettings` for variable fonts; `italicPreviewStyle` only returns high-level `fontStyle` / `fontSynthesis` (no FVS).
+- **Playground panes:** both edit + preview panes apply full `variationStyle` (incl. `fontOpticalSizing`); copied pairing CSS includes `font-optical-sizing` when opsz is in FVS. wght/wdth/slnt/ital stay high-level (not in FVS).
 
 ## Fixed in tip / 1.0.173
 - **Gidugu sticky “Couldn’t load” (P0):** Official google/fonts TTF intact + `family_known_gdi_session_incapable` no longer pushes `failed_names` / DownloadBar Retry toast. Files stay on disk for OT/preview; quiet `settled_names` clears pending without claiming Activated/GDI-live. Clear Sans Intel-8 and Skip-Add HOLD (maps = skip-copy only) unchanged.

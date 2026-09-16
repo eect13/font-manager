@@ -6,7 +6,7 @@ FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
 
-**1.0.174.** Optical size (`opsz`) slider drives preview via `font-variation-settings` + `font-optical-sizing: none` (Chromium has no numeric CSS opsz). Cards keep `auto` until the user overrides opsz. Gidugu / Clear Sans / Skip-Add HOLD unchanged from 1.0.173.
+**1.0.174.** Optical size (`opsz`) slider drives preview via `font-variation-settings` + `font-optical-sizing: none` (Chromium has no numeric CSS opsz). Cards keep `auto` until the user overrides opsz. `APP_VERSION` / Refresh check = 1.0.174; inspector italic no longer clobbers opsz FVS; Playground panes apply `fontOpticalSizing`. Gidugu / Clear Sans / Skip-Add HOLD unchanged from 1.0.173.
 
 **1.0.172.** Clear Sans planned/expected = Intel’s **8** TTFs (not Fontsource 10). Heal rewrites sticky `.expected=10` → 8; 8/8 Intel faces + Add → complete. Skip-Add HOLD unchanged.
 
