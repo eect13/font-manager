@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.172
+- **Clear Sans sticky 8/10 (P0):** Fontsource meta advertises weights×italic = 10 (incl. ThinItalic / LightItalic Intel never ships). Planned/expected is now the Intel pin’s **8** TTFs only; heal/Activate/Repair rewrite `.expected` → 8 and stamp `.complete` when those 8 Intel-sized faces are intact. Never use Fontsource face-matrix for Clear Sans; Repair does not churn for missing ThinItalic once 8/8 is satisfied. Skip-Add HOLD unchanged (maps = skip-copy only).
+
 ## Fixed in tip / 1.0.171
 - **Clear Sans GDI 0 (P0):** Fontsource clear-sans CDN is WOFF / odd ~67–81KB TTFs (OS/2 fsType restricted) that `AddFontResourceExW` refuses. Activate/Repair/Retry now use **Intel Clear Sans** GitHub TTFs only (`intel/clear-sans` pinned commit; Regular ~305KB). Library shreds in the odd size band are deleted and replaced; never mark `.complete` when Add returns 0; `RegisterFailKind` stays in `failed_details`.
 - **Gidugu GDI-incapable:** Official google/fonts `Gidugu-Regular.ttf` (~461KB, fsType=0) still Add=0 on Eric’s PC while PrivateFontCollection loads. Surfaced as honest “Windows refused this face (known GDI-incapable for session install)” — no infinite Retry unload/re-Add loop; Add=0 ≠ `.complete`.

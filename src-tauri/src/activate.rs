@@ -2406,6 +2406,55 @@ fn clear_sans_intel_ttf_urls(weight: u16, italic: bool, bust_q: &str) -> Vec<Str
     ]
 }
 
+/// Intel clear-sans ships exactly these 8 TTFs at CLEAR_SANS_INTEL_PIN
+/// (no ThinItalic / LightItalic). Fontsource meta is weights×italic = 10 —
+/// never use that matrix for planned / `.expected`.
+const CLEAR_SANS_INTEL_FACES: &[(u16, bool)] = &[
+    (100, false), // Thin
+    (300, false), // Light
+    (400, false), // Regular
+    (500, false), // Medium
+    (700, false), // Bold
+    (400, true),  // Italic
+    (500, true),  // MediumItalic
+    (700, true),  // BoldItalic
+];
+
+fn clear_sans_intel_planned_count() -> usize {
+    CLEAR_SANS_INTEL_FACES.len()
+}
+
+fn clear_sans_intel_face_keys() -> Vec<String> {
+    CLEAR_SANS_INTEL_FACES
+        .iter()
+        .map(|(weight, italic)| {
+            let style = if *italic { "italic" } else { "normal" };
+            google_face_filename("clear-sans", &weight.to_string(), style)
+        })
+        .collect()
+}
+
+/// Rewrite sticky Fontsource `.expected=10` to Intel plan 8. When all 8 Intel
+/// keys are intact and not Fontsource shreds, stamp `.complete` so Repair does
+/// not churn jsDelivr/unpkg for faces Intel never ships.
+fn heal_clear_sans_expected_plan(dir: &Path, family: &str) {
+    if !is_clear_sans_family(family) {
+        return;
+    }
+    let plan = clear_sans_intel_planned_count();
+    write_expected_faces(dir, plan);
+    let keys = clear_sans_intel_face_keys();
+    let intact = count_intact_planned_keys(dir, &keys);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    let needs_heal = files.iter().any(|p| clear_sans_face_needs_intel_heal(p));
+    if intact >= plan && !needs_heal {
+        mark_family_complete(dir, plan);
+    } else if intact < plan || needs_heal {
+        clear_complete_marker(dir);
+    }
+}
+
 fn is_clear_sans_family(family: &str) -> bool {
     family.trim().eq_ignore_ascii_case("clear sans")
         || slug_family(family) == "clear-sans"
@@ -4634,6 +4683,8 @@ struct FamilyDiskHonesty {
 }
 
 fn family_disk_honesty_in(dir: &Path, family: &str) -> FamilyDiskHonesty {
+    // Clear Sans: kill sticky Fontsource `.expected=10` before honesty/verify.
+    heal_clear_sans_expected_plan(dir, family);
     verify_complete_marker(dir);
     let mut files = Vec::new();
     walk_font_files(dir, &mut files);
@@ -5301,6 +5352,7 @@ fn verify_complete_marker(dir: &Path) {
 /// Any one TTF without `.complete` is incomplete — Activate must Repair, not skip.
 fn family_is_ready(app: &AppHandle, family: &str) -> bool {
     family_locations(app, family).iter().any(|dir| {
+        heal_clear_sans_expected_plan(dir, family);
         verify_complete_marker(dir);
         dir_is_complete(dir) && dir_has_intact(dir)
     })
@@ -5464,6 +5516,12 @@ fn download_family(
             }
         }
     }
+    // Always rewrite Clear Sans `.expected` to Intel 8 (even when shreds already healed).
+    if is_clear_sans_family(family) {
+        for dir in family_locations(app, family) {
+            heal_clear_sans_expected_plan(&dir, family);
+        }
+    }
     let existing = register_intact_family(app, family);
     if existing > 0 && !bust && family_is_ready(app, family) && !clear_sans_needs_heal {
         // Complete folders still need missing catalog variable TTFs (no bust)
@@ -5527,7 +5585,32 @@ fn download_family(
     // VF may already be on disk (step 1) — still allow FS statics for FS-only /
     // metadata-missing families. Never use FS to satisfy Google planned keys.
     let need_fontsource = google_listed.is_empty();
-    if need_fontsource {
+    if need_fontsource && slug == "clear-sans" {
+        // Intel-only planned set (8). Never Fontsource face-matrix (10).
+        planned = clear_sans_intel_planned_count();
+        version = CLEAR_SANS_INTEL_PIN.to_string();
+        let keys = clear_sans_intel_face_keys();
+        for (weight, italic) in CLEAR_SANS_INTEL_FACES {
+            if bulk().cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            let style = if *italic { "italic" } else { "normal" };
+            let name = google_face_filename(&slug, &weight.to_string(), style);
+            let path = root.join(&name);
+            if !bust && ttf_intact(&path) && !clear_sans_face_needs_intel_heal(&path) {
+                register_path(&path);
+                wrote = wrote.saturating_add(1);
+                continue;
+            }
+            match fetch_ttf_to_file(client, &slug, &version, *weight, *italic, "latin", &path) {
+                Ok(()) => wrote = wrote.saturating_add(1),
+                Err(_) => {}
+            }
+        }
+        // Drop any leftover ThinItalic / LightItalic / Fontsource shreds outside the plan.
+        purge_unplanned_font_files(&root, &keys);
+        write_expected_faces(&root, planned);
+    } else if need_fontsource {
         if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();
             let mut subsets = pick_subsets(&all_subsets);
@@ -5619,7 +5702,9 @@ fn download_family(
     }
     // Gate .complete on Google face keys when Google planned the set — never let
     // Fontsource *-latin-* extras stamp complete over missing Google faces.
-    let intact_for_complete = if google_expected > 0 {
+    let intact_for_complete = if slug == "clear-sans" {
+        count_intact_planned_keys(&root, &clear_sans_intel_face_keys())
+    } else if google_expected > 0 {
         // Count instance faces + variable files from the planned key list.
         if let Some(keys) = read_google_planned_keys(&root) {
             count_intact_planned_keys(&root, &keys)
@@ -5636,6 +5721,10 @@ fn download_family(
         count_intact_faces(&root)
     };
     if planned > 0 && intact_for_complete >= planned {
+        if slug == "clear-sans" {
+            // Force Intel plan count even if a stale Fontsource planned leaked.
+            planned = clear_sans_intel_planned_count();
+        }
         mark_family_complete(&root, planned);
         // Intact heals during download already in `heal`; fold any remaining
         // mashed statics (vars counted via download_google / ensure paths).
@@ -5643,6 +5732,10 @@ fn download_family(
         Ok((total, heal))
     } else {
         clear_complete_marker(&root);
+        if slug == "clear-sans" {
+            // Persist Intel expected so UI does not stick on 8/10 after a partial.
+            write_expected_faces(&root, clear_sans_intel_planned_count());
+        }
         if planned == 0 {
             Err("could not enumerate full face set — Repair".into())
         } else {
@@ -6881,6 +6974,9 @@ pub fn repair_incomplete_families(
     let client = http_download_client();
     if families.is_empty() {
         for_family_dirs(&app, |dir| {
+            if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
+                heal_clear_sans_expected_plan(dir, name);
+            }
             verify_complete_marker(dir);
             if dir_has_intact(dir) && !dir_is_complete(dir) {
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
@@ -8623,6 +8719,67 @@ mod install_path_tests {
             "{italic:?}"
         );
         assert!(clear_sans_intel_ttf_urls(100, true, "").is_empty(), "no ThinItalic upstream");
+        assert!(clear_sans_intel_ttf_urls(300, true, "").is_empty(), "no LightItalic upstream");
+    }
+
+    #[test]
+    fn clear_sans_planned_is_intel_eight_not_fontsource_matrix() {
+        // Fontsource clear-sans meta: weights [100,300,400,500,700] × italic = 10.
+        // Intel pin ships exactly 8 TTFs — planned/expected must match Intel only.
+        assert_eq!(clear_sans_intel_planned_count(), 8);
+        assert_eq!(CLEAR_SANS_INTEL_FACES.len(), 8);
+        for (w, italic) in CLEAR_SANS_INTEL_FACES {
+            assert!(
+                clear_sans_style_token(*w, *italic).is_some(),
+                "Intel face missing style token: {w} italic={italic}"
+            );
+        }
+        // Faces Fontsource matrix would demand but Intel does not ship:
+        assert!(clear_sans_style_token(100, true).is_none());
+        assert!(clear_sans_style_token(300, true).is_none());
+        let keys = clear_sans_intel_face_keys();
+        assert_eq!(keys.len(), 8);
+        assert!(keys.contains(&"clear-sans-100-normal.ttf".into()));
+        assert!(keys.contains(&"clear-sans-300-normal.ttf".into()));
+        assert!(keys.contains(&"clear-sans-400-normal.ttf".into()));
+        assert!(keys.contains(&"clear-sans-500-normal.ttf".into()));
+        assert!(keys.contains(&"clear-sans-700-normal.ttf".into()));
+        assert!(keys.contains(&"clear-sans-400-italic.ttf".into()));
+        assert!(keys.contains(&"clear-sans-500-italic.ttf".into()));
+        assert!(keys.contains(&"clear-sans-700-italic.ttf".into()));
+        assert!(!keys.iter().any(|k| k.contains("100-italic") || k.contains("300-italic")));
+        // Catalog/FS matrix size must not be used as the plan.
+        let fs_matrix = 5usize * 2; // weights × italic from fontsource-other
+        assert_ne!(clear_sans_intel_planned_count(), fs_matrix);
+    }
+
+    #[test]
+    fn clear_sans_rewrites_stale_expected_ten_to_intel_eight() {
+        let parent = temp_family_dir("clear-sans-expected-8");
+        let dir = parent.join("Clear Sans");
+        fs::create_dir_all(&dir).unwrap();
+        // Sticky Fontsource plan:
+        write_expected_faces(&dir, 10);
+        let _ = fs::write(dir.join(".complete"), b"10");
+        // 8 Intel-sized keys on disk (outside the Fontsource shred band).
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(305 * 1024, 0);
+        for (w, italic) in CLEAR_SANS_INTEL_FACES {
+            let style = if *italic { "italic" } else { "normal" };
+            let name = google_face_filename("clear-sans", &w.to_string(), style);
+            fs::write(dir.join(name), &fake).unwrap();
+        }
+        // Leftover ThinItalic demand must not keep expected at 10.
+        fs::write(dir.join("clear-sans-100-italic.ttf"), &fake).unwrap();
+
+        heal_clear_sans_expected_plan(&dir, "Clear Sans");
+        assert_eq!(read_expected_faces(&dir), Some(8));
+        assert!(dir_is_complete(&dir), "8/8 Intel plan satisfied → .complete");
+        let h = family_disk_honesty_in(&dir, "Clear Sans");
+        assert_eq!(h.expected, Some(8));
+        assert!(h.has_complete);
+        assert!(h.intact >= 8);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
