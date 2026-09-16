@@ -1,5 +1,10 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.171
+- **Clear Sans GDI 0 (P0):** Fontsource clear-sans CDN is WOFF / odd ~67–81KB TTFs (OS/2 fsType restricted) that `AddFontResourceExW` refuses. Activate/Repair/Retry now use **Intel Clear Sans** GitHub TTFs only (`intel/clear-sans` pinned commit; Regular ~305KB). Library shreds in the odd size band are deleted and replaced; never mark `.complete` when Add returns 0; `RegisterFailKind` stays in `failed_details`.
+- **Gidugu GDI-incapable:** Official google/fonts `Gidugu-Regular.ttf` (~461KB, fsType=0) still Add=0 on Eric’s PC while PrivateFontCollection loads. Surfaced as honest “Windows refused this face (known GDI-incapable for session install)” — no infinite Retry unload/re-Add loop; Add=0 ≠ `.complete`.
+- **Sticky CJK “Couldn’t load” (P1):** `is_session_live_mapped` only checked in-memory `loaded()`, so after cold start / failed re-Add families with size-matched gdi-maps + `.session-active` still landed on `failed_names`. Now hydrate `loaded()` from size-matched maps before ready-register; size-matched map + session-active = skip-live success; do not push those families to `failed_names`.
+
 ## Fixed in tip / 1.0.170
 - **Merge:** main hydrate Activated=GDI-only + scoped skip-failed pending, plus live catalog refresh (fontsource-other 154 / 12 variable flags).
 - **Download order:** VF google/fonts first, then Google CSS statics, then Fontsource when no Google static listing (remaining).

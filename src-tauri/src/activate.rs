@@ -543,26 +543,69 @@ mod winfont {
         }
     }
 
-    /// True when this source is already Add'd with a size-matched LocalAppData map.
+    /// True when this source has a size-matched LocalAppData gdi-map.
+    /// Hydrates `loaded()` when the map proves the face was staged for this
+    /// session — covers cold-start / failed re-Add where sidecars remain but
+    /// in-memory `loaded()` was empty (sticky CJK "Couldn't load").
     pub fn is_session_live_mapped(path: &Path) -> bool {
         if unloading().load(Ordering::SeqCst) {
-            return false;
-        }
-        let already = loaded()
-            .lock()
-            .map(|g| g.contains(path))
-            .unwrap_or(false);
-        if !already {
             return false;
         }
         let src_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         if src_len < 256 {
             return false;
         }
-        super::gdi_map_dest_for(path)
+        let dest_ok = super::gdi_map_dest_for(path)
             .and_then(|d| fs::metadata(d).ok())
             .map(|m| m.len() == src_len)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if !dest_ok {
+            // Also accept an explicit maps() entry (legacy path key variants).
+            let mapped_ok = maps()
+                .lock()
+                .ok()
+                .and_then(|m| m.get(path).cloned())
+                .and_then(|d| fs::metadata(d).ok())
+                .map(|m| m.len() == src_len)
+                .unwrap_or(false);
+            if !mapped_ok {
+                return false;
+            }
+        }
+        // Size-matched map ⇒ treat as session-live; hydrate loaded so skip-Add works.
+        if let Ok(mut g) = loaded().lock() {
+            g.insert(path.to_path_buf());
+        }
+        if let Some(gdi) = super::gdi_map_dest_for(path) {
+            remember_map(path, &gdi);
+        }
+        true
+    }
+
+    /// Rebuild `loaded()` from in-memory size-matched maps before ready-register.
+    pub fn hydrate_loaded_from_size_matched_maps() {
+        let pairs: Vec<(PathBuf, PathBuf)> = maps()
+            .lock()
+            .map(|m| m.iter().map(|(s, d)| (s.clone(), d.clone())).collect())
+            .unwrap_or_default();
+        for (src, gdi) in pairs {
+            if crate::session_stage::must_not_register_as_gdi_path(&gdi) {
+                continue;
+            }
+            let src_len = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+            if src_len < 256 {
+                continue;
+            }
+            let ok = fs::metadata(&gdi)
+                .map(|m| m.len() == src_len)
+                .unwrap_or(false);
+            if !ok {
+                continue;
+            }
+            if let Ok(mut g) = loaded().lock() {
+                g.insert(src);
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -1138,10 +1181,50 @@ fn count_already_live_intact_faces(app: &AppHandle, family: &str) -> Option<usiz
     }
 }
 
+fn family_session_maps_live(app: &AppHandle, family: &str) -> bool {
+    #[cfg(windows)]
+    {
+        count_already_live_intact_faces(app, family).is_some()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, family);
+        false
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn family_in_session_active(app: &AppHandle, family: &str) -> bool {
+    load_session_families(app)
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(family))
+}
+
+/// Size-matched maps + prior session-active ⇒ skip-live success (no failed_names).
+fn family_skip_live_success(app: &AppHandle, family: &str) -> Option<usize> {
+    #[cfg(windows)]
+    {
+        winfont::hydrate_loaded_from_size_matched_maps();
+        let live = count_already_live_intact_faces(app, family)?;
+        if family_in_session_active(app, family) || live > 0 {
+            return Some(live);
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, family);
+        None
+    }
+}
+
 fn register_intact_family_detailed(
     app: &AppHandle,
     family: &str,
 ) -> (usize, RegisterFailKind) {
+    if let Some(live) = family_skip_live_success(app, family) {
+        return (live, RegisterFailKind::NoneTried);
+    }
     if let Some(live) = count_already_live_intact_faces(app, family) {
         return (live, RegisterFailKind::NoneTried);
     }
@@ -1960,6 +2043,9 @@ pub fn session_begin(app: &AppHandle) {
             let _ = rebuild_session_maps_in(&root, &maps_root);
         }
         recover_stale_session(app);
+        // Rebuild loaded() from size-matched maps before ready-register so
+        // already-live CJK (session-active + sidecars) skips re-Add / failed_names.
+        winfont::hydrate_loaded_from_size_matched_maps();
         // Targeted dirs only — do not walk all of Documents before the UI is up.
         // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
@@ -2197,6 +2283,12 @@ fn ttf_urls(slug: &str, version: &str, weight: u16, italic: bool, subset: &str, 
     if slug == "noto-emoji" && !italic {
         urls.push("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoEmoji-Regular.ttf".into());
     }
+    // Clear Sans: Fontsource CDN is WOFF / odd ~67KB TTFs (OS/2 fsType=4) that
+    // AddFontResourceExW refuses. Never treat those as a GDI install source —
+    // exclusive Intel clear-sans GitHub TTFs (~305KB Regular, fsType=0).
+    if slug == "clear-sans" {
+        return clear_sans_intel_ttf_urls(weight, italic, &q);
+    }
     // Belt-and-suspenders: never hand callers a variable-package WOFF URL.
     urls.retain(|u| !u.contains("fontsource-variable"));
     urls.extend(fontsource_upstream_ttf_urls(slug, weight, italic));
@@ -2237,6 +2329,9 @@ fn fontsource_upstream_ttf_urls(slug: &str, weight: u16, italic: bool) -> Vec<St
         "open-sauce-sans" => ("marcologous/Open-Sauce-Fonts", "OpenSauceSans"),
         "open-sauce-one" => ("marcologous/Open-Sauce-Fonts", "OpenSauceOne"),
         "open-sauce-two" => ("marcologous/Open-Sauce-Fonts", "OpenSauceTwo"),
+        "clear-sans" => {
+            return clear_sans_intel_ttf_urls(weight, italic, "");
+        }
         _ => return Vec::new(),
     };
     let Some(style) = open_sauce_style_token(weight, italic) else {
@@ -2247,6 +2342,121 @@ fn fontsource_upstream_ttf_urls(slug: &str, weight: u16, italic: bool) -> Vec<St
         format!("https://cdn.jsdelivr.net/gh/{repo}@master/fonts/ttf/{file}"),
         format!("https://raw.githubusercontent.com/{repo}/master/fonts/ttf/{file}"),
     ]
+}
+
+/// Intel Clear Sans face token. Catalog weights: 100/300/400/500/700 (+ italic).
+/// Pinned commit matches Arch AUR / proven ~305KB Regular (Add=1 on Eric's PC).
+fn clear_sans_style_token(weight: u16, italic: bool) -> Option<&'static str> {
+    if italic {
+        return match weight {
+            400 => Some("Italic"),
+            500 => Some("MediumItalic"),
+            700 => Some("BoldItalic"),
+            _ => None,
+        };
+    }
+    match weight {
+        100 => Some("Thin"),
+        300 => Some("Light"),
+        400 => Some("Regular"),
+        500 => Some("Medium"),
+        700 => Some("Bold"),
+        _ => None,
+    }
+}
+
+const CLEAR_SANS_INTEL_PIN: &str = "cc22e43fc739fba9782f5e0fcd665a4933d2ba45";
+
+fn clear_sans_intel_ttf_urls(weight: u16, italic: bool, bust_q: &str) -> Vec<String> {
+    let Some(style) = clear_sans_style_token(weight, italic) else {
+        return Vec::new();
+    };
+    let file = format!("ClearSans-{style}.ttf");
+    let pin = CLEAR_SANS_INTEL_PIN;
+    vec![
+        format!(
+            "https://cdn.jsdelivr.net/gh/intel/clear-sans@{pin}/TTF/{file}{bust_q}"
+        ),
+        format!(
+            "https://raw.githubusercontent.com/intel/clear-sans/{pin}/TTF/{file}{bust_q}"
+        ),
+        format!("https://github.com/intel/clear-sans/raw/{pin}/TTF/{file}{bust_q}"),
+    ]
+}
+
+fn is_clear_sans_family(family: &str) -> bool {
+    family.trim().eq_ignore_ascii_case("clear sans")
+        || slug_family(family) == "clear-sans"
+}
+
+fn clear_sans_library_needs_heal(app: &AppHandle, family: &str) -> bool {
+    if !is_clear_sans_family(family) {
+        return false;
+    }
+    for dir in family_locations(app, family) {
+        let mut files = Vec::new();
+        walk_font_files(&dir, &mut files);
+        if files.is_empty() {
+            return true;
+        }
+        if files.iter().any(|p| clear_sans_face_needs_intel_heal(p)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fontsource clear-sans library shreds land ~67–81KB; Intel Regular is ~305KB.
+fn clear_sans_face_needs_intel_heal(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let len = meta.len();
+    // Odd subset / restricted-embedding Fontsource bodies.
+    (len >= 24 * 1024 && len <= 96 * 1024) || os2_fstype_restricted(path)
+}
+
+/// Read OS/2 fsType when present. fsType bit 1 (0x2) / bit 2 (0x4) = restricted
+/// embedding — Windows AddFontResourceExW often returns 0 (Fontsource clear-sans).
+/// Gidugu official TTF has fsType=0 yet still Add=0 on some PCs (GDI-incapable).
+fn os2_fstype(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < 12 || !ttf_magic(bytes) {
+        return None;
+    }
+    let ntables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+    let mut i = 0usize;
+    while i < ntables {
+        let off = 12 + i * 16;
+        if off + 16 > bytes.len() {
+            break;
+        }
+        if &bytes[off..off + 4] == b"OS/2" {
+            let toff = u32::from_be_bytes(bytes[off + 8..off + 12].try_into().ok()?) as usize;
+            if toff + 10 > bytes.len() {
+                return None;
+            }
+            return Some(u16::from_be_bytes([bytes[toff + 8], bytes[toff + 9]]));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn os2_fstype_restricted(path: &Path) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    match os2_fstype(&bytes) {
+        // 0x2 = restricted license, 0x4 = preview & print — not installable via GDI Add.
+        Some(fs) if fs & 0x0006 != 0 => true,
+        _ => false,
+    }
+}
+
+fn family_known_gdi_session_incapable(family: &str) -> bool {
+    // Official google/fonts Gidugu-Regular.ttf (~461KB, fsType=0) still Add=0 on
+    // Eric's PC while PrivateFontCollection loads — known session-install refuse.
+    family.trim().eq_ignore_ascii_case("gidugu")
 }
 
 fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weight: u16, italic: bool, subset: &str) -> Result<Vec<u8>, String> {
@@ -2277,6 +2487,17 @@ fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weig
                 if status.is_success() {
                     match resp.bytes() {
                         Ok(bytes) if ttf_magic(&bytes) && bytes.len() >= 256 => {
+                            // Clear Sans Fontsource "TTF" is ~67KB + fsType restricted — skip.
+                            if slug == "clear-sans"
+                                && (bytes.len() <= 96 * 1024
+                                    || os2_fstype(&bytes).map(|fs| fs & 0x0006 != 0).unwrap_or(false))
+                            {
+                                last = format!(
+                                    "clear-sans reject non-Intel body from {host} ({} bytes)",
+                                    bytes.len()
+                                );
+                                continue;
+                            }
                             circuit_success(host);
                             return Ok(bytes.to_vec());
                         }
@@ -2515,7 +2736,10 @@ fn pull_fontsource_subset_to_dir(
                 // CDN URLs still request the latin (or other) subset; filename matches Google keys.
                 let name = fontsource_face_filename(slug, subset, *weight, style);
                 let path = root.join(&name);
-                if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
+                if !bulk().bust.load(Ordering::SeqCst)
+                    && ttf_intact(&path)
+                    && !(slug == "clear-sans" && clear_sans_face_needs_intel_heal(&path))
+                {
                     register_path(&path);
                     wrote += 1;
                     continue;
@@ -4341,20 +4565,8 @@ fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -
 }
 
 fn register_intact_family(app: &AppHandle, family: &str) -> usize {
-    // Count only successful GDI Adds (or already-mapped session paths).
-    // Intact-on-disk alone must not inflate progress / ready_names.
-    let mut n = 0usize;
-    for dir in family_locations(app, family) {
-        let mut files = Vec::new();
-        walk_font_files(&dir, &mut files);
-        sort_faces_var_first(&mut files);
-        for path in files {
-            if ttf_intact(&path) && register_family_path(family, &path) {
-                n += 1;
-            }
-        }
-    }
-    n
+    // Prefer size-matched session-live skip (same as detailed path).
+    register_intact_family_detailed(app, family).0
 }
 
 fn register_intact_new(app: &AppHandle, family: &str) -> usize {
@@ -4466,6 +4678,12 @@ fn format_register_zero_detail_with(
     if h.undersized {
         msg.push_str(", undersized vs Google (latin/subset remnant)");
     }
+    if family_known_gdi_session_incapable(family) {
+        // Official TTF still Add=0 — honest refuse, not a download/size bug.
+        msg.push_str(", Windows refused this face (known GDI-incapable for session install)");
+    } else if matches!(cause, RegisterFailKind::AddReturnedZero) {
+        msg.push_str(", Windows refused this face");
+    }
     msg
 }
 
@@ -4567,6 +4785,8 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     if ready.is_empty() {
         return;
     }
+    #[cfg(windows)]
+    winfont::hydrate_loaded_from_size_matched_maps();
     // Complete folders still pull missing catalog variable TTFs (no bust) and
     // heal mashed instance names — Activate used to name-heal only / skip vars.
     let client = http_download_client();
@@ -4606,6 +4826,14 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
             // Progress = families processed; ready_names only when GDI accepted faces.
             p.done = (i + 1) as u32;
             if added > 0 {
+                p.skipped = p.skipped.saturating_add(1);
+                live.push(family.clone());
+                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                    p.ready_names.push(family.clone());
+                }
+            } else if let Some(live_n) = family_skip_live_success(app, family) {
+                // Size-matched maps + session-active: already live — not a failure.
+                let _ = live_n;
                 p.skipped = p.skipped.saturating_add(1);
                 live.push(family.clone());
                 if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
@@ -5206,8 +5434,23 @@ fn download_family(
         return Err("empty family name".into());
     }
     let bust = bulk().bust.load(Ordering::SeqCst);
+    // Clear Sans: replace Fontsource WOFF/odd ~67KB shreds with Intel TTFs.
+    let clear_sans_needs_heal = is_clear_sans_family(family) && clear_sans_library_needs_heal(app, family);
+    if clear_sans_needs_heal {
+        clear_complete_markers_for_family(app, family);
+        // Drop Fontsource shreds so Intel TTFs can replace them (skip-intact would keep Add=0 bodies).
+        for dir in family_locations(app, family) {
+            let mut files = Vec::new();
+            walk_font_files(&dir, &mut files);
+            for path in files {
+                if clear_sans_face_needs_intel_heal(&path) {
+                    let _ = delete_font_file(&path);
+                }
+            }
+        }
+    }
     let existing = register_intact_family(app, family);
-    if existing > 0 && !bust && family_is_ready(app, family) {
+    if existing > 0 && !bust && family_is_ready(app, family) && !clear_sans_needs_heal {
         // Complete folders still need missing catalog variable TTFs (no bust)
         // and name heal for pre-namepatch installs. Statics stay; vars are added.
         // Do not emit here — caller (drain) coalesces HealStats across families.
@@ -6284,6 +6527,16 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                         if let Ok(mut g) = registered.lock() {
                             g.push(family.clone());
                         }
+                    } else if family_session_maps_live(&app, &family)
+                        || family_skip_live_success(&app, &family).is_some()
+                    {
+                        p.skipped = p.skipped.saturating_add(1);
+                        if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                            p.ready_names.push(family.clone());
+                        }
+                        if let Ok(mut g) = registered.lock() {
+                            g.push(family.clone());
+                        }
                     } else {
                         let detail = note_register_zero(&app, &family, cause);
                         p.failed = p.failed.saturating_add(1);
@@ -6407,6 +6660,23 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
     for family in &families {
         forget_queued(family);
         if family_has_intact(&app, family) {
+            // Clear Sans: heal odd Fontsource shreds from Intel before re-Add.
+            if is_clear_sans_family(family) && clear_sans_library_needs_heal(&app, family) {
+                need_fetch.push(family.clone());
+                continue;
+            }
+            // Gidugu: official TTF still Add=0 — honest refuse, no infinite Retry loop.
+            if family_known_gdi_session_incapable(family) {
+                let detail = note_register_zero(&app, family, RegisterFailKind::AddReturnedZero);
+                if let Ok(mut p) = bulk().progress.lock() {
+                    if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+                        p.failed_names.push(family.clone());
+                        p.failed_details.push(detail);
+                    }
+                    p.failed = p.failed_names.len() as u32;
+                }
+                continue;
+            }
             // P0: re-stage+Add (not ambient skip-intact). Do not wipe library.
             let (n, cause) = reregister_intact_family(&app, family);
             if n > 0 {
@@ -7039,17 +7309,17 @@ mod complete_marker_tests {
 
     #[test]
     fn verify_keeps_google_planned_below_catalog_floor() {
-        // Sofia Sans: catalog floor includes edges 1/1000 (22) but Google CSS often
-        // omits them → planned keys ≪ floor. Must NOT clear as latin lie.
+        // Sofia Sans: catalog floor (18) vs a thinner CSS-shaped plan. Must NOT clear as latin lie.
         let parent = temp_family_dir("sofia-planned-below-floor");
         let dir = parent.join("Sofia Sans");
         fs::create_dir_all(&dir).unwrap();
         let mut fake = b"\x00\x01\x00\x00".to_vec();
         fake.resize(256, 0);
         let floor = google_catalog_face_floor("Sofia Sans").expect("catalog floor");
-        assert!(floor >= 22, "Sofia Sans floor should include 1..1000 edges");
-        // CSS-shaped plan without catalog edges 1 and 1000 (9 weights × italic).
-        let weights = [100, 200, 300, 400, 500, 600, 700, 800, 900];
+        // Catalog is 9 weights × italic = 18 (1/1000 edges dropped upstream).
+        assert!(floor >= 18, "Sofia Sans floor should cover 100..900 × italic, got {floor}");
+        // CSS-shaped plan thinner than catalog floor (omit 100/900).
+        let weights = [200, 300, 400, 500, 600, 700, 800];
         let mut keys = Vec::new();
         for w in weights {
             for style in ["normal", "italic"] {
@@ -7058,7 +7328,7 @@ mod complete_marker_tests {
                 keys.push(name);
             }
         }
-        assert!(keys.len() < floor, "planned must be below catalog floor");
+        assert!(keys.len() < floor, "planned must be below catalog floor ({}/{})", keys.len(), floor);
         fs::write(dir.join(".google-planned"), keys.join("\n").as_bytes()).unwrap();
         fs::write(dir.join(".expected"), keys.len().to_string().as_bytes()).unwrap();
         fs::write(dir.join(".complete"), keys.len().to_string().as_bytes()).unwrap();
@@ -7083,11 +7353,11 @@ mod complete_marker_tests {
 
     #[test]
     fn fs_only_google_vf_folder_maps_42dot_and_skips_material() {
-        assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans"));
-        assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica"));
+        assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans".into()));
+        assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica".into()));
         assert_eq!(
             fs_only_google_vf_folder("Big Shoulders Display"),
-            Some("bigshouldersdisplay")
+            Some("bigshouldersdisplay".into())
         );
         assert!(fs_only_google_vf_folder("Material Symbols Outlined").is_none());
         assert!(family_ensures_google_vf("42dot Sans"));
@@ -8301,8 +8571,114 @@ mod install_path_tests {
             sauce_i.iter().any(|u| u.contains("OpenSauceSans-BlackItalic.ttf")),
             "900 italic upstream: {sauce_i:?}"
         );
+        let cs = ttf_urls("clear-sans", "5.3.0", 400, false, "latin", 0);
+        assert!(
+            cs.iter().all(|u| u.contains("intel/clear-sans")),
+            "clear-sans gated to Intel: {cs:?}"
+        );
         assert!(!ttf_magic(&[0x80, 0x01, 0x33, 0x11]));
         assert!(ttf_magic(b"\x00\x01\x00\x00"));
+    }
+
+    #[test]
+    fn clear_sans_urls_use_intel_not_fontsource_cdn() {
+        let urls = ttf_urls("clear-sans", "5.3.0", 400, false, "latin", 0);
+        assert!(
+            !urls.is_empty(),
+            "clear-sans must have Intel URLs"
+        );
+        assert!(
+            urls.iter().all(|u| u.contains("intel/clear-sans") && u.contains("ClearSans-Regular.ttf")),
+            "exclusive Intel Regular TTFs, no Fontsource CDN: {urls:?}"
+        );
+        assert!(
+            !urls.iter().any(|u| u.contains("fontsource") || u.contains("@fontsource")),
+            "must not treat Fontsource clear-sans as GDI source: {urls:?}"
+        );
+        let bold = ttf_urls("clear-sans", "", 700, false, "latin", 0);
+        assert!(
+            bold.iter().any(|u| u.contains("ClearSans-Bold.ttf")),
+            "{bold:?}"
+        );
+        let italic = ttf_urls("clear-sans", "", 400, true, "latin", 0);
+        assert!(
+            italic.iter().any(|u| u.contains("ClearSans-Italic.ttf")),
+            "{italic:?}"
+        );
+        assert!(clear_sans_intel_ttf_urls(100, true, "").is_empty(), "no ThinItalic upstream");
+    }
+
+    #[test]
+    fn os2_fstype_detects_restricted_embedding() {
+        // Minimal SFNT with one OS/2 table, fsType=4 at offset 8 of table.
+        let mut bytes = vec![0u8; 12 + 16 + 16];
+        bytes[0..4].copy_from_slice(b"\x00\x01\x00\x00");
+        bytes[4] = 0;
+        bytes[5] = 1; // one table
+        bytes[12..16].copy_from_slice(b"OS/2");
+        let toff: u32 = 28;
+        bytes[20..24].copy_from_slice(&toff.to_be_bytes());
+        bytes[24..28].copy_from_slice(&16u32.to_be_bytes());
+        bytes.resize(28 + 16, 0);
+        bytes[28 + 8] = 0;
+        bytes[28 + 9] = 4; // fsType = 4
+        assert_eq!(os2_fstype(&bytes), Some(4));
+        assert!(os2_fstype(&bytes).map(|fs| fs & 0x0006 != 0).unwrap_or(false));
+        assert_eq!(os2_fstype(b"wOFF"), None);
+    }
+
+    #[test]
+    fn clear_sans_odd_size_needs_intel_heal() {
+        let parent = temp_family_dir("clear-sans-heal");
+        let dir = parent.join("Clear Sans");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clear-sans-400-normal.ttf");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(67 * 1024, 0);
+        fs::write(&path, &fake).unwrap();
+        assert!(clear_sans_face_needs_intel_heal(&path));
+        fake.resize(305 * 1024, 0);
+        fs::write(&path, &fake).unwrap();
+        // Large SFNT without restricted OS/2 — heal not required by size band.
+        assert!(!clear_sans_face_needs_intel_heal(&path));
+        assert!(is_clear_sans_family("Clear Sans"));
+        assert!(family_known_gdi_session_incapable("Gidugu"));
+        assert!(!family_known_gdi_session_incapable("Nunito"));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn size_matched_map_marks_session_live_without_loaded_first() {
+        // Pure helper: dest size match is the live-map gate (loaded hydrate follows).
+        let parent = temp_family_dir("live-map-skip");
+        let src = parent.join("src.ttf");
+        let dest = parent.join("dest.ttf");
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(4096, 0);
+        fs::write(&src, &fake).unwrap();
+        fs::write(&dest, &fake).unwrap();
+        let src_len = fs::metadata(&src).unwrap().len();
+        let matched = fs::metadata(&dest).map(|m| m.len() == src_len && src_len >= 256).unwrap_or(false);
+        assert!(matched, "size-matched map must count as session-live gate");
+        fs::write(&dest, &fake[..512]).unwrap();
+        let mismatched = fs::metadata(&dest).map(|m| m.len() == src_len).unwrap_or(false);
+        assert!(!mismatched);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn register_fail_kind_label_in_failed_details() {
+        assert_eq!(
+            RegisterFailKind::AddReturnedZero.label(),
+            "AddFontResourceExW returned 0"
+        );
+        assert!(family_known_gdi_session_incapable("gidugu"));
+        let msg = format!(
+            "Gidugu — files on disk 1/1, .complete=no, GDI live 0 ({}), Windows refused this face (known GDI-incapable for session install)",
+            RegisterFailKind::AddReturnedZero.label()
+        );
+        assert!(msg.contains("Windows refused this face"));
+        assert!(msg.contains("AddFontResourceExW returned 0"));
     }
 
     #[test]
