@@ -40,7 +40,7 @@ export interface FontRecord {
   weights: number[];
   italic: boolean;
   variable: boolean;
-  /** Catalog claims VF; UI badge/facet use `variable` = on-disk *-variable-* only. */
+  /** Catalog claims VF; card badge uses `variable` = on-disk VF. Facet uses either. */
   catalogVariable?: boolean;
   tags: string[];
   popularity: number;

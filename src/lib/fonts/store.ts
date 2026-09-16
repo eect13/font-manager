@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
-import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog, isVariableCatalogFamily } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { bytesNearlySame } from "./binary-diff";
 import { idbDelete, idbGet, idbPutMany } from "./idb";
@@ -1346,7 +1346,7 @@ export function matchesQuery(
     font.source,
     font.category,
     ...tagsFor(font, customTags),
-    font.variable ? "variable" : "",
+    font.variable || font.catalogVariable ? "variable" : "",
     font.italic ? "italic" : "",
     font.fileName ?? "",
     licenseSearchHay(font),
@@ -1359,7 +1359,7 @@ export function matchesQuery(
       const w = Number(token.slice(7));
       return font.weights.includes(w) || (font.variable && !Number.isNaN(w));
     }
-    if (token === "variable") return font.variable;
+    if (token === "variable") return isVariableCatalogFamily(font);
     if (token === "italic") return font.italic;
     if (token.startsWith("tag:")) return tagsFor(font, customTags).includes(token.slice(4));
     if (token.startsWith("license:")) return fontLicense(font) === token.slice(8);

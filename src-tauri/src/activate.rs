@@ -2776,11 +2776,73 @@ fn google_catalog_is_variable(family: &str) -> bool {
     google_catalog_meta(family).map(|m| m.variable).unwrap_or(false)
 }
 
-/// Fontsource-only families that still ship a public TTF VF under google/fonts
-/// (missing from Google metadata / google-catalog). Never WOFF2 / never @fontsource-variable.
-/// Material Symbols* omitted — no google/fonts TTF VF path found.
-fn fs_only_google_vf_folder(family: &str) -> Option<&'static str> {
-    match family.trim().to_ascii_lowercase().as_str() {
+#[derive(Clone, Copy)]
+struct FontsourceOtherMeta {
+    variable: bool,
+}
+
+fn fontsource_other_meta_maps() -> &'static (HashMap<String, FontsourceOtherMeta>, HashMap<String, FontsourceOtherMeta>) {
+    static META: OnceLock<(HashMap<String, FontsourceOtherMeta>, HashMap<String, FontsourceOtherMeta>)> =
+        OnceLock::new();
+    META.get_or_init(|| {
+        let raw = include_str!("../../src/lib/fonts/fontsource-other.json");
+        let mut by_lower = HashMap::new();
+        let mut by_slug = HashMap::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
+                for row in arr {
+                    let Some(row) = row.as_array() else { continue };
+                    if row.len() < 5 {
+                        continue;
+                    }
+                    let Some(name) = row[0].as_str() else { continue };
+                    let variable = row[4].as_bool().unwrap_or(false);
+                    let t = name.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    let meta = FontsourceOtherMeta { variable };
+                    by_lower.insert(t.to_ascii_lowercase(), meta);
+                    by_slug.insert(slug_family(t), meta);
+                }
+            }
+        }
+        (by_lower, by_slug)
+    })
+}
+
+fn fontsource_other_meta(family: &str) -> Option<FontsourceOtherMeta> {
+    let (by_lower, by_slug) = fontsource_other_meta_maps();
+    let key = family.trim().to_ascii_lowercase();
+    by_lower
+        .get(&key)
+        .or_else(|| by_slug.get(&slug_family(family)))
+        .copied()
+}
+
+/// Fontsource-other `variable:true` families with a public google/fonts TTF VF.
+/// Folder = alphanumeric compact lower (`42dot Sans` → `42dotsans`).
+/// Never WOFF2 / never `@fontsource-variable`. Material Symbols* have WOFF2-only
+/// on Fontsource and no google/fonts TTF — excluded.
+fn fontsource_other_is_variable(family: &str) -> bool {
+    fontsource_other_meta(family).map(|m| m.variable).unwrap_or(false)
+}
+
+fn family_is_woff2_only_variable(family: &str) -> bool {
+    let t = family.trim().to_ascii_lowercase();
+    t == "material symbols outlined"
+        || t == "material symbols rounded"
+        || t == "material symbols sharp"
+        || t == "material symbols"
+}
+
+/// google/fonts repo folder override for FS-other (and known slug fixes).
+fn fs_only_google_vf_folder(family: &str) -> Option<String> {
+    if family_is_woff2_only_variable(family) {
+        return None;
+    }
+    let key = family.trim().to_ascii_lowercase();
+    let fixed = match key.as_str() {
         "42dot sans" => Some("42dotsans"),
         "big shoulders display" => Some("bigshouldersdisplay"),
         "big shoulders text" => Some("bigshoulderstext"),
@@ -2791,15 +2853,32 @@ fn fs_only_google_vf_folder(family: &str) -> Option<&'static str> {
         "briem hand" => Some("briemhand"),
         "finlandica" => Some("finlandica"),
         _ => None,
+    };
+    if let Some(f) = fixed {
+        return Some(f.to_string());
     }
+    if fontsource_other_is_variable(family) {
+        let compact: String = family
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if !compact.is_empty() {
+            return Some(compact);
+        }
+    }
+    None
 }
 
 /// True when Activate/Repair should pull a real google/fonts `*-variable-*` TTF.
+/// Covers: google-catalog variable + Fontsource-other variable with a TTF path.
 fn family_ensures_google_vf(family: &str) -> bool {
-    if family_has_no_public_vf(family) {
+    if family_has_no_public_vf(family) || family_is_woff2_only_variable(family) {
         return false;
     }
-    google_catalog_is_variable(family) || fs_only_google_vf_folder(family).is_some()
+    google_catalog_is_variable(family)
+        || fontsource_other_is_variable(family)
+        || fs_only_google_vf_folder(family).is_some()
 }
 
 /// CSS axis strings for catalog-variable families (real `min..max` ranges).
@@ -2843,7 +2922,7 @@ fn google_fonts_repo_folders(family: &str) -> Vec<String> {
     let mut out = Vec::new();
     // FS-only / slug overrides first (42dot Sans → 42dotsans, not 42dot-sans miss).
     if let Some(fixed) = fs_only_google_vf_folder(family) {
-        out.push(fixed.to_string());
+        out.push(fixed);
     }
     if !compact.is_empty() && !out.iter().any(|s| s == &compact) {
         out.push(compact);
@@ -3149,7 +3228,12 @@ fn download_google_variable_ttfs(
 }
 
 fn is_variable_face_filename(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("-variable-")
+    let lower = name.to_ascii_lowercase();
+    // Dest names we write (`*-variable-*`) plus leftover google/fonts originals
+    // (`Family-VariableFont_wght.ttf`, `Family[wght].ttf`) so scan/honesty counts them.
+    lower.contains("-variable-")
+        || lower.contains("variablefont")
+        || name.contains('[')
 }
 
 /// `*-variable-*-italic.ttf` (or ends with `-italic.ttf` after the variable token).
@@ -4005,21 +4089,23 @@ fn fetch_google_family_faces_to_dir(
     if !official && !ensure_vf {
         return (0, Vec::new(), Vec::new(), HealStats::default());
     }
-    // Try CSS listing for official + ensure families (may 404 for metadata-missing).
-    let listed = discover_richest_google_listing(client, family);
-    let (inst_wrote, _, mut heal) = if listed.is_empty() {
-        (0, 0, HealStats::default())
-    } else {
-        download_listed_faces_to_dir(client, family, slug, root, listed.clone())
-    };
-    // Real variable TTFs from google/fonts (jsDelivr then GitHub raw). Never WOFF2.
+    let mut heal = HealStats::default();
+    // 1) Variable first (complete VF before statics) — google/fonts TTF, never WOFF2.
     let (var_files, var_heal) = if ensure_vf {
         download_google_variable_ttfs(client, family, slug, root)
     } else {
         (Vec::new(), HealStats::default())
     };
     heal.add(var_heal);
-    let wrote = inst_wrote.saturating_add(var_files.len());
+    // 2) Google CSS static instances (may 404 for metadata-missing FS-only).
+    let listed = discover_richest_google_listing(client, family);
+    let (inst_wrote, _, inst_heal) = if listed.is_empty() {
+        (0, 0, HealStats::default())
+    } else {
+        download_listed_faces_to_dir(client, family, slug, root, listed.clone())
+    };
+    heal.add(inst_heal);
+    let wrote = var_files.len().saturating_add(inst_wrote);
     (wrote, listed, var_files, heal)
 }
 
@@ -5120,10 +5206,10 @@ fn download_family(
         clear_google_planned(&root);
     }
 
-    // Fontsource `*-{subset}-*` names can never satisfy Google face keys — skip FS
-    // fill whenever Google planned a set (partial downloads included). Only burn
-    // Fontsource when Google listed nothing.
-    let need_fontsource = google_expected == 0;
+    // Fontsource fills remaining when Google had no static CSS listing.
+    // VF may already be on disk (step 1) — still allow FS statics for FS-only /
+    // metadata-missing families. Never use FS to satisfy Google planned keys.
+    let need_fontsource = google_listed.is_empty();
     if need_fontsource {
         if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();
@@ -6938,15 +7024,23 @@ mod complete_marker_tests {
 
     #[test]
     fn fs_only_google_vf_folder_maps_42dot_and_skips_material() {
-        assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans"));
-        assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica"));
+        assert_eq!(
+            fs_only_google_vf_folder("42dot Sans"),
+            Some("42dotsans".into())
+        );
+        assert_eq!(
+            fs_only_google_vf_folder("Finlandica"),
+            Some("finlandica".into())
+        );
         assert_eq!(
             fs_only_google_vf_folder("Big Shoulders Display"),
-            Some("bigshouldersdisplay")
+            Some("bigshouldersdisplay".into())
         );
         assert!(fs_only_google_vf_folder("Material Symbols Outlined").is_none());
         assert!(family_ensures_google_vf("42dot Sans"));
         assert!(!family_ensures_google_vf("Material Symbols Outlined"));
+        assert!(fontsource_other_is_variable("42dot Sans"));
+        assert!(fontsource_other_is_variable("Finlandica"));
     }
 
     #[test]
@@ -6956,6 +7050,16 @@ mod complete_marker_tests {
         assert!(fs_only_google_vf_folder("42dot Sans").is_some());
         assert!(family_expects_dual_variable("Finlandica"));
         assert!(!family_expects_dual_variable("42dot Sans"));
+    }
+
+    #[test]
+    fn variable_face_filename_counts_google_fonts_originals() {
+        assert!(is_variable_face_filename("nunito-variable-wght.ttf"));
+        assert!(is_variable_face_filename("Nunito-VariableFont_wght.ttf"));
+        assert!(is_variable_face_filename("Nunito[wght].ttf"));
+        assert!(is_variable_face_filename("Nunito-Italic[wght].ttf"));
+        assert!(!is_variable_face_filename("nunito-400-normal.ttf"));
+        assert!(!is_variable_face_filename("roboto-700-italic.ttf"));
     }
 
     #[test]

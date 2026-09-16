@@ -23,7 +23,7 @@ import { LibraryGroups } from "./folder-tree";
 import { GoogleActivateMenuItem, GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
 import { SidebarRow } from "./sidebar-row";
 import { HelpTip } from "./help-tip";
-import { ALL_TAGS, GOOGLE_DIRECTORY, isFontsourceOnly } from "@/lib/fonts/catalog";
+import { ALL_TAGS, GOOGLE_DIRECTORY, isFontsourceOnly, isVariableCatalogFamily } from "@/lib/fonts/catalog";
 import { getCatalogSyncState, subscribeCatalogSync, syncFontCatalog } from "@/lib/fonts/google-api";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
@@ -52,7 +52,7 @@ function tallyFonts(list: FontRecord[], customTags: Record<string, string[]>) {
   for (const font of list) {
     license[fontLicense(font)] += 1;
     category[font.category] += 1;
-    if (font.variable) variable += 1;
+    if (isVariableCatalogFamily(font)) variable += 1;
     if (font.italic) italic += 1;
     for (const tag of tagsFor(font, customTags)) {
       if (KNOWN_TAGS.has(tag) && (TAG_ORDER as readonly string[]).includes(tag)) {
@@ -126,8 +126,8 @@ function ProviderRefresh() {
   const label = busy
     ? "Updating Fontsource and Google Fonts…"
     : syncedAt
-      ? `Refresh the catalog list. Last updated ${relativeSync(syncedAt)}. Does not replace TTF files — Retry a family for that.`
-      : "Refresh Fontsource and Google Fonts. The shipped list is already loaded. Does not replace TTF files on disk.";
+      ? `Refresh catalogs and check the latest GitHub app release. Last updated ${relativeSync(syncedAt)}. Does not replace TTF files — Retry a family for that.`
+      : "Refresh Fontsource and Google Fonts, and check whether a newer app release is on GitHub. Does not replace TTF files on disk.";
   return (
     <HelpTip label={label} side="right" wide>
       <button

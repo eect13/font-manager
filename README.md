@@ -1,10 +1,12 @@
-# Font Manager **1.0.169**
+# Font Manager **1.0.170**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.170.** Variable facet (sidebar / `variable` query) lists catalog-variable families — Google **558** + Fontsource-other with a public TTF VF (42dot Sans, Big Shoulders*, Briem Hand, Finlandica). Same idea as Italic. Card badge / axes still need an on-disk VF (42dot statics stay non-badged; Material Symbols* stay out — WOFF2-only). Shipped Fontsource-other **154** (was 120; 42dot was missing from the list). Activate downloads **VF first**, then Google statics, then Fontsource remaining. Scan counts leftover `Family-VariableFont_*.ttf` / `Family[wght].ttf` as VF, not only `*-variable-*`. Copy still skips when gdi-maps size matches; **Add is never skipped** (in-process `loaded()` is not Windows). Refresh catalogs (no-store) and toasts if a newer GitHub release exists. No pack/NSIS this tip.
 
 **1.0.169.** Boot Activated badge = GDI-registered families only (`result.ready` ∪ session_begin sidecar) — files in Documents and local uploads from last persist are not live if Add failed. Skip on failed downloads never wipes every pending queue when names match no catalog ids. Fontsource-only families that still ship a public google/fonts VF (42dot Sans, Big Shoulders*, Briem Hand, Finlandica) are ensured/backfilled as `*-variable-*` TTFs so the Variable badge can turn on after Activate; Material Symbols* still skipped (no TTF VF). Repair-all complete folders also ensure those FS-only VFs. No size-matched skip of copy+Add (PR #22 register-skip not taken). No pack/NSIS this tip.
 

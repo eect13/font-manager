@@ -1,5 +1,12 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.170
+- **Variable facet too small:** sidebar counted on-disk `font.variable` only (often ~12) while Google catalog has **558** variable families and Italic already uses the catalog flag. Facet / `variable` query now use `catalogVariable || on-disk VF` (Material Symbols* excluded). Card badge / axes stay disk-only so 42dot statics do not get fake sliders.
+- **42dot missing from the shipped list:** 1.0.169 ensured VFs in Rust but Fontsource-other was still 120 families with **0** `variable:true` and no 42dot. Live catalogs: Fontsource-other **154** / 9 TTF-VF (+3 Material Symbols marked variable in Fontsource, ignored for GDI).
+- **Leftover google/fonts VF names ignored:** scan `has_variable` only matched `*-variable-*`. Now also `VariableFont_` and `Family[wght].ttf`.
+- **VF after statics:** download order is VF → Google statics → Fontsource remaining (so FS-only still get statics when a VF already landed).
+- **Not taken:** skip `AddFontResourceExW` when in-process `loaded()` + size-matched gdi-map. Copy skip on size match is already the safe win. Add is the GDI truth (Font Cache can drop a mapping our HashSet still holds).
+
 ## Fixed in tip / 1.0.169
 - **Hydrate false live:** boot `restoreActivation` treated `result.onDisk` and every persisted local as Activated even when GDI Add failed. Live is now `result.ready` ∪ `session_begin` sidecar (families that actually registered this boot). Documents file presence still updates diskFamilies only.
 - **Skip failed nuclear pending:** `skipFailedDownloads` called `clearPendingActivate(undefined)` when skip names matched no catalog/local ids, wiping every pending Activate. Now no-ops the clear when ids is empty.
@@ -110,5 +117,5 @@
 
 ## Notes
 
-- Tip is 1.0.169 (unreleased pack — ask before NSIS).
+- Tip is 1.0.170 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
