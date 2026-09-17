@@ -1,10 +1,12 @@
-# Font Manager **1.0.177**
+# Font Manager **1.0.178**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.178.** Retry no longer skips Gidugu. Activate / Retry always sanitize+Add (Debg strip, then 2015 pin). Add>0 ⇒ live (2100). Add still 0 on a full-size file ⇒ disk-settle once, no refetch loop. Undersized remnant still Repair. 1.0.177 write-path sanitize kept.
 
 **1.0.177.** Gidugu Activates — catalog **2100** GDI-live, not 2099. v2.000 ships a `Debg` table Windows Font Viewer / `AddFontResourceExW` reject ([google/fonts#9982](https://github.com/google/fonts/issues/9982)); we strip `Debg`/`TTFA`/`FFTM` and add an empty `DSIG` on write, then fall back to the 2015 google/fonts TTF if Add is still 0. Last-resort settle only if both fail. Same-session Activate All of already-live families stays O(1) skip (this-process `loaded()` only). 1.0.176 boot/skip-copy HOLDs kept.
 

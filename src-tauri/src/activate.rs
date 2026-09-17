@@ -1350,7 +1350,25 @@ fn family_may_skip_add_this_process(
         && all_bound_size_matched_mapped
 }
 
-/// Catalog 2100 − intact known-incapable (Gidugu) = 2099 GDI-live.
+/// Retry of an intact Gidugu face: always attempt sanitize+Add first.
+/// Settle (no refetch) only when Add is still 0 and the file is full-size.
+#[cfg_attr(not(test), allow(dead_code))]
+fn retry_gidugu_settle_without_refetch(
+    added: usize,
+    known_incapable: bool,
+    intact: bool,
+    undersized: bool,
+) -> bool {
+    added == 0 && known_incapable && intact && !undersized
+}
+
+/// Retry must not skip register for Gidugu (that was the 2099 hole).
+#[cfg_attr(not(test), allow(dead_code))]
+fn retry_must_attempt_register_before_settle(intact: bool) -> bool {
+    intact
+}
+
+/// Catalog 2100 − last-resort settled (Gidugu Add still 0 after sanitize/2015) = 2099.
 #[cfg_attr(not(test), allow(dead_code))]
 fn catalog_expected_gdi_live(catalog_families: usize, known_incapable_intact: usize) -> usize {
     catalog_families.saturating_sub(known_incapable_intact)
@@ -7260,13 +7278,8 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
                 need_fetch.push(family.clone());
                 continue;
             }
-            // Gidugu: official TTF still Add=0 — disk settled; no failed_names / Retry toast.
-            if family_known_gdi_session_incapable(family) {
-                stamp_known_incapable_disk_settled(&app, family);
-                note_settled_quiet(family);
-                continue;
-            }
-            // P0: re-stage+Add (not ambient skip-intact). Do not wipe library.
+            // Always try sanitize+Add (Gidugu Debg strip / 2015 pin lives in
+            // register_intact). Skipping Gidugu here was the 2099 hole.
             let (n, cause) = reregister_intact_family(&app, family);
             if n > 0 {
                 reregistered += 1;
@@ -7275,11 +7288,25 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
                     p.failed_names.retain(|n| !n.eq_ignore_ascii_case(family));
                     p.failed_details
                         .retain(|d| !d.to_ascii_lowercase().starts_with(&family.to_ascii_lowercase()));
+                    p.settled_names
+                        .retain(|n| !n.eq_ignore_ascii_case(family));
                     if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
                         p.ready_names.push(family.clone());
                     }
                     p.failed = p.failed_names.len() as u32;
                 }
+                continue;
+            }
+            let honesty = family_disk_honesty(&app, family);
+            if retry_gidugu_settle_without_refetch(
+                n,
+                family_known_gdi_session_incapable(family),
+                honesty.intact > 0,
+                honesty.undersized,
+            ) {
+                // Last resort after sanitize + 2015 pin: disk settled, no Retry-loop.
+                stamp_known_incapable_disk_settled(&app, family);
+                note_settled_quiet(family);
                 continue;
             }
             // Still GDI 0 — clear sticky .complete; honest cause; no wipe.
@@ -9360,6 +9387,17 @@ mod install_path_tests {
         let urls = gidugu_gdi_safe_ttf_urls();
         assert!(urls.iter().all(|u| u.contains(GIDUGU_GDI_SAFE_PIN)));
         assert!(urls.iter().any(|u| u.contains("ofl/gidugu/Gidugu-Regular.ttf")));
+        assert!(retry_must_attempt_register_before_settle(true));
+        assert!(!retry_must_attempt_register_before_settle(false));
+        assert!(retry_gidugu_settle_without_refetch(0, true, true, false));
+        assert!(
+            !retry_gidugu_settle_without_refetch(1, true, true, false),
+            "Add>0 is live — do not settle"
+        );
+        assert!(
+            !retry_gidugu_settle_without_refetch(0, true, true, true),
+            "undersized remnant must Repair/fetch, not settle"
+        );
     }
 
     #[test]

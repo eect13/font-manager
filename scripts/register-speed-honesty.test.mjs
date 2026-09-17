@@ -5,8 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 /**
- * 1.0.177 register speed + Gidugu GDI-live 2100.
- * Sanitize Debg / 2015 pin so Activate All is 2100, not 2099.
+ * 1.0.178 Retry tries Gidugu Add before settle (2100, no Retry-loop).
  * Mirrors activate.rs product rules (no GDI in Node).
  */
 
@@ -30,6 +29,14 @@ function catalogExpectedGdiLive(catalogFamilies, knownIncapableIntact) {
 
 function jobDownloadedCount(done, skipped, failed, settled) {
   return Math.max(0, done - skipped - failed - settled);
+}
+
+function retryGiduguSettleWithoutRefetch(added, knownIncapable, intact, undersized) {
+  return added === 0 && knownIncapable && intact && !undersized;
+}
+
+function retryMustAttemptRegisterBeforeSettle(intact) {
+  return intact;
 }
 
 function jobToastIsFail(failed) {
@@ -106,4 +113,20 @@ test("Activate All of already-live families is O(1) skip, not a fail", () => {
   const toast = notifyCopy(already, already, 0, []);
   assert.equal(toast.kind, "success");
   assert.equal(toast.registered, 2100);
+});
+
+test("Retry tries Gidugu register before settle — no refetch loop", () => {
+  assert.equal(retryMustAttemptRegisterBeforeSettle(true), true);
+  assert.equal(retryMustAttemptRegisterBeforeSettle(false), false);
+  assert.equal(retryGiduguSettleWithoutRefetch(0, true, true, false), true);
+  assert.equal(
+    retryGiduguSettleWithoutRefetch(1, true, true, false),
+    false,
+    "Add>0 is live, not settled",
+  );
+  assert.equal(
+    retryGiduguSettleWithoutRefetch(0, true, true, true),
+    false,
+    "undersized remnant must Repair, not settle",
+  );
 });

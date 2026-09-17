@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.178
+- **Retry skipped Gidugu (P0):** `retry_google_downloads` stamped `.complete` and `continue`d before Add. Activate All could sanitize, but Retry never tried — Gidugu stayed 2099. Retry now **register first** (Debg strip / 2015 pin). Add>0 ⇒ live. Add still 0 on a full-size file ⇒ settle once, **no refetch loop**. Undersized remnant still Repair. Helpers kept (`stamp_known_incapable_*`, `family_known_gdi_session_incapable`).
+
 ## Fixed in tip / 1.0.177
 - **Gidugu 2099 vs 2100 (P0):** v2.000 `Gidugu-Regular.ttf` is rejected by Windows GDI (`AddFontResourceExW`=0, Font Viewer “not a valid font”, [google/fonts#9982](https://github.com/google/fonts/issues/9982)) because it ships a fonttools `Debg` table. 1.0.176 treated 2099 as honest. Now **strip `Debg`/`TTFA`/`FFTM` + empty `DSIG` on write**, retry Add, then pin the **2015** google/fonts TTF if still 0. Add>0 ⇒ Activated / catalog **2100**. Last-resort disk-settle only if both fail. Undersized 38KB latin remnant still Repair-only.
 - **Register-after-register:** same-session Activate All of already-live families stays O(1) (this-process `loaded()` + filename count + size-matched maps). Gidugu live now joins that skip set. Maps still skip-copy only after Quit (1.0.171 HOLD). GDI Add stays serialized.
@@ -150,5 +153,5 @@
 
 ## Notes
 
-- Tip is 1.0.177 (unreleased pack — ask before NSIS).
+- Tip is 1.0.178 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
