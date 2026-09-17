@@ -27,6 +27,7 @@ commands.allow = [
   "plan_google_activation",
   "set_session_families",
   "session_families",
+  "session_boot_state",
   "read_family_font",
   "scan_disk_families",
   "prune_unknown_folders",

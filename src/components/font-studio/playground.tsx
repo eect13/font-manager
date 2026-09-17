@@ -10,7 +10,7 @@ import { googleFontId } from "@/lib/fonts/catalog";
 import { cssFamilyStack, loadFont, loadFontWeight } from "@/lib/fonts/loader";
 import { synthesisForFont } from "@/lib/fonts/synthesis";
 import { allFonts, findFont, useFontStore } from "@/lib/fonts/store";
-import { axesForFont, defaultAxisValues, defaultWeightForFont, instancesForFont, resolvedAxisValues, variationCss, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultAxisValues, defaultWeightForFont, instancesForFont, resolvedAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { AxisSliders } from "./axis-sliders";
 import { cn } from "@/lib/utils";
 
@@ -72,9 +72,11 @@ export function Playground() {
     if (!left || !right) return "";
     const leftAxesResolved = resolvedAxisValues(axesForFont(left), { ...leftAxes, wght: leftAxes.wght ?? leftWeight });
     const rightAxesResolved = resolvedAxisValues(axesForFont(right), { ...rightAxes, wght: rightAxes.wght ?? rightWeight });
-    const leftVar = variationCss(leftAxesResolved, axesForFont(left));
-    const rightVar = variationCss(rightAxesResolved, axesForFont(right));
-    return `h1 {\n  font-family: ${cssFamilyStack(left)};\n  font-weight: ${Math.round(leftAxesResolved.wght ?? leftWeight)};\n  font-size: ${leftSize}px;\n  font-variation-settings: ${leftVar};\n}\n\np {\n  font-family: ${cssFamilyStack(right)};\n  font-weight: ${Math.round(rightAxesResolved.wght ?? rightWeight)};\n  font-size: ${rightSize}px;\n  font-variation-settings: ${rightVar};\n}`;
+    const leftStyle = variationStyle(leftAxesResolved, axesForFont(left));
+    const rightStyle = variationStyle(rightAxesResolved, axesForFont(right));
+    const leftOpsz = leftStyle.fontOpticalSizing ? `\n  font-optical-sizing: ${leftStyle.fontOpticalSizing};` : "";
+    const rightOpsz = rightStyle.fontOpticalSizing ? `\n  font-optical-sizing: ${rightStyle.fontOpticalSizing};` : "";
+    return `h1 {\n  font-family: ${cssFamilyStack(left)};\n  font-weight: ${Math.round(leftAxesResolved.wght ?? leftWeight)};\n  font-size: ${leftSize}px;\n  font-variation-settings: ${leftStyle.fontVariationSettings};${leftOpsz}\n}\n\np {\n  font-family: ${cssFamilyStack(right)};\n  font-weight: ${Math.round(rightAxesResolved.wght ?? rightWeight)};\n  font-size: ${rightSize}px;\n  font-variation-settings: ${rightStyle.fontVariationSettings};${rightOpsz}\n}`;
   }, [left, right, leftSize, rightSize, leftWeight, rightWeight, leftAxes, rightAxes]);
 
   function swap() {
@@ -85,6 +87,14 @@ export function Playground() {
     setLeftWeight(rightWeight);
     setRightWeight(leftWeight);
   }
+
+  // Full variationStyle (incl. fontOpticalSizing when opsz is in FVS) for both panes × edit/preview.
+  const leftVarStyle = left?.variable
+    ? variationStyle({ ...leftAxes, wght: leftAxes.wght ?? leftWeight }, axesForFont(left))
+    : null;
+  const rightVarStyle = right?.variable
+    ? variationStyle({ ...rightAxes, wght: rightAxes.wght ?? rightWeight }, axesForFont(right))
+    : null;
 
   const surface = invert ? "bg-ink text-paper" : "bg-paper text-ink";
 
@@ -153,9 +163,7 @@ export function Playground() {
               lineHeight: 1.15,
               fontWeight: leftAxes.wght ?? leftWeight,
               fontSynthesis: left ? synthesisForFont(left, { weight: leftAxes.wght ?? leftWeight }) : "weight",
-              ...(left?.variable
-                ? variationStyle({ ...leftAxes, wght: leftAxes.wght ?? leftWeight }, axesForFont(left))
-                : {}),
+              ...(leftVarStyle ?? {}),
             }}
           />
           <textarea
@@ -169,9 +177,7 @@ export function Playground() {
               lineHeight: 1.55,
               fontWeight: rightAxes.wght ?? rightWeight,
               fontSynthesis: right ? synthesisForFont(right, { weight: rightAxes.wght ?? rightWeight }) : "weight",
-              ...(right?.variable
-                ? variationStyle({ ...rightAxes, wght: rightAxes.wght ?? rightWeight }, axesForFont(right))
-                : {}),
+              ...(rightVarStyle ?? {}),
             }}
           />
         </article>
@@ -183,9 +189,7 @@ export function Playground() {
               fontSize: Math.max(28, leftSize * 0.7),
               fontWeight: leftAxes.wght ?? leftWeight,
               fontSynthesis: left ? synthesisForFont(left, { weight: leftAxes.wght ?? leftWeight }) : "weight",
-              ...(left?.variable
-                ? variationStyle({ ...leftAxes, wght: leftAxes.wght ?? leftWeight }, axesForFont(left))
-                : {}),
+              ...(leftVarStyle ?? {}),
             }}
           >
             {heading}
@@ -198,9 +202,7 @@ export function Playground() {
               lineHeight: 1.55,
               fontWeight: rightAxes.wght ?? rightWeight,
               fontSynthesis: right ? synthesisForFont(right, { weight: rightAxes.wght ?? rightWeight }) : "weight",
-              ...(right?.variable
-                ? variationStyle({ ...rightAxes, wght: rightAxes.wght ?? rightWeight }, axesForFont(right))
-                : {}),
+              ...(rightVarStyle ?? {}),
             }}
           >
             {body}
