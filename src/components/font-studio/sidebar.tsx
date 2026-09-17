@@ -156,6 +156,7 @@ export function Sidebar({
   const setFacet = useFontStore((s) => s.setFacet);
   const favoriteCount = useFontStore((s) => s.favorites.length);
   const activated = useFontStore((s) => s.activated);
+  const settledCount = useFontStore((s) => s.settledFamilies.length);
   const favorites = useFontStore((s) => s.favorites);
   const collections = useFontStore((s) => s.collections);
   const customTags = useFontStore((s) => s.customTags);
@@ -231,9 +232,18 @@ export function Sidebar({
               icon={<Power className="size-4 shrink-0" />}
               label="Activated"
               count={counts.activated}
-              mainProps={{ "aria-label": "Activated" }}
+              mainProps={{
+                "aria-label": "Activated",
+                title: `Live ${counts.activated.toLocaleString()} · Settled ${settledCount.toLocaleString()} · Library ${googleFonts.length.toLocaleString()}`,
+              }}
               menu={<ActivatedDeactivateMenuItem />}
             />
+            {settledCount > 0 ? (
+              <p className="px-2.5 pb-1 text-[10px] tabular-nums text-muted-foreground">
+                Live {counts.activated.toLocaleString()} · Settled {settledCount.toLocaleString()} · Library{" "}
+                {googleFonts.length.toLocaleString()}
+              </p>
+            ) : null}
             <SidebarRow
               active={scope === "favorites"}
               onClick={() => go("favorites")}

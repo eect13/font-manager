@@ -88,6 +88,9 @@ interface FontState extends PersistedSlice {
   uploadBusy: boolean;
   diskFamilies: string[];
   diskFamilySet: Set<string>;
+  /** Known GDI-incapable on disk (Add=0) — calm Settled, never Activated. */
+  settledFamilies: string[];
+  settledFamilySet: Set<string>;
   systemFonts: FontRecord[];
   systemBusy: boolean;
   activatedSet: Set<string>;
@@ -116,7 +119,9 @@ interface FontState extends PersistedSlice {
   setDiskFamilies: (names: string[]) => void;
   addDiskFamilies: (names: string[]) => void;
   /** P0: variable badge/facet = on-disk *-variable-* only; clear axes without VF. */
-  applyDiskStatusHonesty: (rows: { name: string; has_variable?: boolean; hasVariable?: boolean }[]) => void;
+  applyDiskStatusHonesty: (rows: { name: string; has_variable?: boolean; hasVariable?: boolean; settled?: boolean; incomplete?: boolean }[]) => void;
+  setSettledFamilies: (names: string[]) => void;
+  addSettledFamilies: (names: string[]) => void;
   setSystemFonts: (fonts: FontRecord[]) => void;
   setSystemBusy: (value: boolean) => void;
   autoHideDuplicates: boolean;
@@ -222,6 +227,20 @@ function withDisk(names: string[]) {
     diskFamilies.push(t);
   }
   return { diskFamilies, diskFamilySet };
+}
+
+function withSettled(names: string[]) {
+  const settledFamilies: string[] = [];
+  const settledFamilySet = new Set<string>();
+  for (const raw of names) {
+    const t = raw.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (settledFamilySet.has(key)) continue;
+    settledFamilySet.add(key);
+    settledFamilies.push(t);
+  }
+  return { settledFamilies, settledFamilySet };
 }
 
 function stripLegacySeedActivation(activated: string[] | undefined, localCount: number): string[] {
@@ -339,6 +358,7 @@ export const useFontStore = create<FontState>()(
       uploadBusy: false,
       previewAxes: {},
       ...withDisk([]),
+      ...withSettled([]),
       systemFonts: [],
       systemBusy: false,
       autoHideDuplicates: false,
@@ -608,15 +628,23 @@ export const useFontStore = create<FontState>()(
         setLiveAxis(id, tag, value);
       },
       setDiskFamilies: (names) => set(withDisk(names)),
+      setSettledFamilies: (names) => set(withSettled(names)),
+      addSettledFamilies: (names) =>
+        set((s) => {
+          if (!names.length) return s;
+          return withSettled([...s.settledFamilies, ...names]);
+        }),
       applyDiskStatusHonesty: (rows) =>
         set((s) => {
           const vf = new Set<string>();
+          const settledNames: string[] = [];
           for (const row of rows) {
-            const on = Boolean(row.has_variable ?? row.hasVariable);
-            if (!on) continue;
             const n = row.name.trim();
             if (!n) continue;
-            vf.add(n.toLowerCase());
+            if (Boolean(row.has_variable ?? row.hasVariable)) {
+              vf.add(n.toLowerCase());
+            }
+            if (row.settled) settledNames.push(n);
           }
           const googleFonts = s.googleFonts.map((font) => {
             const onDiskVf = vf.has(font.family.trim().toLowerCase());
@@ -627,7 +655,7 @@ export const useFontStore = create<FontState>()(
             if (!font.variable && !font.axes?.length) return font;
             return { ...font, variable: false, axes: undefined };
           });
-          return { googleFonts };
+          return { googleFonts, ...withSettled(settledNames) };
         }),
       addDiskFamilies: (names) =>
         set((s) => {

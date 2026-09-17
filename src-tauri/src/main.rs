@@ -119,6 +119,7 @@ fn main() {
             activate::remove_library_file,
             activate::start_google_downloads,
             activate::retry_google_downloads,
+            activate::try_fontsource_gdi_offer,
             activate::repair_incomplete_families,
             activate::skip_google_failures,
             activate::cancel_google_downloads,
