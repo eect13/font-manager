@@ -2,17 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 /**
- * 1.0.169 hydrate live honesty:
- * - Activated after boot = GDI-registered only (result.ready ∪ sessionNames)
+ * 1.0.176 hydrate live honesty:
+ * - Activated after boot = this-process GDI (result.ready ∪ bootReady)
+ * - last-session sidecar is live only after session_begin pruned (bootDone)
  * - onDisk (files in Documents) is NOT live
- * - local source is NOT live just because persist.activated had it
+ * - Gidugu in last-session sidecar is NOT live (Add=0, never bootReady)
  * - skipFailed never nuclear-clears pending when names match no ids
  */
 
-function hydrateLiveIds({ wantIds, fonts, ready, onDisk, sessionNames }) {
+function hydrateLiveIds({ wantIds, fonts, ready, onDisk, sessionNames, bootReady, bootDone }) {
   const allow = new Set();
   for (const n of ready) allow.add(n.trim().toLowerCase());
-  for (const n of sessionNames) allow.add(n.trim().toLowerCase());
+  const sessionLive = bootDone ? (bootReady?.length ? bootReady : sessionNames) : (bootReady ?? []);
+  for (const n of sessionLive) allow.add(n.trim().toLowerCase());
   const live = [];
   const seen = new Set();
   const byId = new Map(fonts.map((f) => [f.id, f]));
@@ -36,7 +38,7 @@ function hydrateLiveIds({ wantIds, fonts, ready, onDisk, sessionNames }) {
   };
   for (const id of wantIds) consider(id);
   const byFamily = new Map(fonts.map((f) => [f.family.toLowerCase(), f.id]));
-  for (const name of sessionNames) {
+  for (const name of sessionLive) {
     const key = name.trim().toLowerCase();
     if (!allow.has(key)) continue;
     consider(byFamily.get(key) ?? `g:${name.trim()}`);
@@ -57,6 +59,7 @@ const fonts = [
   { id: "g:Nunito", family: "Nunito", source: "google" },
   { id: "l:Upload", family: "My Upload", source: "local" },
   { id: "g:42dot Sans", family: "42dot Sans", source: "google" },
+  { id: "g:Gidugu", family: "Gidugu", source: "google" },
 ];
 
 test("hydrate live: onDisk + persist local are not Activated without GDI", () => {
@@ -66,31 +69,64 @@ test("hydrate live: onDisk + persist local are not Activated without GDI", () =>
     ready: ["Nunito"],
     onDisk: ["Nunito", "42dot Sans", "My Upload"],
     sessionNames: ["Nunito"],
+    bootReady: ["Nunito"],
+    bootDone: true,
   });
   assert.deepEqual(live, ["g:Nunito"]);
 });
 
-test("hydrate live: session_begin sidecar families stay live even if JS re-register returns []", () => {
+test("hydrate live: boot.ready stays live even if JS re-register returns []", () => {
   const live = hydrateLiveIds({
     wantIds: ["g:Nunito", "l:Upload"],
     fonts,
     ready: [],
     onDisk: ["Nunito", "My Upload"],
     sessionNames: ["Nunito", "My Upload"],
+    bootReady: ["Nunito", "My Upload"],
+    bootDone: true,
   });
   assert.equal(live.includes("g:Nunito"), true);
   assert.equal(live.includes("l:Upload"), true);
 });
 
-test("hydrate live: session family not in persist still marked", () => {
+test("hydrate live: session family not in persist still marked from boot.ready", () => {
   const live = hydrateLiveIds({
     wantIds: [],
     fonts,
     ready: [],
     onDisk: ["Nunito"],
     sessionNames: ["Nunito"],
+    bootReady: ["Nunito"],
+    bootDone: true,
   });
   assert.deepEqual(live, ["g:Nunito"]);
+});
+
+test("hydrate live: last-session sidecar before boot prune is not live", () => {
+  const live = hydrateLiveIds({
+    wantIds: ["g:Nunito", "g:Gidugu"],
+    fonts,
+    ready: [],
+    onDisk: ["Nunito", "Gidugu"],
+    sessionNames: ["Nunito", "Gidugu"],
+    bootReady: [],
+    bootDone: false,
+  });
+  assert.deepEqual(live, []);
+});
+
+test("hydrate live: Gidugu never Activated (settled, not boot.ready)", () => {
+  const live = hydrateLiveIds({
+    wantIds: ["g:Nunito", "g:Gidugu"],
+    fonts,
+    ready: ["Nunito"],
+    onDisk: ["Nunito", "Gidugu"],
+    sessionNames: ["Nunito"],
+    bootReady: ["Nunito"],
+    bootDone: true,
+  });
+  assert.deepEqual(live, ["g:Nunito"]);
+  assert.equal(live.includes("g:Gidugu"), false);
 });
 
 test("skipFailed: unmatched names do not wipe pending", () => {

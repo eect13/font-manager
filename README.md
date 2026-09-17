@@ -1,4 +1,4 @@
-# Font Manager **1.0.170**
+# Font Manager **1.0.176**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -6,7 +6,17 @@ FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
 
-**1.0.170.** Variable facet (sidebar / `variable` query) lists catalog-variable families — Google **558** + Fontsource-other with a public TTF VF (42dot Sans, Big Shoulders*, Briem Hand, Finlandica). Same idea as Italic. Card badge / axes still need an on-disk VF (42dot statics stay non-badged; Material Symbols* stay out — WOFF2-only). Shipped Fontsource-other **154** (was 120; 42dot was missing from the list). Activate downloads **VF first**, then Google statics, then Fontsource remaining. Scan counts leftover `Family-VariableFont_*.ttf` / `Family[wght].ttf` as VF, not only `*-variable-*`. Copy still skips when gdi-maps size matches; **Add is never skipped** (in-process `loaded()` is not Windows). Refresh catalogs (no-store) and toasts if a newer GitHub release exists. No pack/NSIS this tip.
+**1.0.176.** Faster same-session register (skip walk+Add when this process already Add'd the family; maps still skip-copy only). Boot no longer double-registers the session. Catalog **2100** / GDI-live **2099** — Gidugu stays on disk, Windows refused session install, toast is not a failure. 1.0.175 Gidugu settle + opsz + Clear Sans Intel-8 kept.
+
+**1.0.175.** Gidugu (known GDI-session-incapable) with intact official TTF is **disk settled** (`.complete`) so Scan no longer flags Repair; still never Activated / GDI-live. 1.0.173 toast suppress kept. opsz audit from 1.0.174 included (inspector italic FVS + Playground `fontOpticalSizing`).
+
+**1.0.174.** Optical size (`opsz`) slider drives preview via `font-variation-settings` + `font-optical-sizing: none` (Chromium has no numeric CSS opsz). Cards keep `auto` until the user overrides opsz. Inspector italic no longer clobbers opsz FVS; Playground panes apply `fontOpticalSizing`. Gidugu / Clear Sans / Skip-Add HOLD unchanged from 1.0.173.
+
+**1.0.172.** Clear Sans planned/expected = Intel’s **8** TTFs (not Fontsource 10). Heal rewrites sticky `.expected=10` → 8; 8/8 Intel faces + Add → complete. Skip-Add HOLD unchanged.
+
+**1.0.171.** Clear Sans Activate uses Intel Clear Sans TTFs only (Fontsource CDN WOFF/odd ~67KB refused by GDI). Gidugu official TTF documented as known GDI-incapable for session install (honest refuse toast; no Retry churn). Sticky CJK “Couldn’t load” fixed: hydrate `loaded()` from size-matched gdi-maps before ready-register; session-active + maps = skip-live, not `failed_names`. Add=0 never stamps `.complete`. No pack/NSIS this tip.
+
+**1.0.170.** Merge main hydrate honesty + tip catalog currency. VF ensure covers google-catalog variable **and** all Fontsource-other `variable:true` with google/fonts TTFs (Material Symbols WOFF2-only excluded). Per-family download order: variable TTFs first, then Google statics, then Fontsource remaining when Google listed no statics. Refresh catalogs also checks GitHub latest release vs installed. Safe session-live register skip (size-matched gdi-maps). Variable badge/sort still on-disk only. No library wipe.
 
 **1.0.169.** Boot Activated badge = GDI-registered families only (`result.ready` ∪ session_begin sidecar) — files in Documents and local uploads from last persist are not live if Add failed. Skip on failed downloads never wipes every pending queue when names match no catalog ids. Fontsource-only families that still ship a public google/fonts VF (42dot Sans, Big Shoulders*, Briem Hand, Finlandica) are ensured/backfilled as `*-variable-*` TTFs so the Variable badge can turn on after Activate; Material Symbols* still skipped (no TTF VF). Repair-all complete folders also ensure those FS-only VFs. No size-matched skip of copy+Add (PR #22 register-skip not taken). No pack/NSIS this tip.
 

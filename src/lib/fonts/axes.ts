@@ -133,12 +133,18 @@ export function variationCss(values: Record<string, number>, axes: FontAxis[] = 
 }
 
 /**
- * High-level CSS for registered axes + font-variation-settings for the full tuple.
- * font-weight/style keep GDI-ish apps and older Chromium in sync with wght/ital.
- * Do not put wght/wdth/slnt/ital/opsz in FVS when the high-level property is set —
- * Chromium then ignores both and the card slider looks stuck on Regular.
+ * High-level CSS for registered axes + font-variation-settings for the rest.
+ * font-weight / font-stretch / font-style keep GDI-ish apps and older Chromium
+ * in sync with wght / wdth / ital / slnt. Do not put those four in FVS when the
+ * high-level property is set — Chromium then ignores both and the card slider
+ * looks stuck on Regular.
+ *
+ * opsz is NOT high-level: CSS only offers font-optical-sizing: auto|none (no
+ * numeric opsz). Chromium needs `"opsz" N` in font-variation-settings for a
+ * manual Optical size slider. When FVS includes opsz, callers should set
+ * font-optical-sizing: none so auto does not fight the axis value.
  */
-const HIGH_LEVEL_AXES = new Set(["wght", "wdth", "slnt", "ital", "opsz"]);
+const HIGH_LEVEL_AXES = new Set(["wght", "wdth", "slnt", "ital"]);
 
 export function variationStyle(
   values: Record<string, number>,
@@ -148,6 +154,8 @@ export function variationStyle(
   fontWeight?: number;
   fontStyle?: string;
   fontStretch?: string;
+  /** Set when opsz is emitted in FVS — prefer over font-optical-sizing: auto. */
+  fontOpticalSizing?: "auto" | "none";
 } {
   const wght = values.wght;
   const ital = values.ital;
@@ -158,10 +166,13 @@ export function variationStyle(
   for (const [tag, n] of Object.entries(values)) {
     if (!HIGH_LEVEL_AXES.has(tag) && Number.isFinite(n)) customValues[tag] = n;
   }
-  return {
-    fontVariationSettings: customAxes.length || Object.keys(customValues).length
+  const fvs =
+    customAxes.length || Object.keys(customValues).length
       ? variationCss(customValues, customAxes)
-      : "normal",
+      : "normal";
+  const opszInFvs = fvs.includes('"opsz"');
+  return {
+    fontVariationSettings: fvs,
     fontWeight: typeof wght === "number" ? Math.round(clampAxis({ tag: "wght", name: "", min: 1, max: 1000, def: 400 }, wght)) : undefined,
     fontStretch: typeof wdth === "number" ? `${wdth}%` : undefined,
     fontStyle:
@@ -170,6 +181,7 @@ export function variationStyle(
         : typeof slnt === "number" && slnt !== 0
           ? `oblique ${Number((-slnt).toFixed(1))}deg`
           : "normal",
+    ...(opszInFvs ? { fontOpticalSizing: "none" as const } : {}),
   };
 }
 
@@ -258,7 +270,12 @@ export function isItalicOnlyFace(
 }
 
 /** Library-card italic: real ital/slnt or a real italic cut. Never synthesize a slant
- *  on roman-only families (Impact, etc.). Header I still toggles families that have italic. */
+ *  on roman-only families (Impact, etc.). Header I still toggles families that have italic.
+ *
+ *  Do NOT emit a full-axis font-variation-settings tuple here. Callers already apply
+ *  variationStyle / live axes for opsz and other custom axes; a default-axis FVS from
+ *  this helper would clobber opsz and re-introduce wght/wdth/slnt/ital into FVS (card
+ *  weight slider stuck on Regular). High-level font-style is enough for italic/oblique. */
 export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" | "axes" | "weights">, on: boolean) {
   if (!on || !hasRealItalic(font)) {
     return {
@@ -269,29 +286,23 @@ export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" 
   }
   const { ital, slnt } = realItalicAxes(font);
   if (ital) {
-    const values = defaultAxisValues(axesForFont(font));
-    values.ital = 1;
     return {
       fontStyle: "italic" as const,
-      fontVariationSettings: variationCss(values, axesForFont(font)),
+      fontVariationSettings: undefined as string | undefined,
       fontSynthesis: "none" as const,
     };
   }
   if (slnt) {
-    const values = defaultAxisValues(axesForFont(font));
     const lean = slnt.min < 0 ? slnt.min : slnt.max;
-    values.slnt = lean;
     return {
       fontStyle: `oblique ${Number((-lean).toFixed(1))}deg` as const,
-      fontVariationSettings: variationCss(values, axesForFont(font)),
+      fontVariationSettings: undefined as string | undefined,
       fontSynthesis: "none" as const,
     };
   }
   return {
     fontStyle: "italic" as const,
-    fontVariationSettings: font.variable
-      ? variationCss(defaultAxisValues(axesForFont(font)), axesForFont(font))
-      : undefined,
+    fontVariationSettings: undefined as string | undefined,
     fontSynthesis: "none" as const,
   };
 }

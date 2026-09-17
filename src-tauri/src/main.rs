@@ -130,6 +130,7 @@ fn main() {
             activate::plan_google_activation,
             activate::set_session_families,
             activate::session_families,
+            activate::session_boot_state,
             activate::read_family_font,
             activate::scan_disk_families,
             activate::prune_unknown_folders,

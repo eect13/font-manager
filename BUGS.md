@@ -1,11 +1,40 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.176
+- **Register speed (FontBase-like, safe):** Activate All of already-GDI-live families skips walk + `ttf_intact` + `AddFontResourceEx`. Skip is **this-process `by_family` ∩ `loaded()`** plus filename-count match plus size-matched maps. Maps / last-session sidecar never skip Add (1.0.171 HOLD). New files (count++) or resized faces (map size mismatch) still walk; unchanged paths still skip-Add in `register_detailed`. GDI stays serialized, ≤6 walk workers.
+- **Boot freeze:** hydrate no longer re-registers the whole session after `session_begin`. Waits on `session_boot_state`; live = this-process `boot.ready`. DownloadBar shows “Restoring session…” when idle. Last-session sidecar before prune is not Activated (Gidugu cannot sneak in).
+- **2099 vs 2100:** catalog is 2100 (1946 Google + 154 Fontsource). Gidugu downloads and is disk-settled but Windows refuses session Add — **2099 GDI-live is honest**. Finish toast is success (“2099 registered, 1 on disk — Windows refused Gidugu”), not “1 failed”. Still never `markLiveActivated` for Gidugu.
+- **1.0.175 stack kept:** Clear Sans Intel-8, Gidugu `.complete` settle, opsz FVS, skip-copy-only maps.
+
+## Fixed in tip / 1.0.175
+- **Gidugu Scan Repair churn (P0):** Intact official google/fonts TTF + `family_known_gdi_session_incapable` is now **disk settled**: stamp `.complete` (and keep it through verify) so Scan does not report Incomplete / Repair-1. Quiet `settled_names` + 1.0.173 toast suppress unchanged; still never Activated / GDI-live / `markLiveActivated` (Add=0 honesty). Undersized 24–80KB remnants still clear stamp and Repair that face only.
+
+## Fixed in tip / 1.0.174
+- **Optical size (`opsz`) slider (P1):** `opsz` was listed in `HIGH_LEVEL_AXES`, so `variationStyle` stripped it from `font-variation-settings` while CSS has no numeric opsz (only `font-optical-sizing: auto|none`). Slider in AxisSliders / inspector / Playground now emits `"opsz" N` in FVS and sets `fontOpticalSizing: "none"` so auto does not fight. Library cards keep `auto` until the user overrides opsz (stored axis). Never force opsz = preview font-size.
+- **version.ts still 1.0.173 (P0):** Refresh release-check uses `APP_VERSION` — bumped to **1.0.174** to match package/Cargo/tauri/BUGS.
+- **Inspector italic clobbered opsz FVS:** preferred `italicPreviewStyle` full-tuple FVS over `variationStyle`, so opsz slider did not move the specimen when italic was on (and reintroduced wght into FVS). Inspector now always uses `axisStyle.fontVariationSettings` for variable fonts; `italicPreviewStyle` only returns high-level `fontStyle` / `fontSynthesis` (no FVS).
+- **Playground panes:** both edit + preview panes apply full `variationStyle` (incl. `fontOpticalSizing`); copied pairing CSS includes `font-optical-sizing` when opsz is in FVS. wght/wdth/slnt/ital stay high-level (not in FVS).
+
+## Fixed in tip / 1.0.173
+- **Gidugu sticky “Couldn’t load” (P0):** Official google/fonts TTF intact + `family_known_gdi_session_incapable` no longer pushes `failed_names` / DownloadBar Retry toast. Files stay on disk for OT/preview; quiet `settled_names` clears pending without claiming Activated/GDI-live. Clear Sans Intel-8 and Skip-Add HOLD (maps = skip-copy only) unchanged.
+
+## Fixed in tip / 1.0.172
+- **Clear Sans sticky 8/10 (P0):** Fontsource meta advertises weights×italic = 10 (incl. ThinItalic / LightItalic Intel never ships). Planned/expected is now the Intel pin’s **8** TTFs only; heal/Activate/Repair rewrite `.expected` → 8 and stamp `.complete` when those 8 Intel-sized faces are intact. Never use Fontsource face-matrix for Clear Sans; Repair does not churn for missing ThinItalic once 8/8 is satisfied. Skip-Add HOLD unchanged (maps = skip-copy only).
+
+## Fixed in tip / 1.0.171
+- **Clear Sans GDI 0 (P0):** Fontsource clear-sans CDN is WOFF / odd ~67–81KB TTFs (OS/2 fsType restricted) that `AddFontResourceExW` refuses. Activate/Repair/Retry now use **Intel Clear Sans** GitHub TTFs only (`intel/clear-sans` pinned commit; Regular ~305KB). Library shreds in the odd size band are deleted and replaced; never mark `.complete` when Add returns 0; `RegisterFailKind` stays in `failed_details`.
+- **Gidugu GDI-incapable:** Official google/fonts `Gidugu-Regular.ttf` (~461KB, fsType=0) still Add=0 on Eric’s PC while PrivateFontCollection loads. Surfaced as honest “Windows refused this face (known GDI-incapable for session install)” — no infinite Retry unload/re-Add loop; Add=0 ≠ `.complete`.
+- **Skip-live / map hydrate (Skye HOLD):** Size-matched `gdi-maps` must **skip re-copy only** — never hydrate `loaded()` or skip `AddFontResourceEx` after Quit/drain / new process. Quit keeps map files after Remove; map-only “live” made Activate look ready while GDI was empty. Fix: `loaded()` only after successful Add **this process**; drop `|| live > 0` without `family_in_session_active` from toast exemption; session-active + maps + Add 0 ⇒ suppress `failed_names` (toast only), not activated / skip-Add. Clear Sans Intel + Gidugu honesty unchanged.
+- **Sticky CJK “Couldn’t load” (P1, corrected):** Prior hydrate-from-maps path reintroduced skip-Add. Correct sticky fix: when session-active + size-matched maps + in-process Add returns 0, do **not** push `failed_names` — but do **not** claim activated from maps alone.
+
 ## Fixed in tip / 1.0.170
-- **Variable facet too small:** sidebar counted on-disk `font.variable` only (often ~12) while Google catalog has **558** variable families and Italic already uses the catalog flag. Facet / `variable` query now use `catalogVariable || on-disk VF` (Material Symbols* excluded). Card badge / axes stay disk-only so 42dot statics do not get fake sliders.
-- **42dot missing from the shipped list:** 1.0.169 ensured VFs in Rust but Fontsource-other was still 120 families with **0** `variable:true` and no 42dot. Live catalogs: Fontsource-other **154** / 9 TTF-VF (+3 Material Symbols marked variable in Fontsource, ignored for GDI).
-- **Leftover google/fonts VF names ignored:** scan `has_variable` only matched `*-variable-*`. Now also `VariableFont_` and `Family[wght].ttf`.
-- **VF after statics:** download order is VF → Google statics → Fontsource remaining (so FS-only still get statics when a VF already landed).
-- **Not taken:** skip `AddFontResourceExW` when in-process `loaded()` + size-matched gdi-map. Copy skip on size match is already the safe win. Add is the GDI truth (Font Cache can drop a mapping our HashSet still holds).
+- **Merge:** main hydrate Activated=GDI-only + scoped skip-failed pending, plus live catalog refresh (fontsource-other 154 / 12 variable flags).
+- **Download order:** VF google/fonts first, then Google CSS statics, then Fontsource when no Google static listing (remaining).
+- **All Fontsource VF (TTF):** ensure uses fontsource-other `variable:true` + google-catalog variable; Material Symbols* excluded (WOFF2-only / no google/fonts TTF — never `@fontsource-variable`).
+- **Refresh:** also compares installed `APP_VERSION` to GitHub `releases/latest`.
+- **CSP:** `connect-src` allows `https://api.github.com` (+ `https://fonts.google.com` for live metadata) so Refresh release-check / Google meta are not blocked in the webview.
+- **Register:** session-live size-matched maps skip copy+Add (GDI still serialized).
+- **Maintain:** allow(dead_code) on unused session_stage path helpers; no core Activate/GDI rule change.
 
 ## Fixed in tip / 1.0.169
 - **Hydrate false live:** boot `restoreActivation` treated `result.onDisk` and every persisted local as Activated even when GDI Add failed. Live is now `result.ready` ∪ `session_begin` sidecar (families that actually registered this boot). Documents file presence still updates diskFamilies only.

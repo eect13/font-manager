@@ -183,7 +183,15 @@ export const FontCard = memo(function FontCard({
       : "border-paper/10 bg-paper/5";
   const italicCss = italicPreviewStyle(font, italicOn);
   const axisValues = font.variable ? previewAxisValues(font, storedAxes, cardWeight, italicOn) : null;
-  const vs = axisValues ? variationStyle(axisValues, axes) : null;
+  // Keep card optical-sizing: auto (tracks preview font-size) until the user
+  // overrides opsz via the Optical size slider — then FVS opsz + none.
+  const userOpsz = typeof storedAxes?.opsz === "number";
+  const styleAxes = userOpsz ? axes : axes.filter((a) => a.tag !== "opsz");
+  const styleValues =
+    axisValues && !userOpsz
+      ? Object.fromEntries(Object.entries(axisValues).filter(([tag]) => tag !== "opsz"))
+      : axisValues;
+  const vs = styleValues ? variationStyle(styleValues, styleAxes) : null;
   const specimenDir = scriptDir(font.family);
   const specimenLang = scriptLang(font.family);
   const paintFvs = vs?.fontVariationSettings ?? italicCss.fontVariationSettings;
@@ -198,7 +206,7 @@ export const FontCard = memo(function FontCard({
     fontVariationSettings: paintFvs,
     fontStretch: vs?.fontStretch,
     fontSynthesis: italicCss.fontSynthesis,
-    fontOpticalSizing: font.variable ? "auto" : undefined,
+    fontOpticalSizing: vs?.fontOpticalSizing ?? (font.variable ? "auto" : undefined),
     ...(font.colorKind && font.colorKind !== "none"
       ? { fontPalette: "normal", fontVariantEmoji: "emoji" as const }
       : {}),

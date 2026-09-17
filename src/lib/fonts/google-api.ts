@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isWoff2OnlyVariableFamily, replaceGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, replaceGoogleCatalog } from "./catalog";
 import { classifyLicenseText, licenseFromCode } from "./license";
 import { guessGoogleColorKind } from "./color-font";
 import { tagsForGoogleFamily } from "./style-tags";
@@ -120,9 +120,7 @@ function fromFontsource(item: FontsourceItem, popularity: number, existing?: Fon
     category,
     weights: item.weights?.length ? item.weights : existing?.weights ?? [400],
     italic: item.styles?.includes("italic") ?? existing?.italic ?? false,
-    catalogVariable:
-      (Boolean(item.variable) || Boolean(existing?.catalogVariable)) &&
-      !isWoff2OnlyVariableFamily(item.family),
+    catalogVariable: Boolean(item.variable) || Boolean(existing?.catalogVariable),
     // Live Fontsource sync can claim variable:true — UI badge needs on-disk VF only.
     variable: false,
     tags: tagsForGoogleFamily(item.family, category, extra),
@@ -219,6 +217,7 @@ async function fetchFontsourceList(force: boolean): Promise<FontsourceItem[] | n
   try {
     const res = await fetch(FONTSOURCE_LIST, {
       signal: ctrl.signal,
+      // Always bypass HTTP cache — Eric wants latest Fontsource/Google on Refresh.
       cache: "no-store",
     });
     if (!res.ok) return null;
@@ -276,9 +275,7 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
         category: CATEGORY[item.category ?? ""] ?? existing.category,
         weights: item.weights?.length ? item.weights : existing.weights,
         italic: item.styles?.includes("italic") ?? existing.italic,
-        catalogVariable:
-          (Boolean(item.variable) || Boolean(existing.catalogVariable)) &&
-          !isWoff2OnlyVariableFamily(item.family),
+        catalogVariable: Boolean(item.variable) || Boolean(existing.catalogVariable),
         // Preserve applyDiskStatusHonesty: on-disk VF may set variable:true without axes yet.
         variable: Boolean(existing.variable),
         tags: tagsForGoogleFamily(
@@ -346,6 +343,7 @@ export function syncFontCatalog(opts?: {
     }
     if (result.added > 0 || notify) notifyCatalog(result, notify);
     if (notify) {
+      // Always probe latest release on Refresh; only toast when behind (avoid double noise).
       const rel = await checkLatestGitHubRelease();
       if (rel.updateAvailable && rel.latest) {
         toast.message(`App update available — ${rel.latest}`, {
@@ -417,11 +415,7 @@ export async function checkLatestGitHubRelease(): Promise<AppReleaseCheck> {
     const data = (await res.json()) as { tag_name?: string; html_url?: string };
     const tag = (data.tag_name || "").replace(/^v/i, "").trim();
     const latest = tag || null;
-    const updateAvailable = Boolean(
-      latest &&
-        latest !== installed &&
-        latest.localeCompare(installed, undefined, { numeric: true, sensitivity: "base" }) > 0,
-    );
+    const updateAvailable = Boolean(latest && latest !== installed && latest.localeCompare(installed, undefined, { numeric: true, sensitivity: "base" }) > 0);
     return {
       installed,
       latest,

@@ -39,12 +39,14 @@ pub fn must_not_register_as_gdi_path(path: &Path) -> bool {
 }
 
 /// Current stage root: `%LOCALAPPDATA%\Font Manager\gdi-maps`.
+#[allow(dead_code)]
 pub fn is_gdi_maps_stage_path(path: &Path) -> bool {
     let lower = normalize_path_key(path);
     lower.contains("\\font manager\\gdi-maps\\") || lower.ends_with("\\font manager\\gdi-maps")
 }
 
 /// Legacy 1.0.156 stage: `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager`.
+#[allow(dead_code)]
 pub fn is_legacy_fontmanager_stage_path(path: &Path) -> bool {
     let lower = normalize_path_key(path);
     lower.contains("\\microsoft\\windows\\fonts\\fontmanager\\")
@@ -52,6 +54,7 @@ pub fn is_legacy_fontmanager_stage_path(path: &Path) -> bool {
 }
 
 /// Any LocalAppData stage we own (current gdi-maps or legacy FontManager).
+#[allow(dead_code)]
 pub fn is_session_stage_path(path: &Path) -> bool {
     is_gdi_maps_stage_path(path) || is_legacy_fontmanager_stage_path(path)
 }
