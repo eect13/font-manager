@@ -678,6 +678,45 @@ mod winfont {
         }
     }
 
+    /// In-memory: every bound path is in `loaded()` from a real Add this process.
+    /// Never hydrates from gdi-maps. `None` = walk + Add still required.
+    pub fn family_live_face_count(family: &str) -> Option<usize> {
+        let key = family.trim().to_lowercase();
+        if key.is_empty() {
+            return None;
+        }
+        let paths = family_bound_paths(family)?;
+        if paths.is_empty() {
+            return None;
+        }
+        let loaded = loaded().lock().ok()?;
+        if paths.iter().all(|p| loaded.contains(p)) {
+            Some(paths.len())
+        } else {
+            None
+        }
+    }
+
+    pub fn family_bound_paths(family: &str) -> Option<HashSet<PathBuf>> {
+        let key = family.trim().to_lowercase();
+        by_family()
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&key).cloned())
+    }
+
+    /// Drop the family index so the next register walks (new faces / Repair).
+    /// Does **not** unload GDI — already-Add'd paths still skip-Add in `register_detailed`.
+    pub fn invalidate_family(family: &str) {
+        let key = family.trim().to_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        if let Ok(mut g) = by_family().lock() {
+            g.remove(&key);
+        }
+    }
+
     pub fn unregister_family(family: &str) -> u32 {
         let key = family.trim().to_lowercase();
         let paths = by_family()
@@ -1118,9 +1157,54 @@ fn register_family_path(family: &str, path: &Path) -> bool {
 }
 
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn count_family_font_filenames(app: &AppHandle, family: &str) -> usize {
+    let mut n = 0usize;
+    for dir in family_locations(app, family) {
+        let mut files = Vec::new();
+        walk_font_files(&dir, &mut files);
+        n = n.saturating_add(files.len());
+    }
+    n
+}
+
+/// Skip walk+ttf_intact+Add when this process already Add'd every current face.
+/// Cheap: in-memory `by_family` ∩ `loaded()`, readdir filename count, size-matched maps.
+/// Maps / last-session sidecar never authorize this. New files (count mismatch) or
+/// resized faces (map size mismatch) force a walk; `register_detailed` still skip-Adds
+/// unchanged paths.
+fn family_skip_register_this_process(app: &AppHandle, family: &str) -> Option<usize> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, family);
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        let live = winfont::family_live_face_count(family)?;
+        if live == 0 {
+            return None;
+        }
+        if count_family_font_filenames(app, family) != live {
+            return None;
+        }
+        if let Some(paths) = winfont::family_bound_paths(family) {
+            for p in &paths {
+                if !winfont::is_session_live_mapped(p) {
+                    return None;
+                }
+            }
+        }
+        Some(live)
+    }
+}
+
 /// Count intact faces already live **this process** (in `loaded()` from a real
 /// Add) with a size-matched gdi-map. Map alone is never enough — that only skips
 /// re-copy. `None` = at least one face still needs Add (or is not loaded).
+/// Hot path uses `family_skip_register_this_process` (no ttf_intact). Kept for
+/// debug — do not call from Activate All.
+#[allow(dead_code)]
 fn count_already_live_intact_faces(app: &AppHandle, family: &str) -> Option<usize> {
     #[cfg(not(windows))]
     {
@@ -1194,7 +1278,8 @@ fn count_size_matched_mapped_faces(app: &AppHandle, family: &str) -> Option<usiz
 fn family_session_maps_live(app: &AppHandle, family: &str) -> bool {
     #[cfg(windows)]
     {
-        count_already_live_intact_faces(app, family).is_some()
+        let _ = app;
+        winfont::family_live_face_count(family).is_some()
     }
     #[cfg(not(windows))]
     {
@@ -1231,6 +1316,7 @@ fn family_skip_live_success(app: &AppHandle, family: &str) -> Option<usize> {
 /// Product rules for unit tests (no AppHandle / GDI):
 /// - size-matched gdi-map ⇒ skip re-copy only
 /// - skip-Add only when this process already has the face in `loaded()` (real Add)
+/// - family skip-walk: bound ∩ loaded + filename count match + maps size-matched
 /// - sticky toast exemption needs session-active + maps (never maps alone)
 /// - known GDI-incapable + intact ⇒ suppress failed_names (not a download fail)
 /// - known GDI-incapable + intact + !undersized ⇒ disk settled (`.complete` / Scan OK);
@@ -1238,6 +1324,39 @@ fn family_skip_live_success(app: &AppHandle, family: &str) -> Option<usize> {
 #[cfg_attr(not(test), allow(dead_code))]
 fn face_may_skip_add(in_loaded_this_process: bool) -> bool {
     in_loaded_this_process
+}
+
+/// FontBase-like family skip: never maps-only, never last-session sidecar.
+#[cfg_attr(not(test), allow(dead_code))]
+fn family_may_skip_add_this_process(
+    bound_all_in_loaded: bool,
+    on_disk_filename_count: usize,
+    bound_count: usize,
+    all_bound_size_matched_mapped: bool,
+) -> bool {
+    bound_all_in_loaded
+        && bound_count > 0
+        && on_disk_filename_count == bound_count
+        && all_bound_size_matched_mapped
+}
+
+/// Catalog 2100 − intact known-incapable (Gidugu) = 2099 GDI-live.
+#[cfg_attr(not(test), allow(dead_code))]
+fn catalog_expected_gdi_live(catalog_families: usize, known_incapable_intact: usize) -> usize {
+    catalog_families.saturating_sub(known_incapable_intact)
+}
+
+/// Settled is on-disk, not downloaded and not failed.
+#[cfg_attr(not(test), allow(dead_code))]
+fn job_downloaded_count(done: usize, skipped: usize, failed: usize, settled: usize) -> usize {
+    done.saturating_sub(skipped)
+        .saturating_sub(failed)
+        .saturating_sub(settled)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn job_toast_is_fail(failed: usize) -> bool {
+    failed > 0
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1289,9 +1408,9 @@ fn register_intact_family_detailed(
     app: &AppHandle,
     family: &str,
 ) -> (usize, RegisterFailKind) {
-    // Skip-Add only when every face is already in `loaded()` from a real Add this process.
+    // Skip walk+Add only when this process already Add'd every current face.
     // Map-only / family_skip_live_success must never early-return here.
-    if let Some(live) = count_already_live_intact_faces(app, family) {
+    if let Some(live) = family_skip_register_this_process(app, family) {
         return (live, RegisterFailKind::NoneTried);
     }
     let mut n = 0usize;
@@ -2140,7 +2259,63 @@ fn recover_stale_session(app: &AppHandle) {
     }
 }
 
+struct SessionBoot {
+    running: AtomicBool,
+    done: AtomicBool,
+    ready: Mutex<Vec<String>>,
+}
+
+fn session_boot() -> &'static SessionBoot {
+    static BOOT: OnceLock<SessionBoot> = OnceLock::new();
+    BOOT.get_or_init(|| SessionBoot {
+        running: AtomicBool::new(false),
+        done: AtomicBool::new(false),
+        ready: Mutex::new(Vec::new()),
+    })
+}
+
+fn session_boot_note_ready(ready: &[String]) {
+    if let Ok(mut g) = session_boot().ready.lock() {
+        *g = ready.to_vec();
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct SessionBootState {
+    pub running: bool,
+    pub done: bool,
+    pub ready: Vec<String>,
+}
+
+/// Hydrate waits here so last-session sidecar is not treated as this-process GDI live.
+#[tauri::command]
+pub fn session_boot_state() -> SessionBootState {
+    let boot = session_boot();
+    SessionBootState {
+        running: boot.running.load(Ordering::SeqCst),
+        done: boot.done.load(Ordering::SeqCst),
+        ready: boot.ready.lock().map(|g| g.clone()).unwrap_or_default(),
+    }
+}
+
+fn session_boot_begin() {
+    let boot = session_boot();
+    boot.done.store(false, Ordering::SeqCst);
+    boot.running.store(true, Ordering::SeqCst);
+    if let Ok(mut g) = boot.ready.lock() {
+        g.clear();
+    }
+}
+
+fn session_boot_finish(ready: &[String]) {
+    session_boot_note_ready(ready);
+    let boot = session_boot();
+    boot.running.store(false, Ordering::SeqCst);
+    boot.done.store(true, Ordering::SeqCst);
+}
+
 pub fn session_begin(app: &AppHandle) {
+    session_boot_begin();
     invalidate_google_latin_lies_once(app);
     #[cfg(windows)]
     {
@@ -2163,14 +2338,48 @@ pub fn session_begin(app: &AppHandle) {
         // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
         let ready_targets = filter_ready_families_parallel(app, &families);
-        let (files, ready) = register_ready_families_parallel(app, &ready_targets);
-        if files > 0 {
+        // Show "Restoring session…" on the DownloadBar when idle so boot GDI is
+        // not a silent freeze. Do not steal a user job already in flight.
+        let own_progress = !bulk().running.load(Ordering::SeqCst);
+        let ready = if own_progress && !ready_targets.is_empty() {
+            if let Ok(mut p) = bulk().progress.lock() {
+                p.running = true;
+                p.paused = false;
+                p.kind = "download".into();
+                p.done = 0;
+                p.total = ready_targets.len() as u32;
+                p.failed = 0;
+                p.skipped = 0;
+                p.current = format!("Restoring session — {} typefaces…", ready_targets.len());
+                p.ready_names.clear();
+                p.failed_names.clear();
+                p.failed_details.clear();
+                p.settled_names.clear();
+            }
+            bulk().running.store(true, Ordering::SeqCst);
+            emit_progress(app);
+            let registered = register_on_disk_parallel_progress(app, &ready_targets, 0);
+            if let Ok(mut p) = bulk().progress.lock() {
+                p.running = false;
+                p.paused = false;
+                p.current.clear();
+                p.done = p.ready_names.len() as u32;
+                p.total = p.total.max(p.done);
+            }
+            bulk().running.store(false, Ordering::SeqCst);
+            emit_progress(app);
+            registered
+        } else {
+            register_ready_families_parallel(app, &ready_targets).1
+        };
+        if !ready.is_empty() {
             persist_activation_sidecars(app);
             notify_fonts_changed();
         }
         if ready.len() != families.len() {
             save_session_families(app, &ready);
         }
+        session_boot_finish(&ready);
         let handle = app.clone();
         thread::spawn(move || {
             let _ = index_disk(&handle, true);
@@ -2184,6 +2393,7 @@ pub fn session_begin(app: &AppHandle) {
                 clear_session_sidecars_in(&root);
             }
         }
+        session_boot_finish(&[]);
         let handle = app.clone();
         thread::spawn(move || {
             let _ = index_disk(&handle, true);
@@ -4748,6 +4958,8 @@ fn register_intact_new(app: &AppHandle, family: &str) -> usize {
 
 /// Unload + drop gdi-maps copy, then stage+Add again. Does not touch Documents library files.
 fn reregister_intact_family(app: &AppHandle, family: &str) -> (usize, RegisterFailKind) {
+    #[cfg(windows)]
+    winfont::invalidate_family(family);
     // Force re-stage: unload + drop gdi-maps copy, then stage+Add. Library files untouched.
     for dir in family_locations(app, family) {
         let mut files = Vec::new();
@@ -6559,9 +6771,23 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
 
 /// Worker: disk-ready filter then ≤6 parallel intact register with progress ticks.
 fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: bool) {
-    let ready = filter_ready_families_parallel(&app, &families);
+    // Already-Add'd this process: skip filter+walk+Add (FontBase no-op).
+    let mut already: Vec<String> = Vec::new();
+    let mut rest: Vec<String> = Vec::new();
+    for family in &families {
+        let t = family.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if family_skip_register_this_process(&app, t).is_some() {
+            already.push(t.to_string());
+        } else {
+            rest.push(t.to_string());
+        }
+    }
+    let ready = filter_ready_families_parallel(&app, &rest);
     let state = bulk();
-    if ready.is_empty() {
+    if ready.is_empty() && already.is_empty() {
         if own_progress {
             if let Ok(mut p) = state.progress.lock() {
                 p.failed = 0;
@@ -6597,9 +6823,13 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     if let Ok(mut p) = state.progress.lock() {
         p.kind = "download".into();
         p.running = true;
-        p.done = 0;
-        p.total = ready.len() as u32;
-        p.current = format!("Registering {} already on disk…", ready.len());
+        p.done = already.len() as u32;
+        p.total = (already.len() + ready.len()) as u32;
+        p.current = if ready.is_empty() {
+            format!("Already registered — {} typefaces", already.len())
+        } else {
+            format!("Registering {} already on disk…", ready.len())
+        };
         if own_progress {
             p.failed = 0;
             p.skipped = 0;
@@ -6609,10 +6839,19 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
             p.failed_details.clear();
             p.settled_names.clear();
         }
+        for f in &already {
+            p.skipped = p.skipped.saturating_add(1);
+            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(f)) {
+                p.ready_names.push(f.clone());
+            }
+        }
     }
     emit_progress(&app);
 
-    let registered = register_on_disk_parallel_progress(&app, &ready);
+    let mut registered = already.clone();
+    if !ready.is_empty() {
+        registered.extend(register_on_disk_parallel_progress(&app, &ready, already.len()));
+    }
     let cancelled = state.cancel.load(Ordering::SeqCst);
     if !registered.is_empty() {
         session_add(&app, &registered);
@@ -6626,6 +6865,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     // VF backfill before finishing — do not mark Activate complete while catalog
     // VFs are still downloading (Skye CJK). Repair remains the sync smoke path
     // for already-`.complete` folders (ensure on the invoke). Cancel skips backfill.
+    // Include already-live so a later catalog VF still backfills.
     if !cancelled && !registered.is_empty() {
         if let Ok(mut p) = state.progress.lock() {
             p.current = "Backfilling variable faces…".into();
@@ -6641,13 +6881,14 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     if own_progress {
         if let Ok(mut p) = state.progress.lock() {
             if !cancelled {
-                let ready_l: HashSet<String> = ready
+                let handled: HashSet<String> = ready
                     .iter()
+                    .chain(already.iter())
                     .map(|n| n.trim().to_lowercase())
                     .collect();
                 for family in &families {
                     let t = family.trim();
-                    if t.is_empty() || ready_l.contains(&t.to_lowercase()) {
+                    if t.is_empty() || handled.contains(&t.to_lowercase()) {
                         continue;
                     }
                     p.failed = p.failed.saturating_add(1);
@@ -6658,8 +6899,8 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
                         ));
                     }
                 }
-                p.done = ready.len() as u32;
-                p.total = ready.len() as u32;
+                p.done = (already.len() + ready.len()) as u32;
+                p.total = p.done;
             }
             p.running = false;
             p.paused = false;
@@ -6676,7 +6917,9 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
 /// Progress done/total ticks per family; ready_names only when Add returned >0.
 /// Skye P1: honor bulk cancel/pause — Cancel clears the queue so workers stop;
 /// Pause waits like download drain (does not drain GDI while held).
-fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<String> {
+/// `done_base` is families already counted (this-process live skip) so percent
+/// does not restart at 0 after seeding already-registered names.
+fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_base: usize) -> Vec<String> {
     if ready.is_empty() {
         return Vec::new();
     }
@@ -6764,9 +7007,10 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String]) -> Vec<
                 if let Ok(mut p) = bulk().progress.lock() {
                     p.kind = "download".into();
                     p.running = true;
-                    p.done = done_n as u32;
-                    if p.total < total as u32 {
-                        p.total = total as u32;
+                    p.done = (done_base + done_n) as u32;
+                    let want_total = (done_base + total) as u32;
+                    if p.total < want_total {
+                        p.total = want_total;
                     }
                     p.current = format!("Registering {family}");
                     if k > 0 {
@@ -8981,6 +9225,44 @@ mod install_path_tests {
         assert!(family_known_gdi_session_incapable("Gidugu"));
         assert!(!family_known_gdi_session_incapable("Nunito"));
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn family_skip_add_requires_this_process_loaded_and_count_match() {
+        // Maps / last-session never skip walk. New file (count++) forces walk.
+        assert!(
+            !family_may_skip_add_this_process(false, 8, 8, true),
+            "not in loaded() this process must walk+Add"
+        );
+        assert!(
+            !family_may_skip_add_this_process(true, 9, 8, true),
+            "new on-disk face must not skip walk"
+        );
+        assert!(
+            !family_may_skip_add_this_process(true, 8, 8, false),
+            "resized / unmatched maps must restage+Add"
+        );
+        assert!(
+            !family_may_skip_add_this_process(true, 0, 0, true),
+            "empty family must not skip"
+        );
+        assert!(
+            family_may_skip_add_this_process(true, 8, 8, true),
+            "same-session already-Add'd + count match + maps ⇒ skip walk"
+        );
+    }
+
+    #[test]
+    fn catalog_2100_minus_gidugu_is_2099_gdi_live() {
+        assert_eq!(catalog_expected_gdi_live(2100, 1), 2099);
+        assert_eq!(catalog_expected_gdi_live(2100, 0), 2100);
+        assert!(family_known_gdi_session_incapable("Gidugu"));
+        assert!(!family_may_claim_session_activated(true, 0));
+        assert!(!job_toast_is_fail(0));
+        assert!(job_toast_is_fail(1));
+        // 2100 processed, 2099 GDI-live skipped, 0 failed, 1 settled Gidugu.
+        assert_eq!(job_downloaded_count(2100, 2099, 0, 1), 0);
+        assert_eq!(job_downloaded_count(2100, 2099, 0, 0), 1); // lie without settled
     }
 
     #[test]

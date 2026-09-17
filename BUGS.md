@@ -1,5 +1,11 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.176
+- **Register speed (FontBase-like, safe):** Activate All of already-GDI-live families skips walk + `ttf_intact` + `AddFontResourceEx`. Skip is **this-process `by_family` ∩ `loaded()`** plus filename-count match plus size-matched maps. Maps / last-session sidecar never skip Add (1.0.171 HOLD). New files (count++) or resized faces (map size mismatch) still walk; unchanged paths still skip-Add in `register_detailed`. GDI stays serialized, ≤6 walk workers.
+- **Boot freeze:** hydrate no longer re-registers the whole session after `session_begin`. Waits on `session_boot_state`; live = this-process `boot.ready`. DownloadBar shows “Restoring session…” when idle. Last-session sidecar before prune is not Activated (Gidugu cannot sneak in).
+- **2099 vs 2100:** catalog is 2100 (1946 Google + 154 Fontsource). Gidugu downloads and is disk-settled but Windows refuses session Add — **2099 GDI-live is honest**. Finish toast is success (“2099 registered, 1 on disk — Windows refused Gidugu”), not “1 failed”. Still never `markLiveActivated` for Gidugu.
+- **1.0.175 stack kept:** Clear Sans Intel-8, Gidugu `.complete` settle, opsz FVS, skip-copy-only maps.
+
 ## Fixed in tip / 1.0.175
 - **Gidugu Scan Repair churn (P0):** Intact official google/fonts TTF + `family_known_gdi_session_incapable` is now **disk settled**: stamp `.complete` (and keep it through verify) so Scan does not report Incomplete / Repair-1. Quiet `settled_names` + 1.0.173 toast suppress unchanged; still never Activated / GDI-live / `markLiveActivated` (Add=0 honesty). Undersized 24–80KB remnants still clear stamp and Repair that face only.
 

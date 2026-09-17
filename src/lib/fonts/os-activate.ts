@@ -15,6 +15,7 @@ export type DownloadJobState = {
   current: string;
   failedNames: string[];
   failedDetails: string[];
+  settledNames?: string[];
 };
 
 const EMPTY: DownloadJobState = {
@@ -28,6 +29,7 @@ const EMPTY: DownloadJobState = {
   current: "",
   failedNames: [],
   failedDetails: [],
+  settledNames: [],
 };
 
 let job: DownloadJobState = { ...EMPTY };
@@ -67,7 +69,13 @@ export function getJobClock(): { activeMs: number } {
   return { activeMs: Math.max(0, Date.now() - clockStarted - clockPausedMs - extra) };
 }
 
-function notifyDownloadResult(done: number, failed: number, names: string[], details: string[]) {
+function notifyDownloadResult(
+  done: number,
+  failed: number,
+  names: string[],
+  details: string[],
+  settledNames: string[] = [],
+) {
   lastFailedNames = names.slice();
   if (failed > 0 && names.length) {
     const preview = (details.length ? details : names).slice(0, 4).join("; ");
@@ -87,13 +95,20 @@ function notifyDownloadResult(done: number, failed: number, names: string[], det
   }
   if (done > 0) {
     const skipped = job.skipped;
-    const downloaded = Math.max(0, done - skipped - failed);
+    const settled = settledNames.length;
+    const downloaded = Math.max(0, done - skipped - failed - settled);
+    const settledPreview = settledNames.slice(0, 3).join(", ");
+    const settledNote = settled
+      ? ` ${settled.toLocaleString()} on disk (Windows refused${settledPreview ? `: ${settledPreview}` : ""})`
+      : "";
     toast.success(
       skipped && !downloaded
-        ? `Already on disk — ${skipped.toLocaleString()} typeface${skipped === 1 ? "" : "s"} registered`
-        : `Background job finished — ${downloaded.toLocaleString()} downloaded, ${skipped.toLocaleString()} skipped`,
+        ? `Already on disk — ${skipped.toLocaleString()} typeface${skipped === 1 ? "" : "s"} registered${settled ? `,${settledNote}` : ""}`
+        : `Background job finished — ${downloaded.toLocaleString()} downloaded, ${skipped.toLocaleString()} skipped${settled ? `,${settledNote}` : ""}`,
       {
-        description: "Files: Documents → Font Manager → FamilyName. Intact files were not fetched again.",
+        description: settled
+          ? "Gidugu-class faces stay in Documents for preview; Word/Adobe cannot load them this session."
+          : "Files: Documents → Font Manager → FamilyName. Intact files were not fetched again.",
       },
     );
   }
@@ -358,6 +373,29 @@ export async function listSessionFamilies(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/** Wait for session_begin GDI restore. Live list is this-process Adds, not last-session sidecar. */
+export async function waitSessionBoot(timeoutMs = 180_000): Promise<{ done: boolean; ready: string[] }> {
+  if (!(await inDesktopShell())) return { done: true, ready: [] };
+  const start = Date.now();
+  let startedPoll = false;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const s = await tauriInvoke<{ done?: boolean; running?: boolean; ready?: string[] }>(
+        "session_boot_state",
+      );
+      if (s?.running && !startedPoll) {
+        startGooglePoll("download");
+        startedPoll = true;
+      }
+      if (s?.done) return { done: true, ready: (s.ready ?? []).slice() };
+    } catch {
+      return { done: false, ready: [] };
+    }
+    await new Promise((r) => window.setTimeout(r, 150));
+  }
+  return { done: false, ready: [] };
 }
 
 export type DiskFamilyInfo = {
@@ -957,6 +995,7 @@ function applyPayload(p: {
     current: p.current || job.current,
     failedNames: p.failed_names ?? [],
     failedDetails: p.failed_details ?? [],
+    settledNames: p.settled_names ?? [],
   };
   markJobClock(job.running, job.paused);
   const forceEmit =
@@ -994,7 +1033,7 @@ function applyPayload(p: {
       emit();
       return;
     }
-    notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? []);
+    notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? [], p.settled_names ?? []);
     // Scope to this google job — do not wipe local install-queue pending (mixed Activate All).
     // settled_names: Gidugu-class quiet settle (intact + known GDI-incapable) — clear pending, no toast.
     void finalizeReadyAndClearPending([
@@ -1115,7 +1154,7 @@ function finishIfIdle() {
     if (wasRemove) {
       toast.success(`Deactivated ${snapshot.done.toLocaleString()} — files kept in Documents`);
     } else {
-      notifyDownloadResult(snapshot.done, snapshot.failed, snapshot.failedNames, snapshot.failedDetails);
+      notifyDownloadResult(snapshot.done, snapshot.failed, snapshot.failedNames, snapshot.failedDetails, snapshot.settledNames ?? []);
     }
   }
 }

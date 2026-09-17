@@ -11,6 +11,7 @@ import {
   restoreSessionFromDisk,
   rememberSessionFamilies,
   listSessionFamilies,
+  waitSessionBoot,
   pruneUnknownFolders,
   syncManagedDocumentsRoot,
   bindDownloadEvents,
@@ -139,15 +140,24 @@ export function useHydrateFonts() {
       const wantIds = Array.from(new Set(useFontStore.getState().activated));
       const desktop = await inDesktopShell();
       if (desktop) {
-        const sessionNames = await listSessionFamilies();
+        const boot = await waitSessionBoot();
+        const bootReady = boot.done ? boot.ready : [];
+        // After session_begin prune this list is GDI-live. Do not read last-session
+        // sidecar before boot.done — that marked Gidugu Activated while Add=0.
+        const sessionNames = boot.done ? bootReady : await listSessionFamilies();
         const persistNames: string[] = [];
         for (const id of wantIds) {
           const font = findFont(id, localFonts, google);
           if (font && font.source !== "system") persistNames.push(font.family);
           else if (!font && id.startsWith("g:")) persistNames.push(id.slice(2));
         }
+        const bootSet = new Set(sessionNames.map((n) => n.trim().toLowerCase()));
         const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
-        void restoreSessionFromDisk(wantNames).then((result) => {
+        const needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
+        const restore = needRegister.length
+          ? restoreSessionFromDisk(needRegister)
+          : Promise.resolve({ ready: [] as string[], missing: [] as string[], onDisk: [] as string[] });
+        void restore.then((result) => {
           if (cancelled) return;
           const diskNames = result.onDisk;
           if (diskNames.length) {
@@ -155,10 +165,8 @@ export function useHydrateFonts() {
             useFontStore.getState().setDiskFamilies(diskNames);
           }
           const allow = new Set<string>();
-          // Live = GDI-registered only. `onDisk` is files in Documents (already
-          // fed to setDiskFamilies). sessionNames is session_begin's sidecar after
-          // it pruned to families that actually Add'd this boot. A local upload
-          // without a successful Add is not Activated.
+          // Live = GDI-registered this process only (boot.ready ∪ restore ready).
+          // Last-session sidecar is used only after session_begin pruned it.
           for (const n of result.ready) allow.add(n.trim().toLowerCase());
           for (const n of sessionNames) allow.add(n.trim().toLowerCase());
           const live: string[] = [];
