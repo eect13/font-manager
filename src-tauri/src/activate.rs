@@ -532,6 +532,7 @@ mod winfont {
             matches!(self, Self::Ok)
         }
 
+        #[allow(dead_code)] // debug / toast twin of RegisterFailKind::label
         pub fn label(self) -> &'static str {
             match self {
                 Self::Ok => "ok",

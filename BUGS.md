@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.179
+- **Release warnings (P2):** `RegisterOutcome::label` unused in `winfont` (kept, `#[allow(dead_code)]` — twin of `RegisterFailKind::label`). `sfnt_dir_has` unused in release because `has_table` is test-only — now used as Gidugu Debg early-out in `gdi_sanitize_ttf`. No register/Activate behavior change.
+
 ## Fixed in tip / 1.0.178
 - **Retry skipped Gidugu (P0):** `retry_google_downloads` stamped `.complete` and `continue`d before Add. Activate All could sanitize, but Retry never tried — Gidugu stayed 2099. Retry now **register first** (Debg strip / 2015 pin). Add>0 ⇒ live. Add still 0 on a full-size file ⇒ settle once, **no refetch loop**. Undersized remnant still Repair. Helpers kept (`stamp_known_incapable_*`, `family_known_gdi_session_incapable`).
 
@@ -153,5 +156,5 @@
 
 ## Notes
 
-- Tip is 1.0.178 (unreleased pack — ask before NSIS).
+- Tip is 1.0.179 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

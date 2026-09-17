@@ -430,6 +430,9 @@ pub fn gdi_sanitize_ttf(font: &[u8]) -> Option<Vec<u8>> {
     if magic != b"\x00\x01\x00\x00" && magic != b"OTTO" && magic != b"true" {
         return None;
     }
+    if !UNWANTED_GDI_TABLES.iter().any(|t| sfnt_dir_has(font, t)) {
+        return None;
+    }
     let num = u16b(font, 4)? as usize;
     let mut keep: Vec<([u8; 4], usize, usize)> = Vec::with_capacity(num);
     let mut dropped = 0usize;
