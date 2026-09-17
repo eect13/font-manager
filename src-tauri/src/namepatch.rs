@@ -380,9 +380,14 @@ pub fn patch_variable_face(font: &[u8], family: &str, italic: bool) -> Option<Ve
     patch_instance_names(font, family, style)
 }
 
-/// True when the sfnt directory lists table tag `tag` (e.g. b"fvar").
-#[cfg(test)]
-pub fn has_table(font: &[u8], tag: &[u8; 4]) -> bool {
+/// TrueType tables Windows GDI / Font Viewer reject as "not a valid font"
+/// (google/fonts#9982 Gidugu v2 `Debg`; fonttools TTFA; FontForge FFTM).
+const UNWANTED_GDI_TABLES: [&[u8; 4]; 3] = [b"Debg", b"TTFA", b"FFTM"];
+
+/// Empty DSIG (version=1, numSignatures=0). Word on Windows looks for the tag.
+const EMPTY_DSIG: [u8; 8] = [0, 0, 0, 1, 0, 0, 0, 0];
+
+fn sfnt_dir_has(font: &[u8], tag: &[u8; 4]) -> bool {
     let Some(num) = u16b(font, 4).map(|n| n as usize) else {
         return false;
     };
@@ -393,6 +398,112 @@ pub fn has_table(font: &[u8], tag: &[u8; 4]) -> bool {
         }
     }
     false
+}
+
+fn is_unwanted_gdi_tag(tag: &[u8]) -> bool {
+    UNWANTED_GDI_TABLES.iter().any(|t| t.as_slice() == tag)
+}
+
+fn sfnt_search_range(n: u16) -> (u16, u16, u16) {
+    let mut pow = 1u16;
+    let mut entry = 0u16;
+    while pow.saturating_mul(2) <= n {
+        pow *= 2;
+        entry += 1;
+    }
+    let search_range = pow.saturating_mul(16);
+    let range_shift = n.saturating_mul(16).saturating_sub(search_range);
+    (search_range, entry, range_shift)
+}
+
+/// Drop `Debg` / `TTFA` / `FFTM` and add an empty `DSIG` when missing so
+/// `AddFontResourceExW` can load the face. `None` = already GDI-clean (no rewrite).
+/// Never touches WOFF / TTC. Only the table directory is rebuilt — glyf/loca stay.
+pub fn gdi_sanitize_ttf(font: &[u8]) -> Option<Vec<u8>> {
+    if font.len() < 12 {
+        return None;
+    }
+    let magic = &font[0..4];
+    if magic == b"wOFF" || magic == b"wOF2" || magic == b"ttcf" {
+        return None;
+    }
+    if magic != b"\x00\x01\x00\x00" && magic != b"OTTO" && magic != b"true" {
+        return None;
+    }
+    let num = u16b(font, 4)? as usize;
+    let mut keep: Vec<([u8; 4], usize, usize)> = Vec::with_capacity(num);
+    let mut dropped = 0usize;
+    let mut has_dsig = false;
+    for i in 0..num {
+        let dir = 12 + i * 16;
+        let tag: [u8; 4] = font.get(dir..dir + 4)?.try_into().ok()?;
+        if &tag == b"DSIG" {
+            has_dsig = true;
+        }
+        if is_unwanted_gdi_tag(&tag) {
+            dropped += 1;
+            continue;
+        }
+        let off = u32b(font, dir + 8)? as usize;
+        let len = u32b(font, dir + 12)? as usize;
+        let end = off.checked_add(len)?;
+        if end > font.len() {
+            return None;
+        }
+        keep.push((tag, off, len));
+    }
+    if dropped == 0 {
+        return None;
+    }
+    if !has_dsig {
+        keep.push((*b"DSIG", usize::MAX, EMPTY_DSIG.len()));
+    }
+    keep.sort_by(|a, b| a.0.cmp(&b.0));
+    let n = keep.len() as u16;
+    let (search_range, entry, range_shift) = sfnt_search_range(n);
+
+    let mut out = Vec::with_capacity(font.len());
+    out.extend_from_slice(magic);
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&search_range.to_be_bytes());
+    out.extend_from_slice(&entry.to_be_bytes());
+    out.extend_from_slice(&range_shift.to_be_bytes());
+    let dir_start = out.len();
+    out.resize(dir_start + keep.len() * 16, 0);
+
+    for (i, (tag, off, len)) in keep.iter().enumerate() {
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+        let data_off = out.len();
+        if *off == usize::MAX {
+            out.extend_from_slice(&EMPTY_DSIG);
+        } else {
+            out.extend_from_slice(&font[*off..*off + *len]);
+        }
+        let data_len = if *off == usize::MAX {
+            EMPTY_DSIG.len()
+        } else {
+            *len
+        };
+        let cs = checksum(&out[data_off..data_off + data_len]);
+        let rec = dir_start + i * 16;
+        out[rec..rec + 4].copy_from_slice(tag);
+        out[rec + 4..rec + 8].copy_from_slice(&cs.to_be_bytes());
+        out[rec + 8..rec + 12].copy_from_slice(&(data_off as u32).to_be_bytes());
+        out[rec + 12..rec + 16].copy_from_slice(&(data_len as u32).to_be_bytes());
+    }
+    while out.len() % 4 != 0 {
+        out.push(0);
+    }
+    fix_head_checksum(&mut out);
+    Some(out)
+}
+
+/// True when the sfnt directory lists table tag `tag` (e.g. b"fvar").
+#[cfg(test)]
+pub fn has_table(font: &[u8], tag: &[u8; 4]) -> bool {
+    sfnt_dir_has(font, tag)
 }
 
 /// Read a Windows (plat 3) name record as UTF-16BE string (test / debug helper).
@@ -628,5 +739,55 @@ mod tests {
         assert_eq!(read_name_id(&patched, 16).as_deref(), Some("Cormorant Garamond"));
         assert_eq!(read_name_id(&patched, 17).as_deref(), Some("Italic"));
         assert!(has_table(&patched, b"fvar"));
+    }
+
+    #[test]
+    fn gdi_sanitize_drops_debg_adds_dsig_leaves_clean_alone() {
+        let clean = minimal_font("Gidugu", "Regular");
+        assert!(gdi_sanitize_ttf(&clean).is_none(), "no Debg ⇒ no rewrite");
+
+        // Append a Debg table (unsorted dir is ok — sanitizer rebuilds sorted).
+        let mut dirty = clean.clone();
+        let num = u16::from_be_bytes(dirty[4..6].try_into().unwrap()) as usize;
+        let mut recs: Vec<[u8; 16]> = Vec::new();
+        for i in 0..num {
+            let mut rec = [0u8; 16];
+            rec.copy_from_slice(&dirty[12 + i * 16..12 + (i + 1) * 16]);
+            recs.push(rec);
+        }
+        let body_off = 12 + num * 16;
+        let body = dirty[body_off..].to_vec();
+        let debg = b"dbg1".to_vec();
+        for rec in &mut recs {
+            let off = u32::from_be_bytes(rec[8..12].try_into().unwrap());
+            rec[8..12].copy_from_slice(&(off + 16).to_be_bytes());
+        }
+        let mut debg_rec = [0u8; 16];
+        debg_rec[0..4].copy_from_slice(b"Debg");
+        let new_off = (12 + (num + 1) * 16 + body.len()) as u32;
+        debg_rec[8..12].copy_from_slice(&new_off.to_be_bytes());
+        debg_rec[12..16].copy_from_slice(&(debg.len() as u32).to_be_bytes());
+        recs.push(debg_rec);
+
+        let mut rebuilt = Vec::new();
+        rebuilt.extend_from_slice(&dirty[0..4]);
+        rebuilt.extend_from_slice(&((num + 1) as u16).to_be_bytes());
+        rebuilt.extend_from_slice(&dirty[6..12]);
+        for rec in &recs {
+            rebuilt.extend_from_slice(rec);
+        }
+        rebuilt.extend_from_slice(&body);
+        rebuilt.extend_from_slice(&debg);
+        assert!(has_table(&rebuilt, b"Debg"));
+        assert!(!has_table(&rebuilt, b"DSIG"));
+
+        let out = gdi_sanitize_ttf(&rebuilt).expect("Debg must trigger rewrite");
+        assert!(!has_table(&out, b"Debg"), "Debg must be gone");
+        assert!(has_table(&out, b"DSIG"), "empty DSIG for Word/GDI");
+        assert!(has_table(&out, b"head"));
+        assert!(has_table(&out, b"name"));
+        assert_eq!(read_name_id(&out, 1).as_deref(), Some("Gidugu"));
+        assert!(gdi_sanitize_ttf(&out).is_none(), "second pass is a no-op");
+        assert!(gdi_sanitize_ttf(b"wOFF....").is_none());
     }
 }

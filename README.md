@@ -1,4 +1,4 @@
-# Font Manager **1.0.176**
+# Font Manager **1.0.177**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -6,7 +6,9 @@ FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
 
-**1.0.176.** Faster same-session register (skip walk+Add when this process already Add'd the family; maps still skip-copy only). Boot no longer double-registers the session. Catalog **2100** / GDI-live **2099** — Gidugu stays on disk, Windows refused session install, toast is not a failure. 1.0.175 Gidugu settle + opsz + Clear Sans Intel-8 kept.
+**1.0.177.** Gidugu Activates — catalog **2100** GDI-live, not 2099. v2.000 ships a `Debg` table Windows Font Viewer / `AddFontResourceExW` reject ([google/fonts#9982](https://github.com/google/fonts/issues/9982)); we strip `Debg`/`TTFA`/`FFTM` and add an empty `DSIG` on write, then fall back to the 2015 google/fonts TTF if Add is still 0. Last-resort settle only if both fail. Same-session Activate All of already-live families stays O(1) skip (this-process `loaded()` only). 1.0.176 boot/skip-copy HOLDs kept.
+
+**1.0.176.** Faster same-session register (skip walk+Add when this process already Add'd the family; maps still skip-copy only). Boot no longer double-registers the session. Catalog **2100** / GDI-live **2099** was Gidugu v2 refused — fixed in 1.0.177. 1.0.175 Gidugu settle + opsz + Clear Sans Intel-8 kept.
 
 **1.0.175.** Gidugu (known GDI-session-incapable) with intact official TTF is **disk settled** (`.complete`) so Scan no longer flags Repair; still never Activated / GDI-live. 1.0.173 toast suppress kept. opsz audit from 1.0.174 included (inspector italic FVS + Playground `fontOpticalSizing`).
 

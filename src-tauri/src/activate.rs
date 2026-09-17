@@ -1144,10 +1144,20 @@ fn register_path_detailed(path: &Path) -> Option<RegisterFailKind> {
 }
 
 fn register_family_path(family: &str, path: &Path) -> bool {
+    let _ = sanitize_on_disk_for_gdi(path);
     let fail = register_path_detailed(path);
     #[cfg(windows)]
     if fail.is_none() {
         winfont::bind(family, path);
+        return true;
+    }
+    if fail == Some(RegisterFailKind::AddReturnedZero)
+        && family_known_gdi_session_incapable(family)
+        && try_gidugu_windows_safe_replace(path)
+    {
+        #[cfg(windows)]
+        winfont::bind(family, path);
+        return true;
     }
     #[cfg(not(windows))]
     {
@@ -1382,10 +1392,11 @@ fn family_disk_settled_known_gdi_incapable(
     known_incapable && intact_on_disk && !undersized
 }
 
-/// Activated / markLiveActivated only after real GDI Add — never for known-incapable.
+/// Activated / markLiveActivated only after real GDI Add — never on maps/sidecar.
+/// Gidugu v2 may need sanitize/fallback; if Add actually returned >0 it is live.
 #[cfg_attr(not(test), allow(dead_code))]
-fn family_may_claim_session_activated(known_incapable: bool, gdi_faces_added: usize) -> bool {
-    !known_incapable && gdi_faces_added > 0
+fn family_may_claim_session_activated(_known_incapable: bool, gdi_faces_added: usize) -> bool {
+    gdi_faces_added > 0
 }
 
 fn suppress_fail_toast_known_incapable(app: &AppHandle, family: &str) -> bool {
@@ -1423,13 +1434,25 @@ fn register_intact_family_detailed(
             if !ttf_intact(&path) {
                 continue;
             }
+            let _ = sanitize_on_disk_for_gdi(&path);
             match register_path_detailed(&path) {
                 None => {
                     #[cfg(windows)]
                     winfont::bind(family, &path);
                     n += 1;
                 }
-                Some(kind) => fail = fail.worsen(kind),
+                Some(kind) => {
+                    if matches!(kind, RegisterFailKind::AddReturnedZero)
+                        && family_known_gdi_session_incapable(family)
+                        && try_gidugu_windows_safe_replace(&path)
+                    {
+                        #[cfg(windows)]
+                        winfont::bind(family, &path);
+                        n += 1;
+                        continue;
+                    }
+                    fail = fail.worsen(kind);
+                }
             }
         }
     }
@@ -2465,6 +2488,8 @@ fn write_font_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if !ttf_magic(bytes) || bytes.len() < 256 {
         return Err("not an installable font".into());
     }
+    let sanitized = crate::namepatch::gdi_sanitize_ttf(bytes);
+    let bytes = sanitized.as_deref().unwrap_or(bytes);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -2826,9 +2851,74 @@ fn os2_fstype_restricted(path: &Path) -> bool {
 }
 
 fn family_known_gdi_session_incapable(family: &str) -> bool {
-    // Official google/fonts Gidugu-Regular.ttf (~461KB, fsType=0) still Add=0 on
-    // Eric's PC while PrivateFontCollection loads — known session-install refuse.
     family.trim().eq_ignore_ascii_case("gidugu")
+}
+
+/// google/fonts `ofl/gidugu` at the 2015 initial commit — Windows GDI accepts it.
+/// v2.000 (2025) ships `Debg`; Font Viewer / AddFontResourceExW reject it
+/// (google/fonts#9982) while PrivateFontCollection still loads.
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIDUGU_GDI_SAFE_PIN: &str = "90abd17b4f97671435798b6147b698aa9087612f";
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn gidugu_gdi_safe_ttf_urls() -> Vec<String> {
+    let pin = GIDUGU_GDI_SAFE_PIN;
+    vec![
+        format!("https://cdn.jsdelivr.net/gh/google/fonts@{pin}/ofl/gidugu/Gidugu-Regular.ttf"),
+        format!("https://raw.githubusercontent.com/google/fonts/{pin}/ofl/gidugu/Gidugu-Regular.ttf"),
+        format!("https://github.com/google/fonts/raw/{pin}/ofl/gidugu/Gidugu-Regular.ttf"),
+    ]
+}
+
+/// Rewrite Documents TTF in place when it still has Debg/TTFA/FFTM.
+fn sanitize_on_disk_for_gdi(path: &Path) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    let Some(clean) = crate::namepatch::gdi_sanitize_ttf(&bytes) else {
+        return false;
+    };
+    let tmp = path.with_extension("ttf.gdisan");
+    if fs::write(&tmp, &clean).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    if fs::rename(&tmp, path).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    true
+}
+
+/// Last-resort: replace Gidugu v2 with the 2015 pin, then Add.
+fn try_gidugu_windows_safe_replace(path: &Path) -> bool {
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        let Some(client) = http_download_client() else {
+            return false;
+        };
+        for url in gidugu_gdi_safe_ttf_urls() {
+            let Some(bytes) = fetch_url_ttf(&client, &url) else {
+                continue;
+            };
+            if bytes.len() < 200 * 1024 {
+                continue;
+            }
+            let bytes = crate::namepatch::gdi_sanitize_ttf(&bytes).unwrap_or(bytes);
+            if fs::write(path, &bytes).is_err() {
+                continue;
+            }
+            if register_path(path) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weight: u16, italic: bool, subset: &str) -> Result<Vec<u8>, String> {
@@ -9253,16 +9343,23 @@ mod install_path_tests {
     }
 
     #[test]
-    fn catalog_2100_minus_gidugu_is_2099_gdi_live() {
-        assert_eq!(catalog_expected_gdi_live(2100, 1), 2099);
+    fn catalog_2100_gidugu_is_gdi_live_after_compat() {
         assert_eq!(catalog_expected_gdi_live(2100, 0), 2100);
+        assert_eq!(catalog_expected_gdi_live(2100, 1), 2099);
         assert!(family_known_gdi_session_incapable("Gidugu"));
         assert!(!family_may_claim_session_activated(true, 0));
+        assert!(
+            family_may_claim_session_activated(true, 1),
+            "Gidugu Add>0 is live — catalog 2100, not 2099"
+        );
         assert!(!job_toast_is_fail(0));
         assert!(job_toast_is_fail(1));
-        // 2100 processed, 2099 GDI-live skipped, 0 failed, 1 settled Gidugu.
+        // Last-resort settle only when Add still 0 after sanitize/2015 pin.
         assert_eq!(job_downloaded_count(2100, 2099, 0, 1), 0);
-        assert_eq!(job_downloaded_count(2100, 2099, 0, 0), 1); // lie without settled
+        assert_eq!(job_downloaded_count(2100, 2100, 0, 0), 0);
+        let urls = gidugu_gdi_safe_ttf_urls();
+        assert!(urls.iter().all(|u| u.contains(GIDUGU_GDI_SAFE_PIN)));
+        assert!(urls.iter().any(|u| u.contains("ofl/gidugu/Gidugu-Regular.ttf")));
     }
 
     #[test]
@@ -9379,11 +9476,11 @@ mod install_path_tests {
             "Add=0 must not claim Activated"
         );
         assert!(
-            !family_may_claim_session_activated(
+            family_may_claim_session_activated(
                 family_known_gdi_session_incapable("Gidugu"),
                 1,
             ),
-            "known-incapable never markLiveActivated even if counter lied"
+            "Gidugu Add>0 after sanitize/2015 pin is live (2100)"
         );
         assert!(family_may_claim_session_activated(false, 1));
 

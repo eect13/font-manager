@@ -1,6 +1,6 @@
 {
   "name": "font-manager",
-  "version": "1.0.176",
+  "version": "1.0.177",
   "description": "Font Manager \u2014 FontBase-style library: Fontsource, Google Fonts, uploads, session activation, glyphs, variable axes.",
   "sideEffects": false,
   "type": "module",

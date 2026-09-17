@@ -6,7 +6,7 @@ import test from "node:test";
  * - Activated after boot = this-process GDI (result.ready ∪ bootReady)
  * - last-session sidecar is live only after session_begin pruned (bootDone)
  * - onDisk (files in Documents) is NOT live
- * - Gidugu in last-session sidecar is NOT live (Add=0, never bootReady)
+ * - Gidugu is live only when boot.ready includes it (GDI Add after Debg sanitize / 2015 pin)
  * - skipFailed never nuclear-clears pending when names match no ids
  */
 
@@ -115,7 +115,7 @@ test("hydrate live: last-session sidecar before boot prune is not live", () => {
   assert.deepEqual(live, []);
 });
 
-test("hydrate live: Gidugu never Activated (settled, not boot.ready)", () => {
+test("hydrate live: Gidugu not Activated unless this-process boot.ready (Add succeeded)", () => {
   const live = hydrateLiveIds({
     wantIds: ["g:Nunito", "g:Gidugu"],
     fonts,
@@ -127,6 +127,19 @@ test("hydrate live: Gidugu never Activated (settled, not boot.ready)", () => {
   });
   assert.deepEqual(live, ["g:Nunito"]);
   assert.equal(live.includes("g:Gidugu"), false);
+});
+
+test("hydrate live: Gidugu is live when boot.ready includes it (GDI Add worked)", () => {
+  const live = hydrateLiveIds({
+    wantIds: ["g:Nunito", "g:Gidugu"],
+    fonts,
+    ready: ["Nunito", "Gidugu"],
+    onDisk: ["Nunito", "Gidugu"],
+    sessionNames: ["Nunito", "Gidugu"],
+    bootReady: ["Nunito", "Gidugu"],
+    bootDone: true,
+  });
+  assert.deepEqual(live, ["g:Nunito", "g:Gidugu"]);
 });
 
 test("skipFailed: unmatched names do not wipe pending", () => {

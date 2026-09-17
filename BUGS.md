@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.177
+- **Gidugu 2099 vs 2100 (P0):** v2.000 `Gidugu-Regular.ttf` is rejected by Windows GDI (`AddFontResourceExW`=0, Font Viewer “not a valid font”, [google/fonts#9982](https://github.com/google/fonts/issues/9982)) because it ships a fonttools `Debg` table. 1.0.176 treated 2099 as honest. Now **strip `Debg`/`TTFA`/`FFTM` + empty `DSIG` on write**, retry Add, then pin the **2015** google/fonts TTF if still 0. Add>0 ⇒ Activated / catalog **2100**. Last-resort disk-settle only if both fail. Undersized 38KB latin remnant still Repair-only.
+- **Register-after-register:** same-session Activate All of already-live families stays O(1) (this-process `loaded()` + filename count + size-matched maps). Gidugu live now joins that skip set. Maps still skip-copy only after Quit (1.0.171 HOLD). GDI Add stays serialized.
+
 ## Fixed in tip / 1.0.176
 - **Register speed (FontBase-like, safe):** Activate All of already-GDI-live families skips walk + `ttf_intact` + `AddFontResourceEx`. Skip is **this-process `by_family` ∩ `loaded()`** plus filename-count match plus size-matched maps. Maps / last-session sidecar never skip Add (1.0.171 HOLD). New files (count++) or resized faces (map size mismatch) still walk; unchanged paths still skip-Add in `register_detailed`. GDI stays serialized, ≤6 walk workers.
 - **Boot freeze:** hydrate no longer re-registers the whole session after `session_begin`. Waits on `session_boot_state`; live = this-process `boot.ready`. DownloadBar shows “Restoring session…” when idle. Last-session sidecar before prune is not Activated (Gidugu cannot sneak in).
@@ -146,5 +150,5 @@
 
 ## Notes
 
-- Tip is 1.0.170 (unreleased pack — ask before NSIS).
+- Tip is 1.0.177 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
