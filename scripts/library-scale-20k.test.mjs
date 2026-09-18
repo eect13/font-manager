@@ -67,6 +67,13 @@ test("source: poolForScope + gfonts grid + activated count is length", () => {
   assert.match(sidebar, /const facetCounts = useMemo/);
   assert.match(sidebar, /const providerCounts = useMemo/);
   assert.match(store, /id\.startsWith\("g:"\)/);
+  // 1.0.186: map locals/google once — no per-live-id localFonts.find
+  assert.match(store, /const localById = new Map\(localFonts\.map/);
+  assert.match(store, /localById\.get\(id\)/);
+  assert.doesNotMatch(
+    store.slice(store.indexOf("scope === \"activated\""), store.indexOf("return allFonts")),
+    /localFonts\.find\(\(f\) => f\.id === id\)/,
+  );
 });
 
 test("preview subset is CSS text= / latin; GDI stays full fonts", () => {

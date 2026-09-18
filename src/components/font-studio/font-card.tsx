@@ -5,6 +5,7 @@ import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { tryFontsourceGdiOffer } from "@/lib/fonts/os-activate";
+import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
@@ -30,9 +31,9 @@ function isolate(e: MouseEvent | PointerEvent) {
   e.stopPropagation();
 }
 
-/** Settled FS offer is Gidugu-only — match Rust try_fontsource_gdi_offer allowlist. */
+/** Settled · try Fontsource for any allowlisted known-GDI-incapable family. */
 function isFontsourceSettledOffer(family: string) {
-  return family.trim().toLowerCase() === "gidugu";
+  return isKnownGdiSessionIncapable(family);
 }
 
 function paintWeight(el: HTMLElement, weight: number, fvs?: string) {

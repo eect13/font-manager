@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { firstSettledAllowlistedFamily } from "./gdi-incapable";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { idbGet } from "./idb";
@@ -107,16 +108,18 @@ function notifyDownloadResult(
       const liveCount = useFontStore.getState().activated.length || live;
       const title = `Live ${liveCount.toLocaleString()} · Settled ${settled.toLocaleString()} · Library ${library.toLocaleString() || "—"}`;
       const settledPreview = settledNames.slice(0, 3).join(", ");
-      const offerGidugu = settledNames.some((n) => n.trim().toLowerCase() === "gidugu");
-      toast.success(title, {
+      // Prefer first settled name on the shared known-GDI-incapable allowlist (not hardcoded Gidugu).
+      const offerFamily = firstSettledAllowlistedFamily(settledNames);
+      const chrome = settled > 0 ? toast.message : toast.success;
+      chrome(title, {
         description: settled
           ? `${settledPreview || "Settled faces"} on disk · Windows won’t load for apps this session. Not Activated.`
           : "Files: Documents → Font Manager → FamilyName. Intact files were not fetched again.",
         duration: settled ? 16_000 : 8_000,
-        action: offerGidugu
+        action: offerFamily
           ? {
               label: "Try Fontsource",
-              onClick: () => void tryFontsourceGdiOffer("Gidugu"),
+              onClick: () => void tryFontsourceGdiOffer(offerFamily),
             }
           : {
               label: "Open folder",

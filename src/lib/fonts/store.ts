@@ -1185,6 +1185,10 @@ export function poolForScope(
   // Activated drawer/facet: O(live), never allFonts(~22k) on every GDI tick.
   if (scope === "activated") {
     if (!liveIds.length) return [];
+    // Map once — avoid O(live × locals) finds on every Activated facet tick.
+    const localById = new Map(localFonts.map((f) => [f.id, f]));
+    const googleById = new Map(googleFonts.map((f) => [f.id, f]));
+    const systemById = systemFonts.length ? new Map(systemFonts.map((f) => [f.id, f])) : null;
     const out: FontRecord[] = [];
     const seen = new Set<string>();
     for (const id of liveIds) {
@@ -1192,9 +1196,9 @@ export function poolForScope(
       seen.add(id);
       const font =
         (id.startsWith("g:") ? FONT_BY_ID.get(id) : undefined) ??
-        localFonts.find((f) => f.id === id) ??
-        googleFonts.find((f) => f.id === id) ??
-        systemFonts.find((f) => f.id === id) ??
+        localById.get(id) ??
+        googleById.get(id) ??
+        systemById?.get(id) ??
         FONT_BY_ID.get(id);
       if (font) out.push(font);
     }

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const card = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
 const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const gdiMirror = readFileSync(join(root, "src/lib/fonts/gdi-incapable.ts"), "utf8");
 const googleApi = readFileSync(join(root, "src/lib/fonts/google-api.ts"), "utf8");
 const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
 const regen = readFileSync(join(root, "scripts/regen-shipped-catalogs.mjs"), "utf8");
@@ -14,36 +15,60 @@ const google = JSON.parse(readFileSync(join(root, "src/lib/fonts/google-catalog.
 const other = JSON.parse(readFileSync(join(root, "src/lib/fonts/fontsource-other.json"), "utf8"));
 const directory = JSON.parse(readFileSync(join(root, "src/lib/fonts/google-directory.json"), "utf8"));
 
-test("Settled card advertises try Fontsource only for Gidugu allowlist", () => {
-  assert.match(card, /function isFontsourceSettledOffer/);
-  assert.match(card, /family\.trim\(\)\.toLowerCase\(\) === "gidugu"/);
-  assert.match(card, /Settled · try Fontsource/);
-  // Non-Gidugu Settled is calm badge — no Fontsource tease on every Settled face.
-  assert.match(card, /On disk · Windows won’t load \(not Activated\)/);
-  // Click path must not call offer for non-allowlist (guard is the helper).
-  assert.equal((card.match(/tryFontsourceGdiOffer\(font\.family\)/g) || []).length, 2);
+test("shared TS allowlist mirrors Rust known-GDI-incapable table", () => {
+  assert.match(gdiMirror, /export const KNOWN_GDI_SESSION_INCAPABLE/);
+  assert.match(gdiMirror, /family:\s*"Gidugu"/);
+  assert.match(gdiMirror, /fsSlug:\s*"gidugu"/);
+  assert.match(gdiMirror, /subsets:\s*\["telugu",\s*"latin"\]/);
+  assert.match(gdiMirror, /export function isKnownGdiSessionIncapable/);
+  assert.match(gdiMirror, /export function firstSettledAllowlistedFamily/);
+  assert.match(activateRs, /const KNOWN_GDI_SESSION_INCAPABLE/);
+  assert.match(activateRs, /struct KnownGdiIncapableEntry/);
+  assert.match(activateRs, /fn known_gdi_incapable_entry/);
+  assert.match(activateRs, /fn family_known_gdi_session_incapable/);
+  assert.match(activateRs, /family:\s*"Gidugu"/);
+  assert.match(activateRs, /subsets:\s*&?\["telugu",\s*"latin"\]/);
+  // No single-hardcode body for the predicate.
   assert.doesNotMatch(
-    card,
-    /title="On disk · Windows won’t load\. Optional: try Fontsource copy"[\s\S]*?if \(font\.family\.trim\(\)\.toLowerCase\(\) === "gidugu"\)/,
-  );
-});
-
-test("finish toast Try Fontsource is Gidugu-only", () => {
-  assert.match(osActivate, /const offerGidugu = settledNames\.some/);
-  assert.match(osActivate, /n\.trim\(\)\.toLowerCase\(\) === "gidugu"/);
-  assert.match(osActivate, /label: "Try Fontsource"/);
-  assert.match(osActivate, /tryFontsourceGdiOffer\("Gidugu"\)/);
-});
-
-test("Rust try_fontsource_gdi_offer is known-incapable allowlist (Gidugu)", () => {
-  assert.match(activateRs, /fn family_known_gdi_session_incapable\(family: &str\) -> bool/);
-  assert.match(
     activateRs,
-    /fn family_known_gdi_session_incapable\(family: &str\) -> bool \{\s*family\.trim\(\)\.eq_ignore_ascii_case\("gidugu"\)/,
+    /fn family_known_gdi_session_incapable\(family: &str\) -> bool \{\s*family\.trim\(\)\.eq_ignore_ascii_case\("gidugu"\)\s*\}/,
   );
+});
+
+test("Settled card advertises try Fontsource for any allowlisted family", () => {
+  assert.match(card, /function isFontsourceSettledOffer/);
+  assert.match(card, /isKnownGdiSessionIncapable\(family\)/);
+  assert.match(card, /from "@\/lib\/fonts\/gdi-incapable"/);
+  assert.match(card, /Settled · try Fontsource/);
+  // Non-allowlist Settled is calm badge — no Fontsource tease.
+  assert.match(card, /On disk · Windows won’t load \(not Activated\)/);
+  assert.equal((card.match(/tryFontsourceGdiOffer\(font\.family\)/g) || []).length, 2);
+  assert.doesNotMatch(card, /family\.trim\(\)\.toLowerCase\(\) === "gidugu"/);
+});
+
+test("finish toast Settled is calm + Try Fontsource uses allowlisted settled name", () => {
+  assert.match(osActivate, /firstSettledAllowlistedFamily\(settledNames\)/);
+  assert.match(osActivate, /const chrome = settled > 0 \? toast\.message : toast\.success/);
+  assert.match(osActivate, /label: "Try Fontsource"/);
+  assert.match(osActivate, /tryFontsourceGdiOffer\(offerFamily\)/);
+  assert.doesNotMatch(osActivate, /tryFontsourceGdiOffer\("Gidugu"\)/);
+  assert.doesNotMatch(osActivate, /n\.trim\(\)\.toLowerCase\(\) === "gidugu"/);
+  // Fail path stays error; Settled must not use success chrome when settledNames present.
+  assert.match(osActivate, /toast\.error\(/);
+});
+
+test("Rust try_fontsource_gdi_offer is allowlist + slug-based dest/URLs", () => {
   assert.match(activateRs, /pub fn try_fontsource_gdi_offer/);
   assert.match(activateRs, /if !family_known_gdi_session_incapable\(&family\)/);
   assert.match(activateRs, /fontsource_offer_activated_only_if_add/);
+  assert.match(activateRs, /fn fontsource_gdi_offer_ttf_urls/);
+  assert.match(activateRs, /fontsource_gdi_offer_ttf_urls\(&family\)/);
+  assert.match(activateRs, /fontsource_gdi_offer_slug\(&family\)/);
+  assert.match(activateRs, /fontsource_face_filename\(&slug,\s*"latin",\s*400,\s*"normal"\)/);
+  const offer = activateRs.match(/pub fn try_fontsource_gdi_offer[\s\S]*?\n\}\n\n#\[tauri::command\]/);
+  assert.ok(offer, "try_fontsource_gdi_offer body");
+  assert.doesNotMatch(offer[0], /dir\.join\("gidugu-400-normal\.ttf"\)/);
+  assert.match(offer[0], /fontsource_face_filename\(&slug/);
 });
 
 test("Google-first need_fontsource only when Google listing empty", () => {

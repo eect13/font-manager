@@ -2879,8 +2879,54 @@ fn os2_fstype_restricted(path: &Path) -> bool {
     }
 }
 
+/// Shared allowlist of families known to refuse session GDI Add (Add=0) despite intact TTF.
+/// Settled / early-skip / disk `.complete` / toast-exempt / Fontsource offer — all keyed here.
+/// Append a row (+ optional FS slug override + subset plan) to extend UX without new hardcodes.
+#[derive(Clone, Copy)]
+struct KnownGdiIncapableEntry {
+    family: &'static str,
+    /// Fontsource package slug; `None` ⇒ `slug_family(family)`.
+    fs_slug: Option<&'static str>,
+    /// Subsets for opt-in Fontsource GDI offer (order = preference).
+    subsets: &'static [&'static str],
+}
+
+const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[KnownGdiIncapableEntry {
+    family: "Gidugu",
+    fs_slug: Some("gidugu"),
+    subsets: &["telugu", "latin"],
+}];
+
+fn known_gdi_incapable_entry(family: &str) -> Option<&'static KnownGdiIncapableEntry> {
+    let key = family.trim();
+    if key.is_empty() {
+        return None;
+    }
+    KNOWN_GDI_SESSION_INCAPABLE
+        .iter()
+        .find(|e| e.family.eq_ignore_ascii_case(key))
+}
+
 fn family_known_gdi_session_incapable(family: &str) -> bool {
-    family.trim().eq_ignore_ascii_case("gidugu")
+    known_gdi_incapable_entry(family).is_some()
+}
+
+fn fontsource_gdi_offer_slug(family: &str) -> String {
+    match known_gdi_incapable_entry(family) {
+        Some(e) => e
+            .fs_slug
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| slug_family(family)),
+        None => slug_family(family),
+    }
+}
+
+const DEFAULT_FONTSOURCE_GDI_SUBSETS: &[&str] = &["latin"];
+
+fn fontsource_gdi_offer_subsets(family: &str) -> &'static [&'static str] {
+    known_gdi_incapable_entry(family)
+        .map(|e| e.subsets)
+        .unwrap_or(DEFAULT_FONTSOURCE_GDI_SUBSETS)
 }
 
 /// This-process Add=0 for a known-incapable family — Activate All must not re-stage/Add.
@@ -7489,12 +7535,19 @@ pub struct FontsourceOfferResult {
     pub message: String,
 }
 
-fn gidugu_fontsource_ttf_urls() -> Vec<String> {
+/// Fontsource static TTF URLs for an allowlisted known-GDI-incapable family (slug + subset plan).
+fn fontsource_gdi_offer_ttf_urls(family: &str) -> Vec<String> {
+    let slug = fontsource_gdi_offer_slug(family);
     let mut urls = Vec::new();
-    for subset in ["telugu", "latin"] {
-        urls.extend(ttf_urls("gidugu", "latest", 400, false, subset, 0));
+    for subset in fontsource_gdi_offer_subsets(family) {
+        urls.extend(ttf_urls(&slug, "latest", 400, false, subset, 0));
     }
     urls
+}
+
+#[cfg(test)]
+fn gidugu_fontsource_ttf_urls() -> Vec<String> {
+    fontsource_gdi_offer_ttf_urls("Gidugu")
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -7516,10 +7569,11 @@ pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<Fontso
     };
     let dir = family_dir(&app, &family)?;
     let _ = fs::create_dir_all(&dir);
-    let dest = dir.join("gidugu-400-normal.ttf");
+    let slug = fontsource_gdi_offer_slug(&family);
+    let dest = dir.join(fontsource_face_filename(&slug, "latin", 400, "normal"));
     let mut last = String::from("all Fontsource CDNs failed");
     let mut got: Option<Vec<u8>> = None;
-    for url in gidugu_fontsource_ttf_urls() {
+    for url in fontsource_gdi_offer_ttf_urls(&family) {
         if let Some(bytes) = fetch_url_ttf(&client, &url) {
             if bytes.len() >= 256 && ttf_magic(&bytes) {
                 got = Some(bytes);
@@ -9451,7 +9505,31 @@ mod install_path_tests {
         assert!(is_clear_sans_family("Clear Sans"));
         assert!(family_known_gdi_session_incapable("Gidugu"));
         assert!(!family_known_gdi_session_incapable("Nunito"));
+        assert!(known_gdi_incapable_entry("gidugu").is_some());
+        assert_eq!(fontsource_gdi_offer_slug("Gidugu"), "gidugu");
+        assert_eq!(fontsource_gdi_offer_subsets("Gidugu"), &["telugu", "latin"][..]);
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn known_gdi_incapable_allowlist_is_table_not_single_hardcode() {
+        // 1.0.186: shared table — Gidugu first; append rows for future bad fonts.
+        assert!(!KNOWN_GDI_SESSION_INCAPABLE.is_empty());
+        assert!(
+            KNOWN_GDI_SESSION_INCAPABLE
+                .iter()
+                .any(|e| e.family.eq_ignore_ascii_case("Gidugu")),
+            "Gidugu must remain first-class allowlist entry"
+        );
+        assert!(family_known_gdi_session_incapable("GIDUGU"));
+        assert!(!family_known_gdi_session_incapable("Roboto"));
+        let urls = fontsource_gdi_offer_ttf_urls("Gidugu");
+        assert!(urls.iter().any(|u| u.contains("gidugu") && u.contains("telugu")));
+        assert!(urls
+            .iter()
+            .any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
+        let dest = fontsource_face_filename(&fontsource_gdi_offer_slug("Gidugu"), "latin", 400, "normal");
+        assert_eq!(dest, "gidugu-400-normal.ttf");
     }
 
     #[test]

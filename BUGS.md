@@ -1,5 +1,11 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.186
+- **Shared known-GDI-incapable allowlist (P0):** one Rust table (`KNOWN_GDI_SESSION_INCAPABLE`) + TS mirror (`gdi-incapable.ts`). Settled / early-skip / disk `.complete` / toast-exempt / card “Settled · try Fontsource” for **any** allowlisted family. Append a row (+ optional FS slug/subsets) for the next bad font.
+- **Toast calm Settled (P0):** `notifyDownloadResult` uses `toast.message` when `settledNames.length > 0` (not `toast.success`). “Try Fontsource” passes the first allowlisted settled family — never hardcoded `"Gidugu"`. Fail path stays `toast.error`.
+- **Fontsource offer generalized:** dest filename + CDN URLs from family slug + entry subset plan (Gidugu = `gidugu` + telugu/latin). Activated only if Add>0.
+- **Activated pool nit:** `poolForScope` builds id maps once (no O(n) `localFonts.find` per live id).
+
 ## Fixed in tip / 1.0.185
 - **Settled FS honesty (P0):** Settled cards no longer advertise “try Fontsource” when click is a no-op. Allowlist = Gidugu only (UI + toast + Rust `try_fontsource_gdi_offer` / `family_known_gdi_session_incapable`).
 - **Shipped catalog regen:** `scripts/regen-shipped-catalogs.mjs` refreshes `google-directory` / `google-catalog` / `fontsource-other` from live APIs with `cache: "no-store"` (counts ≈ Google 1946 + FS exclusive 154).
