@@ -1458,6 +1458,45 @@ async function markPreviewLive(ids: string[]) {
   useFontStore.getState().markLiveActivated(ids);
 }
 
+function bumpDownloadJobForFamily(family: string) {
+  if (job.running && job.mode === "download") {
+    if (!job.current) {
+      job = { ...job, current: family };
+      emit();
+    }
+    return;
+  }
+  if (job.paused && job.mode === "download") return;
+  job = {
+    running: true,
+    paused: false,
+    mode: "download",
+    done: 0,
+    total: 1,
+    failed: 0,
+    skipped: 0,
+    current: family,
+    failedNames: [],
+    failedDetails: [],
+    settledNames: job.settledNames ?? [],
+  };
+  markJobClock(true, false);
+  emit();
+}
+
+/** Single-card Activate must merge into the bulk worker — never wait for a sibling family's idle. */
+export function googleCardActivateWaitsForIdle() {
+  return false;
+}
+
+async function queueGoogleFamilyDownload(family: string): Promise<void> {
+  void bindDownloadEvents();
+  bumpDownloadJobForFamily(family);
+  const added = await tauriInvoke<number>("start_google_downloads", { families: [family] }).catch(() => 0);
+  startGooglePoll("download");
+  if (!added) void startActivateOnDisk([family]);
+}
+
 export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
   if (font.source === "system") return true;
   if (!(await inDesktopShell())) {
@@ -1466,45 +1505,11 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     return true;
   }
   if (font.source === "google") {
-    void bindDownloadEvents();
-    const ready = await activateOnDiskAndWait([font.family]);
-    if (ready.length) {
-      installedCache.add(font.family.toLowerCase());
-      await markPreviewLive([font.id]);
-      return true;
-    }
-    const added = await tauriInvoke<number>("start_google_downloads", {
-      families: [font.family],
-    }).catch(() => 0);
-    startGooglePoll("download");
-    if (!added) {
-      const again = await activateOnDiskAndWait([font.family]);
-      if (again.length) {
-        installedCache.add(font.family.toLowerCase());
-        await markPreviewLive([font.id]);
-      }
-    }
+    await queueGoogleFamilyDownload(font.family);
     return true;
   }
-  const ready = await activateOnDiskAndWait([font.family]);
-  if (ready.length) {
-    installedCache.add(font.family.toLowerCase());
-    await markPreviewLive([font.id]);
-    return true;
-  }
-  job = {
-    running: true,
-    paused: false,
-    mode: "download",
-    done: job.mode === "download" ? job.done : 0,
-    total: (job.mode === "download" ? job.total : 0) + 1,
-    failed: job.mode === "download" ? job.failed : 0,
-    skipped: job.mode === "download" ? job.skipped : 0,
-    current: font.family,
-    failedNames: job.mode === "download" ? job.failedNames : [],
-    failedDetails: job.mode === "download" ? job.failedDetails : [],
-  };
-  emit();
+  bumpDownloadJobForFamily(font.family);
+  void startActivateOnDisk([font.family]);
   installQueue.push({ font, lean: false });
   kickInstall();
   return true;

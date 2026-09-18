@@ -1,7 +1,7 @@
 import type { FontRecord } from "./types";
 import { idbGet, idbPutPreview, previewCacheId } from "./idb";
 import { isEmojiFamily } from "./emoji";
-import { axesForFont } from "./axes";
+import { axesForFont, previewWghtAxis } from "./axes";
 import { isSpecialPreviewFont, notifyIfUnusual } from "./color-font";
 import { cssFamilyStack as stackFor } from "./fallback";
 import { scriptProbe, scriptSampleText, scriptSubset } from "./scripts";
@@ -350,11 +350,19 @@ export function googlePreviewTextQuery(family: string) {
 }
 
 export function googlePreviewCssHref(
-  font: Pick<FontRecord, "family" | "italic">,
+  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights">,
   italic = false,
 ) {
   const family = font.family.replace(/ /g, "+");
-  const face = italic && font.italic ? `family=${family}:ital,wght@1,400` : `family=${family}:wght@400`;
+  const span = previewWghtAxis(font);
+  const face =
+    italic && font.italic
+      ? span
+        ? `family=${family}:ital,wght@1,${Math.round(span.min)}..${Math.round(span.max)}`
+        : `family=${family}:ital,wght@1,400`
+      : span
+        ? `family=${family}:wght@${Math.round(span.min)}..${Math.round(span.max)}`
+        : `family=${family}:wght@400`;
   return `https://fonts.googleapis.com/css2?${face}&text=${googlePreviewTextQuery(font.family)}&display=swap`;
 }
 
@@ -363,6 +371,7 @@ export function googlePreviewMayUseLocalDisk(font: FontRecord) {
   return (
     font.source === "google" &&
     !font.variable &&
+    !font.catalogVariable &&
     !isSpecialPreviewFont(font) &&
     scriptSubset(font.family) === "latin"
   );

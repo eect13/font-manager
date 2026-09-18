@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.192
+- **Card slider dead in preview (P0):** 1.0.191 restored Variable *facet* but `axesForFont` still returns [] without disk fvar, and CSS2 preview was `wght@400`. Catalog VF cards had no slider; dragging a disk-VF slider painted weight on a static Regular face. `previewWghtAxis` for catalog VF; CSS2 `wght@min..max&text=`; no local Regular TTF for catalog VF. Badge `font.variable` stays disk-only.
+- **Simultaneous Activate (P0):** each Power click `activateOnDiskAndWait`’d until the *whole* job idled — second family waited on the first download. Now `start_google_downloads` merge (Rust `pending.extend`); live still from `ready_names` only.
+
 ## Fixed in tip / 1.0.191
 - **Variable list lacking (P0 regression):** 1.0.176 accidentally reverted 1.0.170’s catalog Variable facet when landing Gidugu/Clear Sans. Sidebar / `variable` query again = **catalogVariable OR on-disk VF** (like Italic); card badge / axes stay on-disk `*-variable-*` only. Material Symbols* WOFF2-only excluded. Scan `has_variable` again accepts `VariableFont_` / bracket names. Activated `poolForScope` prefers store `googleFonts` so disk VF badge honesty is not wiped by static `FONT_BY_ID` (`variable:false`). Expected facet ≈ Google **558** + **9** Fontsource TTF VFs. Progressive session restore (1.0.190) kept. No tip-install/pack.
 
@@ -210,5 +214,5 @@
 
 ## Notes
 
-- Tip is 1.0.184 (unreleased pack — ask before NSIS).
+- Tip is 1.0.192 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
