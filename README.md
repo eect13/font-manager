@@ -1,10 +1,12 @@
-# Font Manager **1.0.187**
+# Font Manager **1.0.188**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.188.** Known-GDI-incapable: stop Fontsource downloads by default — calm Settled badge/toast only (no card/toast “Try Fontsource”). On Activate/Scan/Repair, purge orphan FS/latin-named faces (esp. undersized `try_fontsource` dest) so early-skip succeeds; keep full Google TTF + `.complete`. Hang root was undersized remnant → early_skip false → Add churn. 1.0.187 bar clear kept.
 
 **1.0.187.** Settled-idle download bar: `applyPayload` takes Rust `current` with `?? ""` (empty clear sticks — no stuck "Registering …" after 100%). Calm **Done** label + **Dismiss** (job → EMPTY; store settled stays) + ~16s auto-hide matching Settled toast. No GDI/allowlist/Activate/Fontsource/pool/catalog change.
 

@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.188
+- **GDI-incapable FS download / remnant hang (P0):** Allowlisted Settled no longer offers “Try Fontsource” (card/toast). `try_fontsource_gdi_offer` is no-download Settled info + remnant purge. On Activate/Scan/Repair, `purge_known_incapable_fontsource_remnants` deletes undersized google-shaped / latin-named / subset-named orphans (legacy offer dest) while keeping full Google TTFs so early-skip + `.complete` Settled succeed — stops Add/re-fetch churn on Gidugu every Activate.
+
 ## Fixed in tip / 1.0.187
 - **Settled-idle bar false hang (P0):** After Activate All finished (honest Live/Library counts), bar stuck at 100% "N already on disk — Registering …" with Settled Gidugu and no Dismiss. Root: `applyPayload` used `current: p.current || job.current` so Rust’s empty clear never stuck; `settledIdle` kept the bar visible. Fix: `current: p.current ?? ""`; calm **Done** + **Dismiss** → job EMPTY (store settled stays); optional ~16s auto-hide matching Settled toast.
 

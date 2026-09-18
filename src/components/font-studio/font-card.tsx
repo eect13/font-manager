@@ -4,8 +4,6 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
-import { tryFontsourceGdiOffer } from "@/lib/fonts/os-activate";
-import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
@@ -29,11 +27,6 @@ const THEME: Record<PreviewSettings["theme"], string> = {
 
 function isolate(e: MouseEvent | PointerEvent) {
   e.stopPropagation();
-}
-
-/** Settled · try Fontsource for any allowlisted known-GDI-incapable family. */
-function isFontsourceSettledOffer(family: string) {
-  return isKnownGdiSessionIncapable(family);
 }
 
 function paintWeight(el: HTMLElement, weight: number, fvs?: string) {
@@ -395,30 +388,13 @@ export const FontCard = memo(function FontCard({
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             {settled ? (
-              isFontsourceSettledOffer(font.family) ? (
-                <button
-                  type="button"
-                  title="On disk · Windows won’t load. Optional: try Fontsource copy"
-                  className="ml-auto inline-flex"
-                  onPointerDown={isolate}
-                  onClick={(e) => {
-                    isolate(e);
-                    void tryFontsourceGdiOffer(font.family);
-                  }}
-                >
-                  <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
-                    Settled · try Fontsource
-                  </Badge>
-                </button>
-              ) : (
-                <Badge
-                  variant="outline"
-                  className="ml-auto border-muted-foreground/40 text-muted-foreground"
-                  title="On disk · Windows won’t load (not Activated)"
-                >
-                  Settled
-                </Badge>
-              )
+              <Badge
+                variant="outline"
+                className="ml-auto border-muted-foreground/40 text-muted-foreground"
+                title="On disk · Windows won’t load (not Activated)"
+              >
+                Settled
+              </Badge>
             ) : font.source === "local" ? (
               <Badge variant="outline" className="ml-auto">Local</Badge>
             ) : null}
@@ -438,30 +414,13 @@ export const FontCard = memo(function FontCard({
                 </span>
               ) : null}
               {settled ? (
-                isFontsourceSettledOffer(font.family) ? (
-                  <button
-                    type="button"
-                    title="On disk · Windows won’t load. Optional: try Fontsource copy"
-                    className="inline-flex"
-                    onPointerDown={isolate}
-                    onClick={(e) => {
-                      isolate(e);
-                      void tryFontsourceGdiOffer(font.family);
-                    }}
-                  >
-                    <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
-                      Settled · try Fontsource
-                    </Badge>
-                  </button>
-                ) : (
-                  <Badge
-                    variant="outline"
-                    className="border-muted-foreground/40 text-muted-foreground"
-                    title="On disk · Windows won’t load (not Activated)"
-                  >
-                    Settled
-                  </Badge>
-                )
+                <Badge
+                  variant="outline"
+                  className="border-muted-foreground/40 text-muted-foreground"
+                  title="On disk · Windows won’t load (not Activated)"
+                >
+                  Settled
+                </Badge>
               ) : font.source === "local" ? (
                 <Badge variant="outline">Local</Badge>
               ) : null}

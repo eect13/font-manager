@@ -22,26 +22,30 @@ function firstSettled(settledNames) {
   return undefined;
 }
 
-test("allowlist behavioral: Settled toast picks first allowlisted settled name", () => {
+test("allowlist behavioral: mirror helpers + calm Settled toast (no FS download)", () => {
   assert.equal(isKnown("Gidugu"), true);
   assert.equal(isKnown("gidugu"), true);
   assert.equal(isKnown("Nunito"), false);
   assert.equal(firstSettled(["Nunito", "Gidugu", "Roboto"]), "Gidugu");
   assert.equal(firstSettled(["Roboto"]), undefined);
-  // Mirror source must export the same helpers the toast uses.
   assert.match(mirror, /export function firstSettledAllowlistedFamily/);
   assert.match(mirror, /export function isKnownGdiSessionIncapable/);
   assert.match(mirror, /family:\s*"Gidugu"/);
-  assert.match(osActivate, /firstSettledAllowlistedFamily\(settledNames\)/);
+  // 1.0.188: toast no longer wires Try Fontsource / firstSettledAllowlistedFamily.
+  assert.doesNotMatch(osActivate, /firstSettledAllowlistedFamily\(settledNames\)/);
+  assert.doesNotMatch(osActivate, /label: "Try Fontsource"/);
   assert.match(osActivate, /settled > 0 \? toast\.message : toast\.success/);
 });
 
-test("Rust allowlist table + slug offer (not forever-hardcoded gidugu filename)", () => {
+test("Rust allowlist table + no-download offer + remnant purge", () => {
   assert.match(activateRs, /const KNOWN_GDI_SESSION_INCAPABLE/);
   assert.match(activateRs, /fn fontsource_gdi_offer_ttf_urls/);
-  assert.match(activateRs, /fontsource_face_filename\(&slug,\s*"latin",\s*400,\s*"normal"\)/);
+  assert.match(activateRs, /fn purge_known_incapable_fontsource_remnants/);
   const offer = activateRs.match(/pub fn try_fontsource_gdi_offer[\s\S]*?\n\}\n\n#\[tauri::command\]/);
   assert.ok(offer, "try_fontsource_gdi_offer body");
   assert.doesNotMatch(offer[0], /dir\.join\("gidugu-400-normal\.ttf"\)/);
+  assert.doesNotMatch(offer[0], /fetch_url_ttf/);
+  assert.match(offer[0], /purge_known_incapable_fontsource_remnants/);
   assert.match(activateRs, /known_gdi_incapable_allowlist_is_table_not_single_hardcode/);
+  assert.match(activateRs, /remnant_purge_unblocks_early_skip_for_known_incapable/);
 });

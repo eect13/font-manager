@@ -1507,7 +1507,12 @@ fn stamp_known_incapable_disk_settled(app: &AppHandle, family: &str) {
 }
 
 fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
-    if !family_known_gdi_session_incapable(family) || !dir_has_intact(dir) {
+    if !family_known_gdi_session_incapable(family) {
+        return;
+    }
+    // 1.0.188: drop FS/latin orphans before settle stamp / undersized gate.
+    let _ = purge_known_incapable_fontsource_remnants(dir, family);
+    if !dir_has_intact(dir) {
         return;
     }
     if dir_has_undersized_google_static(dir, family) {
@@ -2911,6 +2916,7 @@ fn family_known_gdi_session_incapable(family: &str) -> bool {
     known_gdi_incapable_entry(family).is_some()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn fontsource_gdi_offer_slug(family: &str) -> String {
     match known_gdi_incapable_entry(family) {
         Some(e) => e
@@ -2957,9 +2963,13 @@ fn family_has_complete_settled(app: &AppHandle, family: &str) -> bool {
 
 /// Early-skip Activate walk/Add: known-incapable + (this-session refused OR already `.complete` settled)
 /// + intact full-size. Never claims Activated.
+/// 1.0.188: purge FS/latin remnants first so undersized offer dest cannot block skip.
 fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
     if !family_known_gdi_session_incapable(family) {
         return false;
+    }
+    for dir in family_locations(app, family) {
+        let _ = purge_known_incapable_fontsource_remnants(&dir, family);
     }
     let intact = family_has_intact(app, family);
     if !intact {
@@ -4795,7 +4805,8 @@ fn family_may_have_tiny_cjk_statics(family: &str) -> bool {
 /// Non-CJK official Google families known to land latin-subset / undersized remnants
 /// (Gidugu ~38KB vs full ~461KB). Allowlist only — never expand to all Google.
 fn family_may_have_undersized_google_statics(family: &str) -> bool {
-    family.trim().eq_ignore_ascii_case("gidugu")
+    // Same allowlist as Settled / early-skip (not a second Gidugu hardcode).
+    family_known_gdi_session_incapable(family)
 }
 
 /// Intact SFNT but tiny → almost certainly a latin-subset / undersized remnant.
@@ -5474,6 +5485,52 @@ fn fontsource_face_filename(slug: &str, subset: &str, weight: u16, style: &str) 
         "fontsource_face_filename must never emit latin-named files"
     );
     name
+}
+
+/// 1.0.188: For known-GDI-incapable folders, delete Fontsource/latin orphans that are
+/// not the intact full Google face — especially undersized `*-400-normal.ttf` written by
+/// legacy `try_fontsource_gdi_offer` (subset label "latin" → google-shaped dest). Keeps
+/// full-size Google TTFs so early-skip / Settled can succeed.
+fn purge_known_incapable_fontsource_remnants(dir: &Path, family: &str) -> usize {
+    if !family_known_gdi_session_incapable(family) {
+        return 0;
+    }
+    let slug = slug_family(family);
+    if slug.is_empty() {
+        return 0;
+    }
+    let subsets = fontsource_gdi_offer_subsets(family);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    let mut removed = 0usize;
+    for path in files {
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        let latin_named = filename_has_latin_subset(name, &slug);
+        // FS offer dest collision: google-shaped name + undersized bytes.
+        let undersized_collision =
+            is_undersized_google_static_face(&path) && is_google_face_key(name, &slug);
+        // Non-latin subset packs from allowlist plan (`gidugu-telugu-…`).
+        let subset_named = subsets.iter().any(|sub| {
+            let sub = sub.trim().to_ascii_lowercase();
+            !sub.is_empty()
+                && sub != "latin"
+                && !sub.starts_with("latin-")
+                && lower.starts_with(&format!("{slug}-{sub}-"))
+        });
+        if !(latin_named || undersized_collision || subset_named) {
+            continue;
+        }
+        if delete_font_file(&path).is_ok() {
+            removed = removed.saturating_add(1);
+        }
+    }
+    removed
 }
 
 /// Strip any leftover `*-latin-*` files (legacy Fontsource packs).
@@ -7525,8 +7582,8 @@ fn replace_tiny_cjk_static_faces(
 /// Name-heal soft-fails on locked faces (Illustrator/fontdrvhost) but returns
 /// `locked` so the UI can fail loud — never looks like silent success.
 
-/// User-opted Fontsource copy after Google GDI refuse (Gidugu-class).
-/// Downloads FS TTF, tries Add — Activated only if Add>0; else stay Settled.
+/// Allowlisted Settled affordance (1.0.188: no Fontsource download; purge remnants).
+/// Activated only if Add>0 — never from settle alone. Offer no longer fetches FS TTFs.
 #[derive(Clone, Serialize)]
 pub struct FontsourceOfferResult {
     pub family: String,
@@ -7536,6 +7593,7 @@ pub struct FontsourceOfferResult {
 }
 
 /// Fontsource static TTF URLs for an allowlisted known-GDI-incapable family (slug + subset plan).
+#[cfg_attr(not(test), allow(dead_code))]
 fn fontsource_gdi_offer_ttf_urls(family: &str) -> Vec<String> {
     let slug = fontsource_gdi_offer_slug(family);
     let mut urls = Vec::new();
@@ -7564,58 +7622,10 @@ pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<Fontso
     if !family_known_gdi_session_incapable(&family) {
         return Err(format!("{family} is not on the known GDI-incapable list"));
     }
-    let Some(client) = http_download_client() else {
-        return Err("network unavailable".into());
-    };
-    let dir = family_dir(&app, &family)?;
-    let _ = fs::create_dir_all(&dir);
-    let slug = fontsource_gdi_offer_slug(&family);
-    let dest = dir.join(fontsource_face_filename(&slug, "latin", 400, "normal"));
-    let mut last = String::from("all Fontsource CDNs failed");
-    let mut got: Option<Vec<u8>> = None;
-    for url in fontsource_gdi_offer_ttf_urls(&family) {
-        if let Some(bytes) = fetch_url_ttf(&client, &url) {
-            if bytes.len() >= 256 && ttf_magic(&bytes) {
-                got = Some(bytes);
-                break;
-            }
-            last = format!("not a usable TTF from {url}");
-        } else {
-            last = format!("fetch failed: {url}");
-        }
-    }
-    let Some(bytes) = got else {
-        stamp_known_incapable_disk_settled(&app, &family);
-        note_session_gdi_refused(&family);
-        note_settled_quiet(&family);
-        return Ok(FontsourceOfferResult {
-            family,
-            added: 0,
-            settled: true,
-            message: format!("Windows refused Google; Fontsource download failed ({last}). Still Settled."),
-        });
-    };
-    let bytes = crate::namepatch::gdi_sanitize_ttf(&bytes).unwrap_or(bytes);
-    write_font_file(&dest, &bytes)?;
-    let added = if register_family_path(&family, &dest) { 1usize } else { 0 };
-    if added > 0 {
-        session_add(&app, &[family.clone()]);
-        notify_fonts_changed();
-        #[cfg(windows)]
-        persist_activation_sidecars(&app);
-        if let Ok(mut p) = bulk().progress.lock() {
-            p.settled_names.retain(|n| !n.eq_ignore_ascii_case(&family));
-            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
-                p.ready_names.push(family.clone());
-            }
-        }
-        emit_progress(&app);
-        return Ok(FontsourceOfferResult {
-            family,
-            added,
-            settled: false,
-            message: "Fontsource copy registered — Activated this session.".into(),
-        });
+    // 1.0.188: do not download Fontsource TTFs for allowlisted families (already
+    // know Add=0 on Eric’s class of machines). Purge any prior FS remnant; Settled only.
+    for dir in family_locations(&app, &family) {
+        let _ = purge_known_incapable_fontsource_remnants(&dir, &family);
     }
     note_session_gdi_refused(&family);
     stamp_known_incapable_disk_settled(&app, &family);
@@ -7625,7 +7635,7 @@ pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<Fontso
         family,
         added: 0,
         settled: true,
-        message: "Windows refused Google and Fontsource. On disk · Settled (not Activated).".into(),
+        message: "On disk · Settled (not Activated). Fontsource download skipped for known GDI-incapable fonts.".into(),
     })
 }
 
@@ -7642,6 +7652,9 @@ pub fn repair_incomplete_families(
         for_family_dirs(&app, |dir| {
             if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                 heal_clear_sans_expected_plan(dir, name);
+                if family_known_gdi_session_incapable(name) {
+                    let _ = purge_known_incapable_fontsource_remnants(dir, name);
+                }
             }
             verify_complete_marker(dir);
             if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
@@ -7671,6 +7684,12 @@ pub fn repair_incomplete_families(
         });
     } else {
         for family in families {
+            if family_known_gdi_session_incapable(&family) {
+                for dir in family_locations(&app, &family) {
+                    let _ = purge_known_incapable_fontsource_remnants(&dir, &family);
+                }
+                stamp_known_incapable_disk_settled(&app, &family);
+            }
             if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
                 targets.push(family);
             } else {
@@ -7759,6 +7778,10 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             .and_then(|s| s.to_str())
             .unwrap_or("font")
             .to_string();
+        // 1.0.188: purge FS remnants before Scan honesty / undersized flag.
+        if family_known_gdi_session_incapable(&name) {
+            let _ = purge_known_incapable_fontsource_remnants(dir, &name);
+        }
         let mut files = Vec::new();
         walk_font_files(dir, &mut files);
         let mut bytes = 0u64;
@@ -9530,6 +9553,43 @@ mod install_path_tests {
             .any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
         let dest = fontsource_face_filename(&fontsource_gdi_offer_slug("Gidugu"), "latin", 400, "normal");
         assert_eq!(dest, "gidugu-400-normal.ttf");
+    }
+
+    #[test]
+    fn remnant_purge_unblocks_early_skip_for_known_incapable() {
+        // 1.0.188: full Google face + undersized FS offer dest + latin-named orphan.
+        // Purge drops remnants; undersized must not block early-skip predicate.
+        let parent = temp_family_dir("gidugu-remnant-purge-188");
+        let dir = parent.join("Gidugu");
+        fs::create_dir_all(&dir).unwrap();
+        let mut full = b"\x00\x01\x00\x00".to_vec();
+        full.resize(460988, 0);
+        fs::write(dir.join("Gidugu-Regular.ttf"), &full).unwrap();
+        let mut tiny = b"\x00\x01\x00\x00".to_vec();
+        tiny.resize(38404, 0);
+        // Legacy try_fontsource dest (subset "latin" → google-shaped name).
+        fs::write(dir.join("gidugu-400-normal.ttf"), &tiny).unwrap();
+        fs::write(dir.join("gidugu-latin-400-normal.ttf"), &tiny).unwrap();
+        fs::write(dir.join("gidugu-telugu-400-normal.ttf"), &tiny).unwrap();
+        assert!(dir_has_undersized_google_static(&dir, "Gidugu"));
+        assert!(!early_skip_after_refuse_or_settled(
+            true, true, true, true, true
+        ));
+        let n = purge_known_incapable_fontsource_remnants(&dir, "Gidugu");
+        assert!(n >= 3, "purged {n}");
+        assert!(!dir.join("gidugu-400-normal.ttf").exists());
+        assert!(!dir.join("gidugu-latin-400-normal.ttf").exists());
+        assert!(!dir.join("gidugu-telugu-400-normal.ttf").exists());
+        assert!(dir.join("Gidugu-Regular.ttf").exists(), "keep full Google face");
+        assert!(!dir_has_undersized_google_static(&dir, "Gidugu"));
+        assert!(
+            early_skip_after_refuse_or_settled(true, true, true, true, false),
+            "after purge, early-skip must succeed"
+        );
+        // Offer command must not fetch/write Fontsource TTFs (source lock below in JS).
+        assert!(fontsource_offer_activated_only_if_add(1));
+        assert!(!fontsource_offer_activated_only_if_add(0));
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]

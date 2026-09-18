@@ -1,13 +1,13 @@
 /**
  * Mirror of Rust `KNOWN_GDI_SESSION_INCAPABLE` in activate.rs.
- * Settled / toast-exempt / Fontsource-offer UX — append here when Rust allowlist grows.
+ * Settled / toast-exempt / early-skip UX — append here when Rust allowlist grows.
  */
 export type KnownGdiIncapableEntry = {
   /** Display family name (case-insensitive match). */
   family: string;
   /** Fontsource package slug; defaults to kebab of family if omitted in Rust. */
   fsSlug: string;
-  /** Subsets tried for opt-in Fontsource GDI offer (order = preference). */
+  /** Legacy FS subset plan (1.0.188: download removed; used for remnant purge). */
   subsets: readonly string[];
 };
 
@@ -22,7 +22,7 @@ export function isKnownGdiSessionIncapable(family: string): boolean {
   return KNOWN_GDI_SESSION_INCAPABLE.some((e) => e.family.toLowerCase() === key);
 }
 
-/** First settled name that is on the known-GDI-incapable allowlist (for toast Try Fontsource). */
+/** First settled name on the known-GDI-incapable allowlist (Settled toast / honesty). */
 export function firstSettledAllowlistedFamily(settledNames: readonly string[]): string | undefined {
   for (const n of settledNames) {
     if (isKnownGdiSessionIncapable(n)) return n.trim();
