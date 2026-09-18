@@ -1,10 +1,12 @@
-# Font Manager **1.0.180**
+# Font Manager **1.0.181**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.181.** Progress bar never shows done > total (4044/2253 was `skipped` double-count + bar used `max(done, skipped)`). Activate All of on-disk families uses the parallel register worker (not sequential `commit_ready`). `skipped` is not incremented twice for already-live names. GDI Add still serialized. 1.0.180 Live/Settled honesty kept.
 
 **1.0.180.** Gidugu honesty: **Live / Settled / Library** — Activated only if Add>0. Early-skip known-incapable after refuse or `.complete` settle (no Activate All churn). Calm Settled badge; Scan quiet (not Incomplete/Repair-1). Opt-in Fontsource offer → Activated only if Add>0. VF backfill + name-heal deferred off Activate path. Auto 2015 pin chase removed. Debg sanitize on first Add kept. 1.0.179 warning quiet kept.
 

@@ -37,8 +37,11 @@ export function DownloadBar() {
   const [, setTick] = useState(0);
   const holdPct = useRef(0);
   const skipped = job.skipped ?? 0;
-  const processed = Math.max(job.done, skipped);
-  const remaining = Math.max(0, job.total - processed);
+  // Progress is rust `done` (families processed). Do not use `skipped` as the
+  // numerator — it double-counts already-on-disk + successful Add (4044/2253).
+  const total = Math.max(1, job.total, job.done);
+  const processed = Math.min(Math.max(0, job.done), total);
+  const remaining = Math.max(0, total - processed);
   const empty =
     job.running &&
     job.total === 0 &&
@@ -59,31 +62,31 @@ export function DownloadBar() {
   }
   const scanning = /scanning/i.test(job.current);
   const registering = /registering/i.test(job.current);
-  const pct = job.total > 0 ? clampPct((100 * processed) / job.total) : job.paused ? holdPct.current : 0;
+  const pct = job.total > 0 || job.done > 0 ? clampPct((100 * processed) / total) : job.paused ? holdPct.current : 0;
   if (pct > holdPct.current) holdPct.current = pct;
   const shownPct = job.paused ? Math.max(pct, holdPct.current) : pct;
   const clock = getJobClock();
   const eta = job.paused || scanning ? "" : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
   const label =
     job.mode === "remove"
-      ? `Deactivating ${processed.toLocaleString()} / ${job.total.toLocaleString()}`
+      ? `Deactivating ${processed.toLocaleString()} / ${total.toLocaleString()}`
       : job.failed && !job.running && !job.paused
         ? `${job.failed.toLocaleString()} failed — retry or skip`
         : job.paused
-          ? `Paused ${shownPct}% · ${processed.toLocaleString()} / ${job.total.toLocaleString()}`
+          ? `Paused ${shownPct}% · ${processed.toLocaleString()} / ${total.toLocaleString()}`
           : scanning
-            ? `Scanning Documents${job.total ? ` — ${job.total.toLocaleString()} queued` : ""}`
+            ? `Scanning Documents${total ? ` — ${total.toLocaleString()} queued` : ""}`
             : registering && job.running
-              ? `Registering ${processed.toLocaleString()} / ${job.total.toLocaleString()}`
+              ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
               : skipped && remaining === 0 && job.running
                 ? `Registering ${skipped.toLocaleString()} already on disk`
                 : skipped && job.running
-                  ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - skipped).toLocaleString()} / ${Math.max(0, job.total - skipped).toLocaleString()}`
+                  ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - Math.min(skipped, processed)).toLocaleString()} / ${Math.max(0, total - Math.min(skipped, total)).toLocaleString()}`
                   : job.running
-                    ? `Downloading ${processed.toLocaleString()} / ${job.total.toLocaleString()}`
+                    ? `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`
                     : skipped && remaining === 0
                       ? `${skipped.toLocaleString()} already on disk`
-                      : `Downloading ${processed.toLocaleString()} / ${job.total.toLocaleString()}`;
+                      : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
 
   return (
     <div className="flex flex-col gap-1.5 border-b border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">

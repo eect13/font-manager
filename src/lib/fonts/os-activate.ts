@@ -1040,7 +1040,7 @@ function applyPayload(p: {
     paused: Boolean(p.paused),
     mode: p.running || p.paused ? kind : "idle",
     done,
-    total: Math.max(p.total, job.paused || job.running ? job.total : 0),
+    total: Math.max(p.total, p.done, job.paused || job.running ? job.total : 0),
     failed: p.failed,
     skipped,
     current: p.current || job.current,

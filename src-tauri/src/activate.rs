@@ -1380,7 +1380,12 @@ fn format_live_settled_library(live: usize, settled: usize, library: usize) -> S
     format!("Live {live} · Settled {settled} · Library {library}")
 }
 
-/// Settled is on-disk, not downloaded and not failed.
+/// Bar never shows done > total (1.0.181: 4044/2253 was skipped double-count).
+#[cfg_attr(not(test), allow(dead_code))]
+fn progress_bar_done_total(done: u32, total: u32) -> (u32, u32) {
+    let t = total.max(done).max(1);
+    (done.min(t), t)
+}
 #[cfg_attr(not(test), allow(dead_code))]
 fn job_downloaded_count(done: usize, skipped: usize, failed: usize, settled: usize) -> usize {
     done.saturating_sub(skipped)
@@ -5294,70 +5299,11 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     if ready.is_empty() {
         return;
     }
-    // Activate critical path = register only. VF backfill + name-heal deferred
-    // to idle (after live marks) so Activate All is not blocked on CDN/heal.
-    let mut n = 0usize;
-    let mut live: Vec<String> = Vec::new();
-    let mut last_emit = Instant::now();
-    for (i, family) in ready.iter().enumerate() {
-        let (added, cause) = match index {
-            Some(idx) => {
-                let a = register_from_index(app, idx, family);
-                // Index path has no per-face cause; fall back to a fresh detailed pass only on 0.
-                if a > 0 {
-                    (a, RegisterFailKind::NoneTried)
-                } else {
-                    register_intact_family_detailed(app, family)
-                }
-            }
-            None => register_intact_family_detailed(app, family),
-        };
-        n += added;
-        forget_queued(family);
-        if let Ok(mut denied) = bulk().denied.lock() {
-            denied.remove(&family.trim().to_lowercase());
-        }
-        if let Ok(mut p) = bulk().progress.lock() {
-            p.kind = "download".into();
-            p.running = true;
-            // Progress = families processed; ready_names only when GDI accepted faces.
-            p.done = (i + 1) as u32;
-            if added > 0 {
-                p.skipped = p.skipped.saturating_add(1);
-                live.push(family.clone());
-                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                    p.ready_names.push(family.clone());
-                }
-            } else if family_skip_live_success(app, family).is_some() {
-                // Toast only: session-active + maps + Add 0 ⇒ do not push failed_names.
-                // Do not claim activated / ready_names (requires real in-process Add).
-            } else if suppress_fail_toast_known_incapable(app, family) {
-                // Gidugu-class: intact official TTF, known GDI-incapable — keep on disk
-                // for OT/preview; stamp `.complete` (disk settled); no failed_names /
-                // Couldn't load; never ready_names / Activated.
-                // Push settled while holding progress (note_settled_quiet would deadlock).
-                stamp_known_incapable_disk_settled(app, family);
-                if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                    p.settled_names.push(family.clone());
-                }
-            } else {
-                // Sticky ready+.complete after GDI 0 is a lie — clear stamp (Skye P0).
-                let detail = note_register_zero(app, family, cause);
-                p.failed = p.failed.saturating_add(1);
-                if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
-                    p.failed_names.push(family.clone());
-                    p.failed_details.push(detail);
-                }
-            }
-            p.current = format!("Registering {family}");
-        }
-        let last = i + 1 == ready.len();
-        if i == 0 || last || last_emit.elapsed() >= Duration::from_millis(150) {
-            emit_progress(app);
-            last_emit = Instant::now();
-        }
-    }
-    if n > 0 {
+    // Parallel walk + skip-Add (this-process loaded). Index bind is unused here —
+    // register_intact_family_detailed already skip-Adds live faces. GDI stays serialized.
+    let _ = index;
+    let live = register_on_disk_parallel_progress(app, ready, 0);
+    if !live.is_empty() {
         notify_fonts_changed();
         session_add(app, &live);
         #[cfg(windows)]
@@ -5383,6 +5329,7 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     });
 }
 
+#[allow(dead_code)] // kept: DiskIndex bind path; Activate All uses parallel register_intact
 fn register_from_index(app: &AppHandle, index: &DiskIndex, family: &str) -> usize {
     let mut n = 0usize;
     let mut seen = HashSet::new();
@@ -6989,9 +6936,9 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
             p.settled_names.clear();
         }
         for f in &already {
-            p.skipped = p.skipped.saturating_add(1);
             if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(f)) {
                 p.ready_names.push(f.clone());
+                p.skipped = p.skipped.saturating_add(1);
             }
         }
         for f in &settled_skip {
@@ -7174,22 +7121,25 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                     if p.total < want_total {
                         p.total = want_total;
                     }
+                    if p.total < p.done {
+                        p.total = p.done;
+                    }
                     p.current = format!("Registering {family}");
                     if k > 0 {
                         // Honesty: this family did Add successfully — count it even
                         // if Cancel arrived mid-flight after Add returned.
-                        p.skipped = p.skipped.saturating_add(1);
                         if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.ready_names.push(family.clone());
+                            p.skipped = p.skipped.saturating_add(1);
                         }
                         if let Ok(mut g) = registered.lock() {
                             g.push(family.clone());
                         }
                     } else if family_session_maps_live(&app, &family) {
                         // Already in loaded() from real Add this process.
-                        p.skipped = p.skipped.saturating_add(1);
                         if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.ready_names.push(family.clone());
+                            p.skipped = p.skipped.saturating_add(1);
                         }
                         if let Ok(mut g) = registered.lock() {
                             g.push(family.clone());
@@ -9571,6 +9521,15 @@ mod install_path_tests {
         let urls = gidugu_fontsource_ttf_urls();
         assert!(urls.iter().any(|u| u.contains("gidugu") && u.contains("telugu")));
         assert!(urls.iter().any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
+    }
+
+    #[test]
+    fn progress_bar_never_shows_done_over_total() {
+        // 1.0.181: skipped double-count showed 4044/2253.
+        assert_eq!(progress_bar_done_total(4044, 2253), (4044, 4044));
+        assert_eq!(progress_bar_done_total(2253, 2253), (2253, 2253));
+        assert_eq!(progress_bar_done_total(0, 0), (0, 1));
+        assert_eq!(progress_bar_done_total(10, 100), (10, 100));
     }
 
     #[test]

@@ -130,3 +130,23 @@ test("Retry tries Gidugu register before settle — no refetch loop", () => {
     "undersized remnant must Repair, not settle",
   );
 });
+
+function progressBarDoneTotal(done, total) {
+  const t = Math.max(total, done, 1);
+  return { done: Math.min(Math.max(0, done), t), total: t };
+}
+
+test("progress bar never shows done over total (4044/2253)", () => {
+  assert.deepEqual(progressBarDoneTotal(4044, 2253), { done: 4044, total: 4044 });
+  assert.deepEqual(progressBarDoneTotal(1800, 2253), { done: 1800, total: 2253 });
+  assert.deepEqual(progressBarDoneTotal(2253, 2253), { done: 2253, total: 2253 });
+  assert.deepEqual(progressBarDoneTotal(0, 0), { done: 0, total: 1 });
+  // Numerator is rust `done`, not max(done, skipped).
+  const skipped = 4044;
+  const rustDone = 2253;
+  const rustTotal = 2253;
+  const bar = progressBarDoneTotal(rustDone, rustTotal);
+  assert.equal(bar.done, 2253);
+  assert.equal(bar.total, 2253);
+  assert.notEqual(Math.max(rustDone, skipped), bar.done);
+});
