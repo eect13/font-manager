@@ -1,5 +1,10 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.185
+- **Settled FS honesty (P0):** Settled cards no longer advertise “try Fontsource” when click is a no-op. Allowlist = Gidugu only (UI + toast + Rust `try_fontsource_gdi_offer` / `family_known_gdi_session_incapable`).
+- **Shipped catalog regen:** `scripts/regen-shipped-catalogs.mjs` refreshes `google-directory` / `google-catalog` / `fontsource-other` from live APIs with `cache: "no-store"` (counts ≈ Google 1946 + FS exclusive 154).
+- **Activated pool care:** `poolForScope("activated", …, liveIds)` resolves O(live) — continues 184 pattern; no full `allFonts` (~22k) on Activated facet/grid ticks. No 100k arch.
+
 ## Fixed in tip / 1.0.184
 - **20k fonts (P1):** Google/Fontsource drawers used `allFonts(local, google)` then filtered — 20k locals copied on every Activate tick. `poolForScope` passes google-only / local-only. Sidebar does not re-tally 20k when `activated[]` grows (`facetCounts` independent; badge = `activated.length`). `findFont("g:…")` is `FONT_BY_ID` (O(1)).
 - **Subsetter (wont-do on GDI):** pyftsubset / hb-subset / subset-font / allsorts are for **preview/web**. Documents + `AddFontResourceExW` stay **full** TTFs (Word/Adobe). Preview already uses Google CSS2 `text=` + latin woff2 (1.0.183). Do not wasm-subset 20k files.

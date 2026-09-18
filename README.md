@@ -1,10 +1,12 @@
-# Font Manager **1.0.184**
+# Font Manager **1.0.185**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.185.** Settled Fontsource affordance honesty: card/title “try Fontsource” only for Gidugu (matches click + Rust `try_fontsource_gdi_offer`). Shipped catalogs regenerated from live Google + Fontsource (`cache: no-store`; ≈1946 + 154 exclusive). Activated `poolForScope` is O(live) — no 22k `allFonts` concat on facet/Activated ticks. 1.0.184 Google-drawer pool kept.
 
 **1.0.184.** 20k library: Google Fonts drawer does not concat/tally locals; Activated badge is `activated.length` (no 20k scan per GDI tick); `g:` lookup uses `FONT_BY_ID`. Preview subset stays CSS2 `text=` / latin — **not** pyftsubset/hb-subset on Documents TTFs (GDI needs the full font). 1.0.183 CSS LRU kept.
 

@@ -1171,16 +1171,35 @@ export function allFonts(
   return [...localFonts, ...googleFonts];
 }
 
-/** Narrow the array *before* filter/sort so 20k locals are not copied when viewing Google Fonts. */
+/** Narrow the array *before* filter/sort so 20k locals are not copied when viewing Google Fonts / Activated. */
 export function poolForScope(
   scope: LibraryScope,
   localFonts: FontRecord[],
   googleFonts: FontRecord[],
   systemFonts: FontRecord[] = [],
+  liveIds: readonly string[] = [],
 ): FontRecord[] {
   if (scope === "system") return systemFonts;
   if (scope === "uploaded") return localFonts;
   if (scope === "gfonts" || scope === "google") return googleFonts;
+  // Activated drawer/facet: O(live), never allFonts(~22k) on every GDI tick.
+  if (scope === "activated") {
+    if (!liveIds.length) return [];
+    const out: FontRecord[] = [];
+    const seen = new Set<string>();
+    for (const id of liveIds) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const font =
+        (id.startsWith("g:") ? FONT_BY_ID.get(id) : undefined) ??
+        localFonts.find((f) => f.id === id) ??
+        googleFonts.find((f) => f.id === id) ??
+        systemFonts.find((f) => f.id === id) ??
+        FONT_BY_ID.get(id);
+      if (font) out.push(font);
+    }
+    return out;
+  }
   return allFonts(localFonts, googleFonts);
 }
 

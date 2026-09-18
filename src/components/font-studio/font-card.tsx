@@ -30,6 +30,11 @@ function isolate(e: MouseEvent | PointerEvent) {
   e.stopPropagation();
 }
 
+/** Settled FS offer is Gidugu-only — match Rust try_fontsource_gdi_offer allowlist. */
+function isFontsourceSettledOffer(family: string) {
+  return family.trim().toLowerCase() === "gidugu";
+}
+
 function paintWeight(el: HTMLElement, weight: number, fvs?: string) {
   const w = String(Math.round(weight));
   el.style.fontWeight = w;
@@ -389,22 +394,30 @@ export const FontCard = memo(function FontCard({
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             {settled ? (
-              <button
-                type="button"
-                title="On disk · Windows won’t load. Optional: try Fontsource copy"
-                className="ml-auto inline-flex"
-                onPointerDown={isolate}
-                onClick={(e) => {
-                  isolate(e);
-                  if (font.family.trim().toLowerCase() === "gidugu") {
+              isFontsourceSettledOffer(font.family) ? (
+                <button
+                  type="button"
+                  title="On disk · Windows won’t load. Optional: try Fontsource copy"
+                  className="ml-auto inline-flex"
+                  onPointerDown={isolate}
+                  onClick={(e) => {
+                    isolate(e);
                     void tryFontsourceGdiOffer(font.family);
-                  }
-                }}
-              >
-                <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+                  }}
+                >
+                  <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+                    Settled · try Fontsource
+                  </Badge>
+                </button>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="ml-auto border-muted-foreground/40 text-muted-foreground"
+                  title="On disk · Windows won’t load (not Activated)"
+                >
                   Settled
                 </Badge>
-              </button>
+              )
             ) : font.source === "local" ? (
               <Badge variant="outline" className="ml-auto">Local</Badge>
             ) : null}
@@ -424,22 +437,30 @@ export const FontCard = memo(function FontCard({
                 </span>
               ) : null}
               {settled ? (
-                <button
-                  type="button"
-                  title="On disk · Windows won’t load. Optional: try Fontsource copy"
-                  className="inline-flex"
-                  onPointerDown={isolate}
-                  onClick={(e) => {
-                    isolate(e);
-                    if (font.family.trim().toLowerCase() === "gidugu") {
+                isFontsourceSettledOffer(font.family) ? (
+                  <button
+                    type="button"
+                    title="On disk · Windows won’t load. Optional: try Fontsource copy"
+                    className="inline-flex"
+                    onPointerDown={isolate}
+                    onClick={(e) => {
+                      isolate(e);
                       void tryFontsourceGdiOffer(font.family);
-                    }
-                  }}
-                >
-                  <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+                    }}
+                  >
+                    <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+                      Settled · try Fontsource
+                    </Badge>
+                  </button>
+                ) : (
+                  <Badge
+                    variant="outline"
+                    className="border-muted-foreground/40 text-muted-foreground"
+                    title="On disk · Windows won’t load (not Activated)"
+                  >
                     Settled
                   </Badge>
-                </button>
+                )
               ) : font.source === "local" ? (
                 <Badge variant="outline">Local</Badge>
               ) : null}
