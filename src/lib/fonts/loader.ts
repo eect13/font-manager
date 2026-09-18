@@ -552,6 +552,22 @@ function cssKey(id: string, mode: FontLoadMode) {
   return `${id}:${mode}`;
 }
 
+/** Library cards use CSS preview. VF woff2 FontFace is inspector/slider `full`. */
+export function googlePreviewIsCssOnly(mode: FontLoadMode, special: boolean) {
+  return mode === "preview" && !special;
+}
+
+/** Prime batch CSS: latin statics only. VF ranges + CJK/emoji in an 18-family CSS2 URL freeze WebView2. */
+export function primeGooglePreviewAllows(font: FontRecord) {
+  return (
+    font.source === "google" &&
+    font.catalog !== "other" &&
+    !font.variable &&
+    !isSpecialPreviewFont(font) &&
+    scriptSubset(font.family) === "latin"
+  );
+}
+
 function ensureCatalogCss(font: FontRecord) {
   if (font.catalog === "other") {
     const href = fontsourceCssHrefs(font, "preview")[0];
@@ -573,12 +589,12 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
 
   const promise = (async () => {
     const hrefs = catalogCssHrefs(font, mode);
-    // Static catalog preview: CSS only. Variable faces fall through to a real VF FontFace
-    // so the card weight slider interpolates instead of pinning Regular.
-    if (mode === "preview" && !special && !font.variable) {
+    // Card preview: CSS only (static + VF range). Do not fetch VF woff2 / parse
+    // axes / convertFileSrc a CJK TTF — that hangs Google Fonts scrolling.
+    if (googlePreviewIsCssOnly(mode, special)) {
       for (const href of hrefs) {
         await injectGoogleCss(href, `${cssKey(font.id, mode)}:${href}`, font.family);
-        await waitForFamily(font.family, probe, 400);
+        await waitForFamily(font.family, probe, 280);
         if (familyLoaded(font.family, probe)) break;
       }
       loadedGoogle.set(font.id, "preview");
@@ -846,7 +862,7 @@ export function googleCssUrls(fonts: FontRecord[]): string[] {
   const google = fonts.filter((f) => f.source === "google" && f.catalog !== "other");
   if (!google.length) return [];
   const chunks: FontRecord[][] = [];
-  for (let i = 0; i < google.length; i += 18) chunks.push(google.slice(i, i + 18));
+  for (let i = 0; i < google.length; i += 8) chunks.push(google.slice(i, i + 8));
   return chunks.map((chunk) => {
     const params = chunk.map((font) => previewFamilyParam(font, false)).join("&");
     return googleCssHref(params, "swap");
@@ -855,9 +871,7 @@ export function googleCssUrls(fonts: FontRecord[]): string[] {
 
 /** Batched Google CSS for the visible page; Fontsource CSS if a family 404s. */
 export function primeGooglePreview(fonts: FontRecord[]): Promise<void> {
-  const google = fonts.filter(
-    (f) => f.source === "google" && f.catalog !== "other" && !isSpecialPreviewFont(f),
-  );
+  const google = fonts.filter(primeGooglePreviewAllows);
   if (!google.length || typeof document === "undefined") return Promise.resolve();
   const urls = googleCssUrls(google);
   return Promise.all(urls.map((href, i) => injectGoogleCss(href, `prime:${i}:${href.slice(-40)}`))).then(() => {

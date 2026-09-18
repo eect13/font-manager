@@ -146,7 +146,10 @@ export const FontCard = memo(function FontCard({
           io.disconnect();
           return;
         }
-        void loadFont(font, font.variable ? "full" : "preview").finally(() => setReady(true));
+        // Library cards: CSS/latin preview only. VF "full" (woff2 FontFace) is
+        // the weight-slider path (vfPrimed) — loading full on every VF card hangs
+        // WebView2 on Google Fonts (567 VFs × jsDelivr).
+        void loadFont(font, "preview").finally(() => setReady(true));
         timeout = window.setTimeout(() => setReady(true), 240);
         io.disconnect();
       },
