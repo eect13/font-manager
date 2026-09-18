@@ -421,11 +421,20 @@ export async function listSessionFamilies(): Promise<string[]> {
   }
 }
 
-/** Wait for session_begin GDI restore. Live list is this-process Adds, not last-session sidecar. */
-export async function waitSessionBoot(timeoutMs = 180_000): Promise<{ done: boolean; ready: string[] }> {
-  if (!(await inDesktopShell())) return { done: true, ready: [] };
+/** Poll session_begin GDI restore. Live list is this-process Adds, not last-session sidecar.
+ * 1.0.190: onReady fires as session_boot.ready grows — do not wait for boot.done (~2099). */
+export async function waitSessionBoot(
+  timeoutMs = 180_000,
+  onReady?: (ready: string[], done: boolean) => void,
+): Promise<{ done: boolean; ready: string[] }> {
+  if (!(await inDesktopShell())) {
+    onReady?.([], true);
+    return { done: true, ready: [] };
+  }
   const start = Date.now();
   let startedPoll = false;
+  let lastReadyLen = -1;
+  let latest: string[] = [];
   while (Date.now() - start < timeoutMs) {
     try {
       const s = await tauriInvoke<{ done?: boolean; running?: boolean; ready?: string[] }>(
@@ -435,13 +444,22 @@ export async function waitSessionBoot(timeoutMs = 180_000): Promise<{ done: bool
         startGooglePoll("download");
         startedPoll = true;
       }
-      if (s?.done) return { done: true, ready: (s.ready ?? []).slice() };
+      latest = (s?.ready ?? []).slice();
+      const done = Boolean(s?.done);
+      if (latest.length !== lastReadyLen || done) {
+        lastReadyLen = latest.length;
+        onReady?.(latest, done);
+      }
+      if (done) return { done: true, ready: latest };
     } catch {
+      onReady?.([], false);
       return { done: false, ready: [] };
     }
-    await new Promise((r) => window.setTimeout(r, 150));
+    // Slightly slower than 150ms — pairs with Rust emit throttle; keeps webview interactive.
+    await new Promise((r) => window.setTimeout(r, 250));
   }
-  return { done: false, ready: [] };
+  onReady?.(latest, false);
+  return { done: false, ready: latest };
 }
 
 export type DiskFamilyInfo = {

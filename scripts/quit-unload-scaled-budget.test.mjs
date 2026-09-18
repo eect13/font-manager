@@ -10,9 +10,10 @@ const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
 const versionTs = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
-test("1.0.189: version is 1.0.189", () => {
-  assert.equal(pkg.version, "1.0.189");
-  assert.match(versionTs, /APP_VERSION\s*=\s*"1\.0\.189"/);
+test("1.0.189: scaled quit unload kept (version tip ≥ 1.0.189)", () => {
+  // Tip may bump past 1.0.189; behavior assertions below stay green.
+  assert.match(pkg.version, /^1\.0\.(189|190)$/);
+  assert.match(versionTs, /APP_VERSION\s*=\s*"1\.0\.(189|190)"/);
 });
 
 test("1.0.189: quit_unload_budget_for scales 15ms/path clamp 12s–180s", () => {
