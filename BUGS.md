@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.183
+- **CSSOM leak / blank Google cards (P0):** 1.0.182 stopped VF-full on cards but (1) never evicted `<style>` tags, (2) still injected full CSS2 (Noto JP = 100+ faces), (3) marked `loadedGoogle` even when inject failed, (4) refused **all** local preview so desktop Inter needed the network. CSS LRU 96; preview CSS2 is `wght@400&text=`; mark loaded only if `familyLoaded`; latin static + on-disk `convertFileSrc` (never CJK/VF/Unifont TTF). No GDI/skip-Add change.
+
 ## Fixed in tip / 1.0.182
 - **Google Fonts library hang / blank specimens (P0):** cards called `loadFont(font, variable ? "full" : "preview")` so every visible VF fetched jsDelivr VF woff2 + parsed axes. Prime injected 18-family CSS2 including VF ranges and CJK. WebView2 froze; specimens never painted. Cards now **preview CSS only**. `full` stays on the weight slider / inspector. Prime = latin statics, chunks of 8. No GDI/Activate change.
 
@@ -172,5 +175,5 @@
 
 ## Notes
 
-- Tip is 1.0.182 (unreleased pack — ask before NSIS).
+- Tip is 1.0.183 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

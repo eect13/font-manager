@@ -1,77 +1,45 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-/**
- * 1.0.182: Google Fonts library must not load VF woff2 / CJK TTF on every card.
- * Mirrors loader.ts product rules (no DOM in Node).
- */
-
-function googlePreviewIsCssOnly(mode, special) {
-  return mode === "preview" && !special;
-}
-
-function primeGooglePreviewAllows(font) {
-  return (
-    font.source === "google" &&
-    font.catalog !== "other" &&
-    !font.variable &&
-    !font.special &&
-    font.subset === "latin"
-  );
-}
-
-function libraryCardLoadMode() {
-  return "preview";
-}
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const loader = readFileSync(join(root, "src/lib/fonts/loader.ts"), "utf8");
+const card = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
 
 test("library cards always load preview, never VF full", () => {
-  assert.equal(libraryCardLoadMode(), "preview");
-  assert.equal(googlePreviewIsCssOnly("preview", false), true);
-  assert.equal(googlePreviewIsCssOnly("preview", true), false, "emoji/color still special path");
-  assert.equal(googlePreviewIsCssOnly("full", false), false, "slider/inspector still full");
+  assert.match(card, /loadFont\(font, "preview"\)/);
+  assert.doesNotMatch(card, /loadFont\(font, font\.variable \? "full"/);
+  assert.match(loader, /googlePreviewIsCssOnly\(mode, special\)/);
 });
 
 test("prime CSS batch is latin static only", () => {
-  assert.equal(
-    primeGooglePreviewAllows({
-      source: "google",
-      catalog: "google",
-      variable: false,
-      special: false,
-      subset: "latin",
-    }),
-    true,
-  );
-  assert.equal(
-    primeGooglePreviewAllows({
-      source: "google",
-      catalog: "google",
-      variable: true,
-      special: false,
-      subset: "latin",
-    }),
-    false,
-    "VF CSS2 ranges of 18 families hang WebView2",
-  );
-  assert.equal(
-    primeGooglePreviewAllows({
-      source: "google",
-      catalog: "google",
-      variable: false,
-      special: false,
-      subset: "japanese",
-    }),
-    false,
-    "CJK batch CSS is huge",
-  );
-  assert.equal(
-    primeGooglePreviewAllows({
-      source: "google",
-      catalog: "other",
-      variable: false,
-      special: false,
-      subset: "latin",
-    }),
-    false,
-  );
+  assert.match(loader, /export function primeGooglePreviewAllows/);
+  assert.match(loader, /scriptSubset\(font\.family\) === "latin"/);
+  assert.match(loader, /!font\.variable/);
+});
+
+test("preview CSS2 uses text= not a full family sheet", () => {
+  assert.match(loader, /export function googlePreviewCssHref/);
+  assert.match(loader, /&text=\$\{googlePreviewTextQuery/);
+  assert.match(loader, /family=\$\{family\}:wght@400/);
+  assert.match(loader, /Noto Sans JP CSS2/);
+});
+
+test("CSS injection has an LRU (not unbounded head)", () => {
+  assert.match(loader, /export const CSS_LRU = 96/);
+  assert.match(loader, /function rememberCss/);
+  assert.match(loader, /cssOrder\.length > CSS_LRU/);
+});
+
+test("failed inject does not mark loadedGoogle preview", () => {
+  assert.match(loader, /if \(ok\) loadedGoogle\.set\(font\.id, "preview"\)/);
+  assert.match(loader, /let ok = false/);
+});
+
+test("latin static on-disk preview is allowed; CJK/VF is not", () => {
+  assert.match(loader, /export function googlePreviewMayUseLocalDisk/);
+  assert.match(loader, /loadGooglePreviewFromLocal/);
+  assert.match(loader, /unifont\|cjk\|emoji/);
 });

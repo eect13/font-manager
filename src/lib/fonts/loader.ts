@@ -4,7 +4,7 @@ import { isEmojiFamily } from "./emoji";
 import { axesForFont } from "./axes";
 import { isSpecialPreviewFont, notifyIfUnusual } from "./color-font";
 import { cssFamilyStack as stackFor } from "./fallback";
-import { scriptProbe, scriptSubset } from "./scripts";
+import { scriptProbe, scriptSampleText, scriptSubset } from "./scripts";
 import { toast } from "sonner";
 
 async function inTauri() {
@@ -54,6 +54,9 @@ const familyFaces = new Map<string, FontFace[]>();
 const faceOrder: string[] = [];
 /** Drop oldest FontFace families so 2k+ Activate does not grow document.fonts without bound. */
 const FACE_LRU = 384;
+/** Injected Google/Fontsource `<style>` tags — CSSOM has no FontFace LRU. */
+export const CSS_LRU = 96;
+const cssOrder: string[] = [];
 
 function evictFamily(family: string) {
   for (const face of familyFaces.get(family) ?? []) {
@@ -300,6 +303,24 @@ function slugFamily(family: string) {
     .replace(/^-|-$/g, "");
 }
 
+function rememberCss(key: string, el: HTMLElement) {
+  googleLinks.set(key, el);
+  const at = cssOrder.indexOf(key);
+  if (at >= 0) cssOrder.splice(at, 1);
+  cssOrder.push(key);
+  while (cssOrder.length > CSS_LRU) {
+    const old = cssOrder.shift();
+    if (!old || old === key) continue;
+    const node = googleLinks.get(old);
+    try {
+      node?.remove();
+    } catch {
+      /* ignore */
+    }
+    googleLinks.delete(old);
+  }
+}
+
 function googleCssHref(param: string, display: string) {
   return `https://fonts.googleapis.com/css2?${param}&display=${display}`;
 }
@@ -321,9 +342,38 @@ function previewFamilyParam(font: FontRecord, italic = false): string {
   return `family=${family}:wght@400`;
 }
 
+/** Library CSS2: Regular 400 + `text=` of the specimen — not the full unicode-range sheet.
+ *  Noto Sans JP CSS2 without text= is 100+ faces and freezes WebView2. */
+export function googlePreviewTextQuery(family: string) {
+  const sample = scriptSampleText(family) || "Hamburgefonstiv";
+  return encodeURIComponent(sample.slice(0, 48));
+}
+
+export function googlePreviewCssHref(
+  font: Pick<FontRecord, "family" | "italic">,
+  italic = false,
+) {
+  const family = font.family.replace(/ /g, "+");
+  const face = italic && font.italic ? `family=${family}:ital,wght@1,400` : `family=${family}:wght@400`;
+  return `https://fonts.googleapis.com/css2?${face}&text=${googlePreviewTextQuery(font.family)}&display=swap`;
+}
+
+/** Latin static on-disk preview: convertFileSrc only. Never CJK / VF / color TTF. */
+export function googlePreviewMayUseLocalDisk(font: FontRecord) {
+  return (
+    font.source === "google" &&
+    !font.variable &&
+    !isSpecialPreviewFont(font) &&
+    scriptSubset(font.family) === "latin"
+  );
+}
+
 function catalogCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): string[] {
   const fontsource = fontsourceCssHrefs(font, mode, italic);
   if (font.catalog === "other") return fontsource;
+  if (mode === "preview" && !isSpecialPreviewFont(font)) {
+    return [googlePreviewCssHref(font, italic), ...fontsource];
+  }
   const display = isSpecialPreviewFont(font) ? "block" : "swap";
   const google = googleCssHref(previewFamilyParam(font, italic), display);
   return [google, ...fontsource];
@@ -439,7 +489,7 @@ function injectGoogleCss(href: string, key: string, family?: string): Promise<vo
         style.dataset.fontKey = key;
         style.textContent = cssForInject(text, href, family);
         document.head.appendChild(style);
-        googleLinks.set(key, style);
+        rememberCss(key, style);
         return;
       }
     } catch {
@@ -568,6 +618,31 @@ export function primeGooglePreviewAllows(font: FontRecord) {
   );
 }
 
+async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
+  if (!googlePreviewMayUseLocalDisk(font)) return false;
+  if (typeof document === "undefined") return false;
+  if (!(await inTauri()) || !likelyOnDisk(font)) return false;
+  try {
+    const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
+    const path = await invoke<string>("read_family_font", { family: font.family });
+    if (/unifont|cjk|emoji|noto-sans-jp|noto-serif-jp|noto-sans-kr|noto-serif-kr|noto-sans-sc|noto-serif-sc|noto-sans-tc|noto-serif-tc|chiron/i.test(path)) {
+      return false;
+    }
+    const url = convertFileSrc(path);
+    const face = new FontFace(font.family, `url(${JSON.stringify(url)})`, {
+      display: "swap",
+      style: "normal",
+      weight: "400",
+    });
+    await face.load();
+    document.fonts.add(face);
+    rememberFace(font.family, face);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function ensureCatalogCss(font: FontRecord) {
   if (font.catalog === "other") {
     const href = fontsourceCssHrefs(font, "preview")[0];
@@ -592,12 +667,20 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
     // Card preview: CSS only (static + VF range). Do not fetch VF woff2 / parse
     // axes / convertFileSrc a CJK TTF — that hangs Google Fonts scrolling.
     if (googlePreviewIsCssOnly(mode, special)) {
-      for (const href of hrefs) {
-        await injectGoogleCss(href, `${cssKey(font.id, mode)}:${href}`, font.family);
-        await waitForFamily(font.family, probe, 280);
-        if (familyLoaded(font.family, probe)) break;
+      if (await loadGooglePreviewFromLocal(font)) {
+        loadedGoogle.set(font.id, "preview");
+        return;
       }
-      loadedGoogle.set(font.id, "preview");
+      let ok = false;
+      for (const href of hrefs) {
+        await injectGoogleCss(href, `cover:${font.id}`, font.family);
+        await waitForFamily(font.family, probe, 280);
+        if (familyLoaded(font.family, probe)) {
+          ok = true;
+          break;
+        }
+      }
+      if (ok) loadedGoogle.set(font.id, "preview");
       return;
     }
     if (font.variable && !special) {
@@ -873,10 +956,7 @@ export function googleCssUrls(fonts: FontRecord[]): string[] {
 export function primeGooglePreview(fonts: FontRecord[]): Promise<void> {
   const google = fonts.filter(primeGooglePreviewAllows);
   if (!google.length || typeof document === "undefined") return Promise.resolve();
-  const urls = googleCssUrls(google);
-  return Promise.all(urls.map((href, i) => injectGoogleCss(href, `prime:${i}:${href.slice(-40)}`))).then(() => {
-    for (const font of google) {
-      if (!loadedGoogle.has(font.id)) loadedGoogle.set(font.id, "preview");
-    }
-  });
+  return Promise.all(
+    google.map((font) => injectGoogleCss(googlePreviewCssHref(font), `cover:${font.id}`, font.family)),
+  ).then(() => undefined);
 }
