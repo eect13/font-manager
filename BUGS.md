@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.191
+- **Variable list lacking (P0 regression):** 1.0.176 accidentally reverted 1.0.170’s catalog Variable facet when landing Gidugu/Clear Sans. Sidebar / `variable` query again = **catalogVariable OR on-disk VF** (like Italic); card badge / axes stay on-disk `*-variable-*` only. Material Symbols* WOFF2-only excluded. Scan `has_variable` again accepts `VariableFont_` / bracket names. Activated `poolForScope` prefers store `googleFonts` so disk VF badge honesty is not wiped by static `FONT_BY_ID` (`variable:false`). Expected facet ≈ Google **558** + **9** Fontsource TTF VFs. Progressive session restore (1.0.190) kept. No tip-install/pack.
+
 ## Fixed in tip / 1.0.190
 - **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Deferred P1:** visible/favorites/first-page first.
 

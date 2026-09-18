@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, replaceGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isWoff2OnlyVariableFamily, replaceGoogleCatalog } from "./catalog";
 import { classifyLicenseText, licenseFromCode } from "./license";
 import { guessGoogleColorKind } from "./color-font";
 import { tagsForGoogleFamily } from "./style-tags";
@@ -120,7 +120,9 @@ function fromFontsource(item: FontsourceItem, popularity: number, existing?: Fon
     category,
     weights: item.weights?.length ? item.weights : existing?.weights ?? [400],
     italic: item.styles?.includes("italic") ?? existing?.italic ?? false,
-    catalogVariable: Boolean(item.variable) || Boolean(existing?.catalogVariable),
+    catalogVariable:
+      (Boolean(item.variable) || Boolean(existing?.catalogVariable)) &&
+      !isWoff2OnlyVariableFamily(item.family),
     // Live Fontsource sync can claim variable:true — UI badge needs on-disk VF only.
     variable: false,
     tags: tagsForGoogleFamily(item.family, category, extra),
@@ -275,7 +277,9 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
         category: CATEGORY[item.category ?? ""] ?? existing.category,
         weights: item.weights?.length ? item.weights : existing.weights,
         italic: item.styles?.includes("italic") ?? existing.italic,
-        catalogVariable: Boolean(item.variable) || Boolean(existing.catalogVariable),
+        catalogVariable:
+          (Boolean(item.variable) || Boolean(existing.catalogVariable)) &&
+          !isWoff2OnlyVariableFamily(item.family),
         // Preserve applyDiskStatusHonesty: on-disk VF may set variable:true without axes yet.
         variable: Boolean(existing.variable),
         tags: tagsForGoogleFamily(

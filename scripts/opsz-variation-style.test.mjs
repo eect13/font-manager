@@ -110,8 +110,8 @@ const inspectorSrc = readFileSync(join(root, "src/components/font-studio/font-in
 const playgroundSrc = readFileSync(join(root, "src/components/font-studio/playground.tsx"), "utf8");
 const cardSrc = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
 
-test("version.ts APP_VERSION is 1.0.190", () => {
-  assert.match(versionSrc, /export const APP_VERSION = "1\.0\.190"/);
+test("version.ts APP_VERSION is 1.0.191", () => {
+  assert.match(versionSrc, /export const APP_VERSION = "1\.0\.191"/);
 });
 
 test("italicPreviewStyle does not emit full-axis FVS (no variationCss call)", () => {

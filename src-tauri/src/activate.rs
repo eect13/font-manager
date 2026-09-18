@@ -4118,7 +4118,12 @@ fn download_google_variable_ttfs(
 }
 
 fn is_variable_face_filename(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("-variable-")
+    let lower = name.to_ascii_lowercase();
+    // Dest names we write (`*-variable-*`) plus leftover google/fonts originals
+    // (`Family-VariableFont_wght.ttf`, `Family[wght].ttf`) so scan/honesty counts them.
+    lower.contains("-variable-")
+        || lower.contains("variablefont")
+        || name.contains('[')
 }
 
 /// `*-variable-*-italic.ttf` (or ends with `-italic.ttf` after the variable token).
@@ -8298,6 +8303,16 @@ mod complete_marker_tests {
         assert!(fs_only_google_vf_folder("42dot Sans").is_some());
         assert!(family_expects_dual_variable("Finlandica"));
         assert!(!family_expects_dual_variable("42dot Sans"));
+    }
+
+    #[test]
+    fn is_variable_face_filename_accepts_dest_and_google_originals() {
+        assert!(is_variable_face_filename("nunito-variable-wght.ttf"));
+        assert!(is_variable_face_filename("Nunito-VariableFont_wght.ttf"));
+        assert!(is_variable_face_filename("Nunito[wght].ttf"));
+        assert!(is_variable_face_filename("Nunito-Italic[wght].ttf"));
+        assert!(!is_variable_face_filename("nunito-400-normal.ttf"));
+        assert!(!is_variable_face_filename("roboto-700-italic.ttf"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
-import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog, isVariableCatalogFamily } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { bytesNearlySame } from "./binary-diff";
 import { idbDelete, idbGet, idbPutMany } from "./idb";
@@ -1194,11 +1194,12 @@ export function poolForScope(
     for (const id of liveIds) {
       if (!id || seen.has(id)) continue;
       seen.add(id);
+      // Prefer store googleFonts (disk VF honesty) over static FONT_BY_ID (variable:false).
       const font =
-        (id.startsWith("g:") ? FONT_BY_ID.get(id) : undefined) ??
         localById.get(id) ??
         googleById.get(id) ??
         systemById?.get(id) ??
+        (id.startsWith("g:") ? FONT_BY_ID.get(id) : undefined) ??
         FONT_BY_ID.get(id);
       if (font) out.push(font);
     }
@@ -1417,7 +1418,7 @@ export function matchesQuery(
     font.source,
     font.category,
     ...tagsFor(font, customTags),
-    font.variable ? "variable" : "",
+    font.variable || font.catalogVariable ? "variable" : "",
     font.italic ? "italic" : "",
     font.fileName ?? "",
     licenseSearchHay(font),
@@ -1430,7 +1431,7 @@ export function matchesQuery(
       const w = Number(token.slice(7));
       return font.weights.includes(w) || (font.variable && !Number.isNaN(w));
     }
-    if (token === "variable") return font.variable;
+    if (token === "variable") return isVariableCatalogFamily(font);
     if (token === "italic") return font.italic;
     if (token.startsWith("tag:")) return tagsFor(font, customTags).includes(token.slice(4));
     if (token.startsWith("license:")) return fontLicense(font) === token.slice(8);
