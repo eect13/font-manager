@@ -77,6 +77,11 @@ function notifyDownloadResult(
   settledNames: string[] = [],
 ) {
   lastFailedNames = names.slice();
+  if (settledNames.length) {
+    void import("./store").then(({ useFontStore }) => {
+      useFontStore.getState().addSettledFamilies(settledNames);
+    });
+  }
   if (failed > 0 && names.length) {
     const preview = (details.length ? details : names).slice(0, 4).join("; ");
     const extra = names.length > 4 ? ` +${names.length - 4} more` : "";
@@ -93,24 +98,68 @@ function notifyDownloadResult(
     );
     return;
   }
-  if (done > 0) {
+  if (done > 0 || settledNames.length) {
     const skipped = job.skipped;
     const settled = settledNames.length;
-    const downloaded = Math.max(0, done - skipped - failed - settled);
-    const settledPreview = settledNames.slice(0, 3).join(", ");
-    const settledNote = settled
-      ? ` ${settled.toLocaleString()} on disk (Windows refused${settledPreview ? `: ${settledPreview}` : ""})`
-      : "";
-    toast.success(
-      skipped && !downloaded
-        ? `Already on disk — ${skipped.toLocaleString()} typeface${skipped === 1 ? "" : "s"} registered${settled ? `,${settledNote}` : ""}`
-        : `Background job finished — ${downloaded.toLocaleString()} downloaded, ${skipped.toLocaleString()} skipped${settled ? `,${settledNote}` : ""}`,
-      {
+    const live = Math.max(0, skipped, done - failed - settled);
+    void import("./store").then(({ useFontStore }) => {
+      const library = useFontStore.getState().googleFonts.length;
+      const liveCount = useFontStore.getState().activated.length || live;
+      const title = `Live ${liveCount.toLocaleString()} · Settled ${settled.toLocaleString()} · Library ${library.toLocaleString() || "—"}`;
+      const settledPreview = settledNames.slice(0, 3).join(", ");
+      const offerGidugu = settledNames.some((n) => n.trim().toLowerCase() === "gidugu");
+      toast.success(title, {
         description: settled
-          ? "Gidugu-class faces stay in Documents for preview; Word/Adobe cannot load them this session."
+          ? `${settledPreview || "Settled faces"} on disk · Windows won’t load for apps this session. Not Activated.`
           : "Files: Documents → Font Manager → FamilyName. Intact files were not fetched again.",
-      },
-    );
+        duration: settled ? 16_000 : 8_000,
+        action: offerGidugu
+          ? {
+              label: "Try Fontsource",
+              onClick: () => void tryFontsourceGdiOffer("Gidugu"),
+            }
+          : {
+              label: "Open folder",
+              onClick: () => void openActivatedFolder(),
+            },
+      });
+    });
+  }
+}
+
+export type FontsourceOfferResult = {
+  family: string;
+  added: number;
+  settled: boolean;
+  message: string;
+};
+
+/** Quiet Settled affordance — Activated only if Add>0. */
+export async function tryFontsourceGdiOffer(family: string): Promise<FontsourceOfferResult | null> {
+  if (!(await inDesktopShell())) return null;
+  try {
+    const r = await tauriInvoke<FontsourceOfferResult>("try_fontsource_gdi_offer", { family });
+    if (!r) return null;
+    if (r.added > 0) {
+      const { useFontStore } = await import("./store");
+      await commitReadyFamilies([r.family]);
+      useFontStore.getState().setSettledFamilies(
+        useFontStore.getState().settledFamilies.filter((n) => n.toLowerCase() !== family.toLowerCase()),
+      );
+      toast.success(`${r.family} Activated`, { description: r.message });
+    } else {
+      const { useFontStore } = await import("./store");
+      useFontStore.getState().addSettledFamilies([r.family]);
+      toast.message(`Settled — ${r.family}`, {
+        description: r.message || "Windows refused Google and Fontsource. On disk · not Activated.",
+        duration: 14_000,
+      });
+    }
+    return r;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "offer failed");
+    toast.message("Fontsource offer unavailable", { description: msg });
+    return null;
   }
 }
 
@@ -404,6 +453,8 @@ export type DiskFamilyInfo = {
   files: number;
   corrupt?: number;
   incomplete?: boolean;
+  /** Known GDI-incapable + intact — calm Settled (not Incomplete, not Activated). */
+  settled?: boolean;
   has_complete?: boolean;
   has_variable?: boolean;
   missing_variable?: boolean;

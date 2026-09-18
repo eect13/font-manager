@@ -52,7 +52,8 @@ export function DownloadBar() {
     return () => window.clearInterval(t);
   }, [job.running, job.paused]);
 
-  if ((!job.running && !job.paused && job.mode === "idle" && !job.failedNames.length) || empty) {
+  const settledIdle = (job.settledNames?.length ?? 0) > 0 && !job.running && !job.paused;
+  if ((!job.running && !job.paused && job.mode === "idle" && !job.failedNames.length && !settledIdle) || empty) {
     holdPct.current = 0;
     return null;
   }
@@ -95,6 +96,11 @@ export function DownloadBar() {
             <span className="block truncate text-destructive">
               Couldn’t load: {job.failedNames.slice(0, 8).join(", ")}
               {job.failedNames.length > 8 ? ` +${job.failedNames.length - 8}` : ""}. Retry, Skip, or Delete files and Activate again.
+            </span>
+          ) : (job.settledNames?.length ?? 0) > 0 && !job.running ? (
+            <span className="block truncate text-muted-foreground">
+              Settled {job.settledNames!.slice(0, 4).join(", ")}
+              {job.settledNames!.length > 4 ? ` +${job.settledNames!.length - 4}` : ""} — on disk · Windows won’t load (not Activated)
             </span>
           ) : null}
           <span className="text-muted-foreground">

@@ -1,5 +1,14 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.180
+- **Gidugu honesty / Live vs Settled (P0):** Activated only after this-session `AddFontResourceExW` > 0 — never from maps, `.complete`, Debg strip alone, or Fontsource/2015 without Add>0. Honest ceiling while Gidugu Add=0: **Live 2099 · Settled 1 · Library 2100**.
+- **Early-skip known-incapable:** after one failed Add this process **or** already `.complete` settled → stamp Settled, **no** Activate All sanitize/Add/2015 churn.
+- **UI:** calm **Settled** badge (“On disk · Windows won’t load”); sidebar `Live N · Settled M · Library T`; Scan/Repair never Incomplete/Repair-1 for settled+intact Gidugu; finish toast uses Live/Settled/Library (not red couldn’t-load).
+- **Skip re-Add** when face already in this-session `loaded()` (maps alone still never skip-Add after Quit — 1.0.171 HOLD).
+- **Defer VF backfill + name-heal** off Activate critical path (idle after live; Repair remains sync smoke).
+- **Fontsource offer (opt-in):** Settled card / toast “Try Fontsource” → download FS TTF → Add again → Activated only if Add>0; else stay Settled + “Windows refused Google and Fontsource”. No auto fake-2100.
+- **Cleanup:** removed automatic 2015 google/fonts pin chase from register path (fought settle honesty / Activate churn). Debg sanitize kept on first Add attempt.
+
 ## Fixed in tip / 1.0.179
 - **Release warnings (P2):** `RegisterOutcome::label` unused in `winfont` (kept, `#[allow(dead_code)]` — twin of `RegisterFailKind::label`). `sfnt_dir_has` unused in release because `has_table` is test-only — now used as Gidugu Debg early-out in `gdi_sanitize_ttf`. No register/Activate behavior change.
 
@@ -156,5 +165,5 @@
 
 ## Notes
 
-- Tip is 1.0.179 (unreleased pack — ask before NSIS).
+- Tip is 1.0.180 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

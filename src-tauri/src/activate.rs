@@ -1152,13 +1152,12 @@ fn register_family_path(family: &str, path: &Path) -> bool {
         winfont::bind(family, path);
         return true;
     }
+    // Known-incapable Add=0: settle later — never auto-chase 2015 pin / Fontsource
+    // on the Activate critical path (honesty: Activated only when Add>0).
     if fail == Some(RegisterFailKind::AddReturnedZero)
         && family_known_gdi_session_incapable(family)
-        && try_gidugu_windows_safe_replace(path)
     {
-        #[cfg(windows)]
-        winfont::bind(family, path);
-        return true;
+        note_session_gdi_refused(family);
     }
     #[cfg(not(windows))]
     {
@@ -1369,10 +1368,16 @@ fn retry_must_attempt_register_before_settle(intact: bool) -> bool {
     intact
 }
 
-/// Catalog 2100 − last-resort settled (Gidugu Add still 0 after sanitize/2015) = 2099.
+/// Honest GDI-live ceiling: library count minus settled known-incapable (Add still 0).
+/// Never report Activated == Library while Gidugu Add=0 (Live 2099 · Settled 1 · Library 2100).
 #[cfg_attr(not(test), allow(dead_code))]
 fn catalog_expected_gdi_live(catalog_families: usize, known_incapable_intact: usize) -> usize {
     catalog_families.saturating_sub(known_incapable_intact)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn format_live_settled_library(live: usize, settled: usize, library: usize) -> String {
+    format!("Live {live} · Settled {settled} · Library {library}")
 }
 
 /// Settled is on-disk, not downloaded and not failed.
@@ -1443,6 +1448,10 @@ fn register_intact_family_detailed(
     if let Some(live) = family_skip_register_this_process(app, family) {
         return (live, RegisterFailKind::NoneTried);
     }
+    // Known GDI-incapable already refused this session or disk-settled: no sanitize/Add churn.
+    if family_early_skip_known_incapable(app, family) {
+        return (0, RegisterFailKind::AddReturnedZero);
+    }
     let mut n = 0usize;
     let mut fail = RegisterFailKind::NoneTried;
     for dir in family_locations(app, family) {
@@ -1463,12 +1472,8 @@ fn register_intact_family_detailed(
                 Some(kind) => {
                     if matches!(kind, RegisterFailKind::AddReturnedZero)
                         && family_known_gdi_session_incapable(family)
-                        && try_gidugu_windows_safe_replace(&path)
                     {
-                        #[cfg(windows)]
-                        winfont::bind(family, &path);
-                        n += 1;
-                        continue;
+                        note_session_gdi_refused(family);
                     }
                     fail = fail.worsen(kind);
                 }
@@ -2873,20 +2878,70 @@ fn family_known_gdi_session_incapable(family: &str) -> bool {
     family.trim().eq_ignore_ascii_case("gidugu")
 }
 
-/// google/fonts `ofl/gidugu` at the 2015 initial commit — Windows GDI accepts it.
-/// v2.000 (2025) ships `Debg`; Font Viewer / AddFontResourceExW reject it
-/// (google/fonts#9982) while PrivateFontCollection still loads.
-#[cfg_attr(not(windows), allow(dead_code))]
-const GIDUGU_GDI_SAFE_PIN: &str = "90abd17b4f97671435798b6147b698aa9087612f";
+/// This-process Add=0 for a known-incapable family — Activate All must not re-stage/Add.
+fn session_gdi_refused() -> &'static Mutex<HashSet<String>> {
+    static S: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
-#[cfg_attr(not(windows), allow(dead_code))]
-fn gidugu_gdi_safe_ttf_urls() -> Vec<String> {
-    let pin = GIDUGU_GDI_SAFE_PIN;
-    vec![
-        format!("https://cdn.jsdelivr.net/gh/google/fonts@{pin}/ofl/gidugu/Gidugu-Regular.ttf"),
-        format!("https://raw.githubusercontent.com/google/fonts/{pin}/ofl/gidugu/Gidugu-Regular.ttf"),
-        format!("https://github.com/google/fonts/raw/{pin}/ofl/gidugu/Gidugu-Regular.ttf"),
-    ]
+fn note_session_gdi_refused(family: &str) {
+    if !family_known_gdi_session_incapable(family) {
+        return;
+    }
+    if let Ok(mut g) = session_gdi_refused().lock() {
+        g.insert(family.trim().to_ascii_lowercase());
+    }
+}
+
+fn family_session_gdi_refused(family: &str) -> bool {
+    session_gdi_refused()
+        .lock()
+        .map(|g| g.contains(&family.trim().to_ascii_lowercase()))
+        .unwrap_or(false)
+}
+
+fn family_has_complete_settled(app: &AppHandle, family: &str) -> bool {
+    family_locations(app, family).iter().any(|dir| dir_is_complete(dir) && dir_has_intact(dir))
+}
+
+/// Early-skip Activate walk/Add: known-incapable + (this-session refused OR already `.complete` settled)
+/// + intact full-size. Never claims Activated.
+fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
+    if !family_known_gdi_session_incapable(family) {
+        return false;
+    }
+    let intact = family_has_intact(app, family);
+    if !intact {
+        return false;
+    }
+    let undersized = family_locations(app, family)
+        .iter()
+        .any(|d| dir_has_undersized_google_static(d, family));
+    if undersized {
+        return false;
+    }
+    family_session_gdi_refused(family) || family_has_complete_settled(app, family)
+}
+
+/// Settled (disk OK, Add=0) must never equal Activated.
+#[cfg_attr(not(test), allow(dead_code))]
+fn settled_implies_not_activated(settled: bool, gdi_faces_added: usize) -> bool {
+    if settled {
+        gdi_faces_added == 0
+    } else {
+        true
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn early_skip_after_refuse_or_settled(
+    known_incapable: bool,
+    session_refused: bool,
+    disk_complete_settled: bool,
+    intact: bool,
+    undersized: bool,
+) -> bool {
+    known_incapable && intact && !undersized && (session_refused || disk_complete_settled)
 }
 
 /// Rewrite Documents TTF in place when it still has Debg/TTFA/FFTM.
@@ -2907,37 +2962,6 @@ fn sanitize_on_disk_for_gdi(path: &Path) -> bool {
         return false;
     }
     true
-}
-
-/// Last-resort: replace Gidugu v2 with the 2015 pin, then Add.
-fn try_gidugu_windows_safe_replace(path: &Path) -> bool {
-    #[cfg(not(windows))]
-    {
-        let _ = path;
-        return false;
-    }
-    #[cfg(windows)]
-    {
-        let Some(client) = http_download_client() else {
-            return false;
-        };
-        for url in gidugu_gdi_safe_ttf_urls() {
-            let Some(bytes) = fetch_url_ttf(&client, &url) else {
-                continue;
-            };
-            if bytes.len() < 200 * 1024 {
-                continue;
-            }
-            let bytes = crate::namepatch::gdi_sanitize_ttf(&bytes).unwrap_or(bytes);
-            if fs::write(path, &bytes).is_err() {
-                continue;
-            }
-            if register_path(path) {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 fn fetch_ttf(client: &reqwest::blocking::Client, slug: &str, version: &str, weight: u16, italic: bool, subset: &str) -> Result<Vec<u8>, String> {
@@ -5270,22 +5294,12 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
     if ready.is_empty() {
         return;
     }
-    // Complete folders still pull missing catalog variable TTFs (no bust) and
-    // heal mashed instance names — Activate used to name-heal only / skip vars.
-    let client = http_download_client();
+    // Activate critical path = register only. VF backfill + name-heal deferred
+    // to idle (after live marks) so Activate All is not blocked on CDN/heal.
     let mut n = 0usize;
     let mut live: Vec<String> = Vec::new();
-    let mut heal = HealStats::default();
     let mut last_emit = Instant::now();
     for (i, family) in ready.iter().enumerate() {
-        if let Some(ref c) = client {
-            let (_, eh) = ensure_catalog_variable_faces(app, c, family);
-            heal.add(eh);
-            // Vars already counted via ensure — heal static instances only.
-            heal.add(heal_family_google_names(app, family, false));
-        } else {
-            heal.add(heal_family_google_instance_names(app, family));
-        }
         let (added, cause) = match index {
             Some(idx) => {
                 let a = register_from_index(app, idx, family);
@@ -5349,8 +5363,24 @@ fn commit_ready_families(app: &AppHandle, ready: &[String], index: Option<&DiskI
         #[cfg(windows)]
         persist_activation_sidecars(app);
     }
-    emit_name_heal(app, heal);
     emit_progress(app);
+    // Idle: VF ensure + name-heal (Repair remains sync smoke path).
+    let app_idle = app.clone();
+    let ready_idle = ready.to_vec();
+    thread::spawn(move || {
+        let client = http_download_client();
+        let mut heal = HealStats::default();
+        for family in &ready_idle {
+            if let Some(ref c) = client {
+                let (_, eh) = ensure_catalog_variable_faces(&app_idle, c, family);
+                heal.add(eh);
+                heal.add(heal_family_google_names(&app_idle, family, false));
+            } else {
+                heal.add(heal_family_google_instance_names(&app_idle, family));
+            }
+        }
+        emit_name_heal(&app_idle, heal);
+    });
 }
 
 fn register_from_index(app: &AppHandle, index: &DiskIndex, family: &str) -> usize {
@@ -6881,7 +6911,9 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
 /// Worker: disk-ready filter then ≤6 parallel intact register with progress ticks.
 fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: bool) {
     // Already-Add'd this process: skip filter+walk+Add (FontBase no-op).
+    // Known-incapable settled/refused: quiet settle — no sanitize/Add/2015 churn.
     let mut already: Vec<String> = Vec::new();
+    let mut settled_skip: Vec<String> = Vec::new();
     let mut rest: Vec<String> = Vec::new();
     for family in &families {
         let t = family.trim();
@@ -6890,13 +6922,15 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         }
         if family_skip_register_this_process(&app, t).is_some() {
             already.push(t.to_string());
+        } else if family_early_skip_known_incapable(&app, t) {
+            settled_skip.push(t.to_string());
         } else {
             rest.push(t.to_string());
         }
     }
     let ready = filter_ready_families_parallel(&app, &rest);
     let state = bulk();
-    if ready.is_empty() && already.is_empty() {
+    if ready.is_empty() && already.is_empty() && settled_skip.is_empty() {
         if own_progress {
             if let Ok(mut p) = state.progress.lock() {
                 p.failed = 0;
@@ -6934,8 +6968,14 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         p.running = true;
         p.done = already.len() as u32;
         p.total = (already.len() + ready.len()) as u32;
-        p.current = if ready.is_empty() {
+        p.current = if ready.is_empty() && settled_skip.is_empty() {
             format!("Already registered — {} typefaces", already.len())
+        } else if ready.is_empty() {
+            format!(
+                "Live {} · Settled {} · Library on disk",
+                already.len(),
+                settled_skip.len()
+            )
         } else {
             format!("Registering {} already on disk…", ready.len())
         };
@@ -6954,12 +6994,27 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
                 p.ready_names.push(f.clone());
             }
         }
+        for f in &settled_skip {
+            stamp_known_incapable_disk_settled(&app, f);
+            note_session_gdi_refused(f);
+            if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(f)) {
+                p.settled_names.push(f.clone());
+            }
+        }
+        // Include settled in done/total so Activate All does not look stuck at 2099/2100.
+        let handled = already.len() + settled_skip.len();
+        p.done = handled as u32;
+        p.total = (handled + ready.len()) as u32;
     }
     emit_progress(&app);
 
     let mut registered = already.clone();
     if !ready.is_empty() {
-        registered.extend(register_on_disk_parallel_progress(&app, &ready, already.len()));
+        registered.extend(register_on_disk_parallel_progress(
+            &app,
+            &ready,
+            already.len() + settled_skip.len(),
+        ));
     }
     let cancelled = state.cancel.load(Ordering::SeqCst);
     if !registered.is_empty() {
@@ -6971,17 +7026,14 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         persist_activation_sidecars(&app);
     }
 
-    // VF backfill before finishing — do not mark Activate complete while catalog
-    // VFs are still downloading (Skye CJK). Repair remains the sync smoke path
-    // for already-`.complete` folders (ensure on the invoke). Cancel skips backfill.
-    // Include already-live so a later catalog VF still backfills.
+    // Defer VF backfill off Activate critical path (idle after live marks).
+    // Repair / ensure remain the sync smoke path for missing catalog vars.
     if !cancelled && !registered.is_empty() {
-        if let Ok(mut p) = state.progress.lock() {
-            p.current = "Backfilling variable faces…".into();
-            p.running = true;
-        }
-        emit_progress(&app);
-        backfill_missing_variable_faces(&app, &registered);
+        let app_bf = app.clone();
+        let fam_bf = registered.clone();
+        thread::spawn(move || {
+            backfill_missing_variable_faces(&app_bf, &fam_bf);
+        });
     }
 
     // Requested but not intact: clear pending via failed_names (poll finalize).
@@ -6993,6 +7045,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
                 let handled: HashSet<String> = ready
                     .iter()
                     .chain(already.iter())
+                    .chain(settled_skip.iter())
                     .map(|n| n.trim().to_lowercase())
                     .collect();
                 for family in &families {
@@ -7008,7 +7061,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
                         ));
                     }
                 }
-                p.done = (already.len() + ready.len()) as u32;
+                p.done = (already.len() + settled_skip.len() + ready.len()) as u32;
                 p.total = p.done;
             }
             p.running = false;
@@ -7279,8 +7332,13 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
                 need_fetch.push(family.clone());
                 continue;
             }
-            // Always try sanitize+Add (Gidugu Debg strip / 2015 pin lives in
-            // register_intact). Skipping Gidugu here was the 2099 hole.
+            // Settled / already-refused known-incapable: quiet — no Add churn loop.
+            if family_early_skip_known_incapable(&app, family) {
+                stamp_known_incapable_disk_settled(&app, family);
+                note_settled_quiet(family);
+                continue;
+            }
+            // First try this session: sanitize+Add once (no auto 2015/Fontsource chase).
             let (n, cause) = reregister_intact_family(&app, family);
             if n > 0 {
                 reregistered += 1;
@@ -7305,7 +7363,7 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
                 honesty.intact > 0,
                 honesty.undersized,
             ) {
-                // Last resort after sanitize + 2015 pin: disk settled, no Retry-loop.
+                note_session_gdi_refused(family);
                 stamp_known_incapable_disk_settled(&app, family);
                 note_settled_quiet(family);
                 continue;
@@ -7470,6 +7528,103 @@ fn replace_tiny_cjk_static_faces(
 
 /// Name-heal soft-fails on locked faces (Illustrator/fontdrvhost) but returns
 /// `locked` so the UI can fail loud — never looks like silent success.
+
+/// User-opted Fontsource copy after Google GDI refuse (Gidugu-class).
+/// Downloads FS TTF, tries Add — Activated only if Add>0; else stay Settled.
+#[derive(Clone, Serialize)]
+pub struct FontsourceOfferResult {
+    pub family: String,
+    pub added: usize,
+    pub settled: bool,
+    pub message: String,
+}
+
+fn gidugu_fontsource_ttf_urls() -> Vec<String> {
+    let mut urls = Vec::new();
+    for subset in ["telugu", "latin"] {
+        urls.extend(ttf_urls("gidugu", "latest", 400, false, subset, 0));
+    }
+    urls
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn fontsource_offer_activated_only_if_add(added: usize) -> bool {
+    added > 0
+}
+
+#[tauri::command]
+pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<FontsourceOfferResult, String> {
+    let family = family.trim().to_string();
+    if family.is_empty() {
+        return Err("family required".into());
+    }
+    if !family_known_gdi_session_incapable(&family) {
+        return Err(format!("{family} is not on the known GDI-incapable list"));
+    }
+    let Some(client) = http_download_client() else {
+        return Err("network unavailable".into());
+    };
+    let dir = family_dir(&app, &family)?;
+    let _ = fs::create_dir_all(&dir);
+    let dest = dir.join("gidugu-400-normal.ttf");
+    let mut last = String::from("all Fontsource CDNs failed");
+    let mut got: Option<Vec<u8>> = None;
+    for url in gidugu_fontsource_ttf_urls() {
+        if let Some(bytes) = fetch_url_ttf(&client, &url) {
+            if bytes.len() >= 256 && ttf_magic(&bytes) {
+                got = Some(bytes);
+                break;
+            }
+            last = format!("not a usable TTF from {url}");
+        } else {
+            last = format!("fetch failed: {url}");
+        }
+    }
+    let Some(bytes) = got else {
+        stamp_known_incapable_disk_settled(&app, &family);
+        note_session_gdi_refused(&family);
+        note_settled_quiet(&family);
+        return Ok(FontsourceOfferResult {
+            family,
+            added: 0,
+            settled: true,
+            message: format!("Windows refused Google; Fontsource download failed ({last}). Still Settled."),
+        });
+    };
+    let bytes = crate::namepatch::gdi_sanitize_ttf(&bytes).unwrap_or(bytes);
+    write_font_file(&dest, &bytes)?;
+    let added = if register_family_path(&family, &dest) { 1usize } else { 0 };
+    if added > 0 {
+        session_add(&app, &[family.clone()]);
+        notify_fonts_changed();
+        #[cfg(windows)]
+        persist_activation_sidecars(&app);
+        if let Ok(mut p) = bulk().progress.lock() {
+            p.settled_names.retain(|n| !n.eq_ignore_ascii_case(&family));
+            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                p.ready_names.push(family.clone());
+            }
+        }
+        emit_progress(&app);
+        return Ok(FontsourceOfferResult {
+            family,
+            added,
+            settled: false,
+            message: "Fontsource copy registered — Activated this session.".into(),
+        });
+    }
+    note_session_gdi_refused(&family);
+    stamp_known_incapable_disk_settled(&app, &family);
+    note_settled_quiet(&family);
+    emit_progress(&app);
+    Ok(FontsourceOfferResult {
+        family,
+        added: 0,
+        settled: true,
+        message: "Windows refused Google and Fontsource. On disk · Settled (not Activated).".into(),
+    })
+}
+
 #[tauri::command]
 pub fn repair_incomplete_families(
     app: AppHandle,
@@ -7577,6 +7732,9 @@ pub struct DiskFamily {
     pub corrupt: usize,
     /// Intact faces present but honest `.complete` missing, face-count short, or catalog VF missing.
     pub incomplete: bool,
+    /// Known GDI-incapable + intact full-size: disk settled (not Incomplete, not Activated).
+    #[serde(default)]
+    pub settled: bool,
     /// `.complete` marker currently present (after verify).
     pub has_complete: bool,
     /// Intact on-disk `*-variable-*` face present.
@@ -7631,14 +7789,14 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
         let missing_variable =
             catalog_variable_expects_public_vf(&name) && !has_variable && intact > 0;
         let undersized = dir_has_undersized_google_static(dir, &name);
-        // `.complete` ≠ vars done; undersized ≠ skip-intact done (Gidugu remnant).
-        // Disk-settled known-incapable never Incomplete from missing `.complete` alone.
-        let incomplete = if family_disk_settled_known_gdi_incapable(
+        let settled = family_disk_settled_known_gdi_incapable(
             family_known_gdi_session_incapable(&name),
             intact > 0,
             undersized,
-        ) {
-            missing_variable
+        );
+        // Settled known-incapable: never Incomplete / Repair-1 (calm disk OK).
+        let incomplete = if settled {
+            false
         } else {
             (intact > 0 && !has_complete) || missing_variable || undersized
         };
@@ -7648,6 +7806,7 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             files: intact,
             corrupt,
             incomplete,
+            settled,
             has_complete,
             has_variable,
             missing_variable,
@@ -9371,23 +9530,25 @@ mod install_path_tests {
     }
 
     #[test]
-    fn catalog_2100_gidugu_is_gdi_live_after_compat() {
+    fn live_settled_library_honesty_gidugu_add_zero() {
+        // Honest ceiling while Gidugu Add=0: Live 2099 · Settled 1 · Library 2100.
         assert_eq!(catalog_expected_gdi_live(2100, 0), 2100);
         assert_eq!(catalog_expected_gdi_live(2100, 1), 2099);
+        assert_eq!(
+            format_live_settled_library(2099, 1, 2100),
+            "Live 2099 · Settled 1 · Library 2100"
+        );
         assert!(family_known_gdi_session_incapable("Gidugu"));
         assert!(!family_may_claim_session_activated(true, 0));
         assert!(
             family_may_claim_session_activated(true, 1),
-            "Gidugu Add>0 is live — catalog 2100, not 2099"
+            "Add>0 may Activate — never from settle alone"
         );
+        assert!(settled_implies_not_activated(true, 0));
+        assert!(!settled_implies_not_activated(true, 1));
         assert!(!job_toast_is_fail(0));
         assert!(job_toast_is_fail(1));
-        // Last-resort settle only when Add still 0 after sanitize/2015 pin.
         assert_eq!(job_downloaded_count(2100, 2099, 0, 1), 0);
-        assert_eq!(job_downloaded_count(2100, 2100, 0, 0), 0);
-        let urls = gidugu_gdi_safe_ttf_urls();
-        assert!(urls.iter().all(|u| u.contains(GIDUGU_GDI_SAFE_PIN)));
-        assert!(urls.iter().any(|u| u.contains("ofl/gidugu/Gidugu-Regular.ttf")));
         assert!(retry_must_attempt_register_before_settle(true));
         assert!(!retry_must_attempt_register_before_settle(false));
         assert!(retry_gidugu_settle_without_refetch(0, true, true, false));
@@ -9399,6 +9560,23 @@ mod install_path_tests {
             !retry_gidugu_settle_without_refetch(0, true, true, true),
             "undersized remnant must Repair/fetch, not settle"
         );
+        // Early-skip: refused OR already settled — no Activate All churn.
+        assert!(early_skip_after_refuse_or_settled(true, true, false, true, false));
+        assert!(early_skip_after_refuse_or_settled(true, false, true, true, false));
+        assert!(!early_skip_after_refuse_or_settled(true, false, false, true, false));
+        assert!(!early_skip_after_refuse_or_settled(true, true, true, true, true));
+        assert!(!early_skip_after_refuse_or_settled(false, true, true, true, false));
+        assert!(fontsource_offer_activated_only_if_add(1));
+        assert!(!fontsource_offer_activated_only_if_add(0));
+        let urls = gidugu_fontsource_ttf_urls();
+        assert!(urls.iter().any(|u| u.contains("gidugu") && u.contains("telugu")));
+        assert!(urls.iter().any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
+    }
+
+    #[test]
+    fn face_loaded_this_session_may_skip_add() {
+        assert!(!face_may_skip_add(false), "maps alone must not skip Add");
+        assert!(face_may_skip_add(true), "this-session loaded() may skip re-Add");
     }
 
     #[test]
@@ -9519,7 +9697,7 @@ mod install_path_tests {
                 family_known_gdi_session_incapable("Gidugu"),
                 1,
             ),
-            "Gidugu Add>0 after sanitize/2015 pin is live (2100)"
+            "Gidugu Add>0 is live — never from settle alone"
         );
         assert!(family_may_claim_session_activated(false, 1));
 

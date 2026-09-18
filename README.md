@@ -1,4 +1,4 @@
-# Font Manager **1.0.179**
+# Font Manager **1.0.180**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
@@ -6,11 +6,13 @@ FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
 
-**1.0.179.** Release-build warning quiet: keep `RegisterOutcome::label` (allow), `sfnt_dir_has` used by Gidugu Debg early-out. No behavior change. 1.0.178 Retry Gidugu kept.
+**1.0.180.** Gidugu honesty: **Live / Settled / Library** — Activated only if Add>0. Early-skip known-incapable after refuse or `.complete` settle (no Activate All churn). Calm Settled badge; Scan quiet (not Incomplete/Repair-1). Opt-in Fontsource offer → Activated only if Add>0. VF backfill + name-heal deferred off Activate path. Auto 2015 pin chase removed. Debg sanitize on first Add kept. 1.0.179 warning quiet kept.
 
-**1.0.178.** Retry no longer skips Gidugu. Activate / Retry always sanitize+Add (Debg strip, then 2015 pin). Add>0 ⇒ live (2100). Add still 0 on a full-size file ⇒ disk-settle once, no refetch loop. Undersized remnant still Repair. 1.0.177 write-path sanitize kept.
+**1.0.179.** Release-build warning quiet: keep `RegisterOutcome::label` (allow), `sfnt_dir_has` used by Gidugu Debg early-out. No behavior change.
 
-**1.0.177.** Gidugu Activates — catalog **2100** GDI-live, not 2099. v2.000 ships a `Debg` table Windows Font Viewer / `AddFontResourceExW` reject ([google/fonts#9982](https://github.com/google/fonts/issues/9982)); we strip `Debg`/`TTFA`/`FFTM` and add an empty `DSIG` on write, then fall back to the 2015 google/fonts TTF if Add is still 0. Last-resort settle only if both fail. Same-session Activate All of already-live families stays O(1) skip (this-process `loaded()` only). 1.0.176 boot/skip-copy HOLDs kept.
+**1.0.178.** Retry register-first for Gidugu; settle when Add still 0 (no refetch loop). Superseded for Activate churn by 1.0.180 early-skip + Fontsource offer.
+
+**1.0.177.** Debg strip on write; 2015 pin chase (removed from Activate critical path in 1.0.180). Same-session `loaded()` skip kept.
 
 **1.0.176.** Faster same-session register (skip walk+Add when this process already Add'd the family; maps still skip-copy only). Boot no longer double-registers the session. Catalog **2100** / GDI-live **2099** was Gidugu v2 refused — fixed in 1.0.177. 1.0.175 Gidugu settle + opsz + Clear Sans Intel-8 kept.
 

@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
+import { tryFontsourceGdiOffer } from "@/lib/fonts/os-activate";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
@@ -120,6 +121,8 @@ export const FontCard = memo(function FontCard({
   const [axisHeld, setAxisHeld] = useState(false);
   const vfPrimed = useRef(false);
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
+  const settledDisk = useFontStore((s) => s.settledFamilySet.has(font.family.trim().toLowerCase()));
+  const settled = settledDisk && !activated;
   const pending = useFontStore((s) => s.pendingSet.has(font.id));
   const favorite = useFontStore((s) => s.favorites.includes(font.id));
   const hasCollections = useFontStore((s) => s.collections.length > 0);
@@ -382,7 +385,26 @@ export const FontCard = memo(function FontCard({
           <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
-            {font.source === "local" && <Badge variant="outline" className="ml-auto">Local</Badge>}
+            {settled ? (
+              <button
+                type="button"
+                title="On disk · Windows won’t load. Optional: try Fontsource copy"
+                className="ml-auto inline-flex"
+                onPointerDown={isolate}
+                onClick={(e) => {
+                  isolate(e);
+                  if (font.family.trim().toLowerCase() === "gidugu") {
+                    void tryFontsourceGdiOffer(font.family);
+                  }
+                }}
+              >
+                <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+                  Settled
+                </Badge>
+              </button>
+            ) : font.source === "local" ? (
+              <Badge variant="outline" className="ml-auto">Local</Badge>
+            ) : null}
           </div>
           {specimenPane}
         </>
@@ -398,7 +420,26 @@ export const FontCard = memo(function FontCard({
                   {Math.round(cardWeight)}
                 </span>
               ) : null}
-              {font.source === "local" && <Badge variant="outline">Local</Badge>}
+              {settled ? (
+                <button
+                  type="button"
+                  title="On disk · Windows won’t load. Optional: try Fontsource copy"
+                  className="inline-flex"
+                  onPointerDown={isolate}
+                  onClick={(e) => {
+                    isolate(e);
+                    if (font.family.trim().toLowerCase() === "gidugu") {
+                      void tryFontsourceGdiOffer(font.family);
+                    }
+                  }}
+                >
+                  <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+                    Settled
+                  </Badge>
+                </button>
+              ) : font.source === "local" ? (
+                <Badge variant="outline">Local</Badge>
+              ) : null}
             </span>
           </div>
         </>
@@ -434,6 +475,8 @@ export const FontCard = memo(function FontCard({
           title={
             activated
               ? "Deactivate — hide from other apps, keep files"
+              : settled
+                ? "Settled — on disk · Windows won’t load (not Activated)"
               : pending
                 ? "Queued"
                 : isDesktopShellSync()

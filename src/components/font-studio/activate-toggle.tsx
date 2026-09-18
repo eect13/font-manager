@@ -137,16 +137,21 @@ export function ScanDiskMenuItem() {
           const bytes = rows.reduce((n, r) => n + (r.bytes || 0), 0);
           const files = rows.reduce((n, r) => n + (r.files || 0), 0);
           const corrupt = rows.reduce((n, r) => n + (r.corrupt || 0), 0);
-          const incomplete = rows.filter((r) => r.incomplete).map((r) => r.name);
+          const incomplete = rows.filter((r) => r.incomplete && !r.settled).map((r) => r.name);
+          const settled = rows.filter((r) => r.settled).map((r) => r.name);
           const catalog = googleFonts.length;
+          const live = useFontStore.getState().activated.length;
           const baseBits = [
+            `Live ${live.toLocaleString()} · Settled ${settled.length.toLocaleString()} · Library ${catalog.toLocaleString()}`,
             `${files.toLocaleString()} intact TTF/OTF (${(bytes / (1024 * 1024)).toFixed(1)} MB)`,
-            `catalog ${catalog.toLocaleString()}`,
             corrupt
               ? `${corrupt.toLocaleString()} corrupt (not TTF; WOFF is preview-only)`
               : "no corrupt files",
+            settled.length
+              ? `${settled.length.toLocaleString()} Settled (on disk · Windows won’t load — not Incomplete)`
+              : null,
             "Explorer also counts .session-active.json — not a family",
-          ];
+          ].filter(Boolean) as string[];
           // One primary action only — Repair OR Remove extras, never both in one toast.
           if (incomplete.length) {
             toast.success(`Scan: ${rows.length.toLocaleString()} families on disk`, {
@@ -167,7 +172,7 @@ export function ScanDiskMenuItem() {
             toast.success(`Scan: ${rows.length.toLocaleString()} families on disk`, {
               description: [
                 ...baseBits,
-                "all complete",
+                settled.length ? `${settled.length.toLocaleString()} Settled · rest complete` : "all complete",
                 `${extras.length.toLocaleString()} not in catalog (uploads or delisted)`,
               ].join(" · "),
               duration: 14_000,
