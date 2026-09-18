@@ -1822,11 +1822,14 @@ fn merge_unique_paths(primary: Vec<PathBuf>, extra: Vec<PathBuf>) -> Vec<PathBuf
     out
 }
 
-/// Quit watchdog budget: large enumerable sessions need more than 45s.
-/// Watchdog only: event loop must stay free. Sidecars are saved at session_end
-/// start; leftover GDI maps are Removed on next boot.
-pub fn quit_unload_budget_for(_path_count: usize) -> Duration {
-    Duration::from_secs(4)
+/// Quit watchdog budget: scales so healthy Remove can finish before exit.
+/// ~15ms/path (RemoveFontResourceExW + local GdiFlush), clamped to [12s, 180s].
+/// ~2k Activate All ≈ 31s; ~11k library ≈ 165s (under cap). Watchdog only —
+/// worker exits when session_end completes; leftovers recover on next boot.
+/// Do not restart FontCache on quit (Explorer hang risk) — prefer full Remove.
+pub fn quit_unload_budget_for(path_count: usize) -> Duration {
+    let ms = (path_count as u64).saturating_mul(15).clamp(12_000, 180_000);
+    Duration::from_millis(ms)
 }
 
 /// SCM service names to best-effort restart after Deactivate/Quit unload.
@@ -10287,12 +10290,26 @@ mod session_sidecar_tests {
 
     #[test]
     fn quit_unload_budget_clamps() {
-        // Short watchdog so the process is gone and a second launch can start.
-        // Full Remove of ~11k paths is best-effort; leftovers recover on boot.
-        assert_eq!(quit_unload_budget_for(0), Duration::from_secs(4));
-        assert_eq!(quit_unload_budget_for(100), Duration::from_secs(4));
-        assert_eq!(quit_unload_budget_for(11_000), Duration::from_secs(4));
-        assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(4));
+        // Formula: max(12s, min(180s, path_count * 15ms)).
+        // Floor covers empty/small quits; ~2k Activate All ≈ 31.5s; ~11k ≈ 165s.
+        assert_eq!(quit_unload_budget_for(0), Duration::from_secs(12));
+        assert_eq!(quit_unload_budget_for(100), Duration::from_secs(12));
+        // Eric Activate All (~2099): 2099 * 15ms = 31485ms — above floor, under cap
+        let two_k = quit_unload_budget_for(2_099);
+        assert_eq!(two_k, Duration::from_millis(31_485));
+        assert!(two_k > Duration::from_secs(12));
+        assert!(two_k < Duration::from_secs(180));
+        // ~11k library: 11_000 * 15ms = 165s — far above the old hard 4s kill
+        let eleven_k = quit_unload_budget_for(11_000);
+        assert!(
+            eleven_k > Duration::from_secs(60),
+            "11k paths must get well above floor (got {:?})",
+            eleven_k
+        );
+        assert_eq!(eleven_k, Duration::from_secs(165));
+        // Cap at 180s
+        assert_eq!(quit_unload_budget_for(12_000), Duration::from_secs(180));
+        assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(180));
     }
 
     #[test]

@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.189
+- **Quit kill mid-Remove (P0):** `quit_unload_budget_for` was hard-coded 4s for any path count — Activate All (~2k) quit watchdog `process::exit(0)` mid-Remove, leaving GDI-live faces and locked Documents folders. Restored **scaled** budget: `max(12s, min(180s, path_count × 15ms))` (~2k ≈ 31.5s, ~11k ≈ 165s). Watchdog is hung-GDI backstop only; worker still `exit(0)` when `session_end` completes. No FontCache restart on quit (Explorer hang). Hide-window + worker unload + next-boot recover kept.
+
 ## Fixed in tip / 1.0.188
 - **GDI-incapable FS download / remnant hang (P0):** Allowlisted Settled no longer offers “Try Fontsource” (card/toast). `try_fontsource_gdi_offer` is no-download Settled info + remnant purge. On Activate/Scan/Repair, `purge_known_incapable_fontsource_remnants` deletes undersized google-shaped / latin-named / subset-named orphans (legacy offer dest) while keeping full Google TTFs so early-skip + `.complete` Settled succeed — stops Add/re-fetch churn on Gidugu every Activate.
 
