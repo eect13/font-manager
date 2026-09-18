@@ -1,5 +1,25 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.189
+- **Quit kill mid-Remove (P0):** `quit_unload_budget_for` was hard-coded 4s for any path count — Activate All (~2k) quit watchdog `process::exit(0)` mid-Remove, leaving GDI-live faces and locked Documents folders. Restored **scaled** budget: `max(12s, min(180s, path_count × 15ms))` (~2k ≈ 31.5s, ~11k ≈ 165s). Watchdog is hung-GDI backstop only; worker still `exit(0)` when `session_end` completes. No FontCache restart on quit (Explorer hang). Hide-window + worker unload + next-boot recover kept.
+
+## Fixed in tip / 1.0.188
+- **GDI-incapable FS download / remnant hang (P0):** Allowlisted Settled no longer offers “Try Fontsource” (card/toast). `try_fontsource_gdi_offer` is no-download Settled info + remnant purge. On Activate/Scan/Repair, `purge_known_incapable_fontsource_remnants` deletes undersized google-shaped / latin-named / subset-named orphans (legacy offer dest) while keeping full Google TTFs so early-skip + `.complete` Settled succeed — stops Add/re-fetch churn on Gidugu every Activate.
+
+## Fixed in tip / 1.0.187
+- **Settled-idle bar false hang (P0):** After Activate All finished (honest Live/Library counts), bar stuck at 100% "N already on disk — Registering …" with Settled Gidugu and no Dismiss. Root: `applyPayload` used `current: p.current || job.current` so Rust’s empty clear never stuck; `settledIdle` kept the bar visible. Fix: `current: p.current ?? ""`; calm **Done** + **Dismiss** → job EMPTY (store settled stays); optional ~16s auto-hide matching Settled toast.
+
+## Fixed in tip / 1.0.186
+- **Shared known-GDI-incapable allowlist (P0):** one Rust table (`KNOWN_GDI_SESSION_INCAPABLE`) + TS mirror (`gdi-incapable.ts`). Settled / early-skip / disk `.complete` / toast-exempt / card “Settled · try Fontsource” for **any** allowlisted family. Append a row (+ optional FS slug/subsets) for the next bad font.
+- **Toast calm Settled (P0):** `notifyDownloadResult` uses `toast.message` when `settledNames.length > 0` (not `toast.success`). “Try Fontsource” passes the first allowlisted settled family — never hardcoded `"Gidugu"`. Fail path stays `toast.error`.
+- **Fontsource offer generalized:** dest filename + CDN URLs from family slug + entry subset plan (Gidugu = `gidugu` + telugu/latin). Activated only if Add>0.
+- **Activated pool nit:** `poolForScope` builds id maps once (no O(n) `localFonts.find` per live id).
+
+## Fixed in tip / 1.0.185
+- **Settled FS honesty (P0):** Settled cards no longer advertise “try Fontsource” when click is a no-op. Allowlist = Gidugu only (UI + toast + Rust `try_fontsource_gdi_offer` / `family_known_gdi_session_incapable`).
+- **Shipped catalog regen:** `scripts/regen-shipped-catalogs.mjs` refreshes `google-directory` / `google-catalog` / `fontsource-other` from live APIs with `cache: "no-store"` (counts ≈ Google 1946 + FS exclusive 154).
+- **Activated pool care:** `poolForScope("activated", …, liveIds)` resolves O(live) — continues 184 pattern; no full `allFonts` (~22k) on Activated facet/grid ticks. No 100k arch.
+
 ## Fixed in tip / 1.0.184
 - **20k fonts (P1):** Google/Fontsource drawers used `allFonts(local, google)` then filtered — 20k locals copied on every Activate tick. `poolForScope` passes google-only / local-only. Sidebar does not re-tally 20k when `activated[]` grows (`facetCounts` independent; badge = `activated.length`). `findFont("g:…")` is `FONT_BY_ID` (O(1)).
 - **Subsetter (wont-do on GDI):** pyftsubset / hb-subset / subset-font / allsorts are for **preview/web**. Documents + `AddFontResourceExW` stay **full** TTFs (Word/Adobe). Preview already uses Google CSS2 `text=` + latin woff2 (1.0.183). Do not wasm-subset 20k files.

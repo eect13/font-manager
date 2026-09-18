@@ -1507,7 +1507,12 @@ fn stamp_known_incapable_disk_settled(app: &AppHandle, family: &str) {
 }
 
 fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
-    if !family_known_gdi_session_incapable(family) || !dir_has_intact(dir) {
+    if !family_known_gdi_session_incapable(family) {
+        return;
+    }
+    // 1.0.188: drop FS/latin orphans before settle stamp / undersized gate.
+    let _ = purge_known_incapable_fontsource_remnants(dir, family);
+    if !dir_has_intact(dir) {
         return;
     }
     if dir_has_undersized_google_static(dir, family) {
@@ -1817,11 +1822,14 @@ fn merge_unique_paths(primary: Vec<PathBuf>, extra: Vec<PathBuf>) -> Vec<PathBuf
     out
 }
 
-/// Quit watchdog budget: large enumerable sessions need more than 45s.
-/// Watchdog only: event loop must stay free. Sidecars are saved at session_end
-/// start; leftover GDI maps are Removed on next boot.
-pub fn quit_unload_budget_for(_path_count: usize) -> Duration {
-    Duration::from_secs(4)
+/// Quit watchdog budget: scales so healthy Remove can finish before exit.
+/// ~15ms/path (RemoveFontResourceExW + local GdiFlush), clamped to [12s, 180s].
+/// ~2k Activate All ≈ 31s; ~11k library ≈ 165s (under cap). Watchdog only —
+/// worker exits when session_end completes; leftovers recover on next boot.
+/// Do not restart FontCache on quit (Explorer hang risk) — prefer full Remove.
+pub fn quit_unload_budget_for(path_count: usize) -> Duration {
+    let ms = (path_count as u64).saturating_mul(15).clamp(12_000, 180_000);
+    Duration::from_millis(ms)
 }
 
 /// SCM service names to best-effort restart after Deactivate/Quit unload.
@@ -2879,8 +2887,55 @@ fn os2_fstype_restricted(path: &Path) -> bool {
     }
 }
 
+/// Shared allowlist of families known to refuse session GDI Add (Add=0) despite intact TTF.
+/// Settled / early-skip / disk `.complete` / toast-exempt / Fontsource offer — all keyed here.
+/// Append a row (+ optional FS slug override + subset plan) to extend UX without new hardcodes.
+#[derive(Clone, Copy)]
+struct KnownGdiIncapableEntry {
+    family: &'static str,
+    /// Fontsource package slug; `None` ⇒ `slug_family(family)`.
+    fs_slug: Option<&'static str>,
+    /// Subsets for opt-in Fontsource GDI offer (order = preference).
+    subsets: &'static [&'static str],
+}
+
+const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[KnownGdiIncapableEntry {
+    family: "Gidugu",
+    fs_slug: Some("gidugu"),
+    subsets: &["telugu", "latin"],
+}];
+
+fn known_gdi_incapable_entry(family: &str) -> Option<&'static KnownGdiIncapableEntry> {
+    let key = family.trim();
+    if key.is_empty() {
+        return None;
+    }
+    KNOWN_GDI_SESSION_INCAPABLE
+        .iter()
+        .find(|e| e.family.eq_ignore_ascii_case(key))
+}
+
 fn family_known_gdi_session_incapable(family: &str) -> bool {
-    family.trim().eq_ignore_ascii_case("gidugu")
+    known_gdi_incapable_entry(family).is_some()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn fontsource_gdi_offer_slug(family: &str) -> String {
+    match known_gdi_incapable_entry(family) {
+        Some(e) => e
+            .fs_slug
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| slug_family(family)),
+        None => slug_family(family),
+    }
+}
+
+const DEFAULT_FONTSOURCE_GDI_SUBSETS: &[&str] = &["latin"];
+
+fn fontsource_gdi_offer_subsets(family: &str) -> &'static [&'static str] {
+    known_gdi_incapable_entry(family)
+        .map(|e| e.subsets)
+        .unwrap_or(DEFAULT_FONTSOURCE_GDI_SUBSETS)
 }
 
 /// This-process Add=0 for a known-incapable family — Activate All must not re-stage/Add.
@@ -2911,9 +2966,13 @@ fn family_has_complete_settled(app: &AppHandle, family: &str) -> bool {
 
 /// Early-skip Activate walk/Add: known-incapable + (this-session refused OR already `.complete` settled)
 /// + intact full-size. Never claims Activated.
+/// 1.0.188: purge FS/latin remnants first so undersized offer dest cannot block skip.
 fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
     if !family_known_gdi_session_incapable(family) {
         return false;
+    }
+    for dir in family_locations(app, family) {
+        let _ = purge_known_incapable_fontsource_remnants(&dir, family);
     }
     let intact = family_has_intact(app, family);
     if !intact {
@@ -4749,7 +4808,8 @@ fn family_may_have_tiny_cjk_statics(family: &str) -> bool {
 /// Non-CJK official Google families known to land latin-subset / undersized remnants
 /// (Gidugu ~38KB vs full ~461KB). Allowlist only — never expand to all Google.
 fn family_may_have_undersized_google_statics(family: &str) -> bool {
-    family.trim().eq_ignore_ascii_case("gidugu")
+    // Same allowlist as Settled / early-skip (not a second Gidugu hardcode).
+    family_known_gdi_session_incapable(family)
 }
 
 /// Intact SFNT but tiny → almost certainly a latin-subset / undersized remnant.
@@ -5428,6 +5488,52 @@ fn fontsource_face_filename(slug: &str, subset: &str, weight: u16, style: &str) 
         "fontsource_face_filename must never emit latin-named files"
     );
     name
+}
+
+/// 1.0.188: For known-GDI-incapable folders, delete Fontsource/latin orphans that are
+/// not the intact full Google face — especially undersized `*-400-normal.ttf` written by
+/// legacy `try_fontsource_gdi_offer` (subset label "latin" → google-shaped dest). Keeps
+/// full-size Google TTFs so early-skip / Settled can succeed.
+fn purge_known_incapable_fontsource_remnants(dir: &Path, family: &str) -> usize {
+    if !family_known_gdi_session_incapable(family) {
+        return 0;
+    }
+    let slug = slug_family(family);
+    if slug.is_empty() {
+        return 0;
+    }
+    let subsets = fontsource_gdi_offer_subsets(family);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    let mut removed = 0usize;
+    for path in files {
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        let latin_named = filename_has_latin_subset(name, &slug);
+        // FS offer dest collision: google-shaped name + undersized bytes.
+        let undersized_collision =
+            is_undersized_google_static_face(&path) && is_google_face_key(name, &slug);
+        // Non-latin subset packs from allowlist plan (`gidugu-telugu-…`).
+        let subset_named = subsets.iter().any(|sub| {
+            let sub = sub.trim().to_ascii_lowercase();
+            !sub.is_empty()
+                && sub != "latin"
+                && !sub.starts_with("latin-")
+                && lower.starts_with(&format!("{slug}-{sub}-"))
+        });
+        if !(latin_named || undersized_collision || subset_named) {
+            continue;
+        }
+        if delete_font_file(&path).is_ok() {
+            removed = removed.saturating_add(1);
+        }
+    }
+    removed
 }
 
 /// Strip any leftover `*-latin-*` files (legacy Fontsource packs).
@@ -7479,8 +7585,8 @@ fn replace_tiny_cjk_static_faces(
 /// Name-heal soft-fails on locked faces (Illustrator/fontdrvhost) but returns
 /// `locked` so the UI can fail loud — never looks like silent success.
 
-/// User-opted Fontsource copy after Google GDI refuse (Gidugu-class).
-/// Downloads FS TTF, tries Add — Activated only if Add>0; else stay Settled.
+/// Allowlisted Settled affordance (1.0.188: no Fontsource download; purge remnants).
+/// Activated only if Add>0 — never from settle alone. Offer no longer fetches FS TTFs.
 #[derive(Clone, Serialize)]
 pub struct FontsourceOfferResult {
     pub family: String,
@@ -7489,12 +7595,20 @@ pub struct FontsourceOfferResult {
     pub message: String,
 }
 
-fn gidugu_fontsource_ttf_urls() -> Vec<String> {
+/// Fontsource static TTF URLs for an allowlisted known-GDI-incapable family (slug + subset plan).
+#[cfg_attr(not(test), allow(dead_code))]
+fn fontsource_gdi_offer_ttf_urls(family: &str) -> Vec<String> {
+    let slug = fontsource_gdi_offer_slug(family);
     let mut urls = Vec::new();
-    for subset in ["telugu", "latin"] {
-        urls.extend(ttf_urls("gidugu", "latest", 400, false, subset, 0));
+    for subset in fontsource_gdi_offer_subsets(family) {
+        urls.extend(ttf_urls(&slug, "latest", 400, false, subset, 0));
     }
     urls
+}
+
+#[cfg(test)]
+fn gidugu_fontsource_ttf_urls() -> Vec<String> {
+    fontsource_gdi_offer_ttf_urls("Gidugu")
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -7511,57 +7625,10 @@ pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<Fontso
     if !family_known_gdi_session_incapable(&family) {
         return Err(format!("{family} is not on the known GDI-incapable list"));
     }
-    let Some(client) = http_download_client() else {
-        return Err("network unavailable".into());
-    };
-    let dir = family_dir(&app, &family)?;
-    let _ = fs::create_dir_all(&dir);
-    let dest = dir.join("gidugu-400-normal.ttf");
-    let mut last = String::from("all Fontsource CDNs failed");
-    let mut got: Option<Vec<u8>> = None;
-    for url in gidugu_fontsource_ttf_urls() {
-        if let Some(bytes) = fetch_url_ttf(&client, &url) {
-            if bytes.len() >= 256 && ttf_magic(&bytes) {
-                got = Some(bytes);
-                break;
-            }
-            last = format!("not a usable TTF from {url}");
-        } else {
-            last = format!("fetch failed: {url}");
-        }
-    }
-    let Some(bytes) = got else {
-        stamp_known_incapable_disk_settled(&app, &family);
-        note_session_gdi_refused(&family);
-        note_settled_quiet(&family);
-        return Ok(FontsourceOfferResult {
-            family,
-            added: 0,
-            settled: true,
-            message: format!("Windows refused Google; Fontsource download failed ({last}). Still Settled."),
-        });
-    };
-    let bytes = crate::namepatch::gdi_sanitize_ttf(&bytes).unwrap_or(bytes);
-    write_font_file(&dest, &bytes)?;
-    let added = if register_family_path(&family, &dest) { 1usize } else { 0 };
-    if added > 0 {
-        session_add(&app, &[family.clone()]);
-        notify_fonts_changed();
-        #[cfg(windows)]
-        persist_activation_sidecars(&app);
-        if let Ok(mut p) = bulk().progress.lock() {
-            p.settled_names.retain(|n| !n.eq_ignore_ascii_case(&family));
-            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
-                p.ready_names.push(family.clone());
-            }
-        }
-        emit_progress(&app);
-        return Ok(FontsourceOfferResult {
-            family,
-            added,
-            settled: false,
-            message: "Fontsource copy registered — Activated this session.".into(),
-        });
+    // 1.0.188: do not download Fontsource TTFs for allowlisted families (already
+    // know Add=0 on Eric’s class of machines). Purge any prior FS remnant; Settled only.
+    for dir in family_locations(&app, &family) {
+        let _ = purge_known_incapable_fontsource_remnants(&dir, &family);
     }
     note_session_gdi_refused(&family);
     stamp_known_incapable_disk_settled(&app, &family);
@@ -7571,7 +7638,7 @@ pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<Fontso
         family,
         added: 0,
         settled: true,
-        message: "Windows refused Google and Fontsource. On disk · Settled (not Activated).".into(),
+        message: "On disk · Settled (not Activated). Fontsource download skipped for known GDI-incapable fonts.".into(),
     })
 }
 
@@ -7588,6 +7655,9 @@ pub fn repair_incomplete_families(
         for_family_dirs(&app, |dir| {
             if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
                 heal_clear_sans_expected_plan(dir, name);
+                if family_known_gdi_session_incapable(name) {
+                    let _ = purge_known_incapable_fontsource_remnants(dir, name);
+                }
             }
             verify_complete_marker(dir);
             if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
@@ -7617,6 +7687,12 @@ pub fn repair_incomplete_families(
         });
     } else {
         for family in families {
+            if family_known_gdi_session_incapable(&family) {
+                for dir in family_locations(&app, &family) {
+                    let _ = purge_known_incapable_fontsource_remnants(&dir, &family);
+                }
+                stamp_known_incapable_disk_settled(&app, &family);
+            }
             if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
                 targets.push(family);
             } else {
@@ -7705,6 +7781,10 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             .and_then(|s| s.to_str())
             .unwrap_or("font")
             .to_string();
+        // 1.0.188: purge FS remnants before Scan honesty / undersized flag.
+        if family_known_gdi_session_incapable(&name) {
+            let _ = purge_known_incapable_fontsource_remnants(dir, &name);
+        }
         let mut files = Vec::new();
         walk_font_files(dir, &mut files);
         let mut bytes = 0u64;
@@ -9451,6 +9531,67 @@ mod install_path_tests {
         assert!(is_clear_sans_family("Clear Sans"));
         assert!(family_known_gdi_session_incapable("Gidugu"));
         assert!(!family_known_gdi_session_incapable("Nunito"));
+        assert!(known_gdi_incapable_entry("gidugu").is_some());
+        assert_eq!(fontsource_gdi_offer_slug("Gidugu"), "gidugu");
+        assert_eq!(fontsource_gdi_offer_subsets("Gidugu"), &["telugu", "latin"][..]);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn known_gdi_incapable_allowlist_is_table_not_single_hardcode() {
+        // 1.0.186: shared table — Gidugu first; append rows for future bad fonts.
+        assert!(!KNOWN_GDI_SESSION_INCAPABLE.is_empty());
+        assert!(
+            KNOWN_GDI_SESSION_INCAPABLE
+                .iter()
+                .any(|e| e.family.eq_ignore_ascii_case("Gidugu")),
+            "Gidugu must remain first-class allowlist entry"
+        );
+        assert!(family_known_gdi_session_incapable("GIDUGU"));
+        assert!(!family_known_gdi_session_incapable("Roboto"));
+        let urls = fontsource_gdi_offer_ttf_urls("Gidugu");
+        assert!(urls.iter().any(|u| u.contains("gidugu") && u.contains("telugu")));
+        assert!(urls
+            .iter()
+            .any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
+        let dest = fontsource_face_filename(&fontsource_gdi_offer_slug("Gidugu"), "latin", 400, "normal");
+        assert_eq!(dest, "gidugu-400-normal.ttf");
+    }
+
+    #[test]
+    fn remnant_purge_unblocks_early_skip_for_known_incapable() {
+        // 1.0.188: full Google face + undersized FS offer dest + latin-named orphan.
+        // Purge drops remnants; undersized must not block early-skip predicate.
+        let parent = temp_family_dir("gidugu-remnant-purge-188");
+        let dir = parent.join("Gidugu");
+        fs::create_dir_all(&dir).unwrap();
+        let mut full = b"\x00\x01\x00\x00".to_vec();
+        full.resize(460988, 0);
+        fs::write(dir.join("Gidugu-Regular.ttf"), &full).unwrap();
+        let mut tiny = b"\x00\x01\x00\x00".to_vec();
+        tiny.resize(38404, 0);
+        // Legacy try_fontsource dest (subset "latin" → google-shaped name).
+        fs::write(dir.join("gidugu-400-normal.ttf"), &tiny).unwrap();
+        fs::write(dir.join("gidugu-latin-400-normal.ttf"), &tiny).unwrap();
+        fs::write(dir.join("gidugu-telugu-400-normal.ttf"), &tiny).unwrap();
+        assert!(dir_has_undersized_google_static(&dir, "Gidugu"));
+        assert!(!early_skip_after_refuse_or_settled(
+            true, true, true, true, true
+        ));
+        let n = purge_known_incapable_fontsource_remnants(&dir, "Gidugu");
+        assert!(n >= 3, "purged {n}");
+        assert!(!dir.join("gidugu-400-normal.ttf").exists());
+        assert!(!dir.join("gidugu-latin-400-normal.ttf").exists());
+        assert!(!dir.join("gidugu-telugu-400-normal.ttf").exists());
+        assert!(dir.join("Gidugu-Regular.ttf").exists(), "keep full Google face");
+        assert!(!dir_has_undersized_google_static(&dir, "Gidugu"));
+        assert!(
+            early_skip_after_refuse_or_settled(true, true, true, true, false),
+            "after purge, early-skip must succeed"
+        );
+        // Offer command must not fetch/write Fontsource TTFs (source lock below in JS).
+        assert!(fontsource_offer_activated_only_if_add(1));
+        assert!(!fontsource_offer_activated_only_if_add(0));
         let _ = fs::remove_dir_all(&parent);
     }
 
@@ -10149,12 +10290,26 @@ mod session_sidecar_tests {
 
     #[test]
     fn quit_unload_budget_clamps() {
-        // Short watchdog so the process is gone and a second launch can start.
-        // Full Remove of ~11k paths is best-effort; leftovers recover on boot.
-        assert_eq!(quit_unload_budget_for(0), Duration::from_secs(4));
-        assert_eq!(quit_unload_budget_for(100), Duration::from_secs(4));
-        assert_eq!(quit_unload_budget_for(11_000), Duration::from_secs(4));
-        assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(4));
+        // Formula: max(12s, min(180s, path_count * 15ms)).
+        // Floor covers empty/small quits; ~2k Activate All ≈ 31.5s; ~11k ≈ 165s.
+        assert_eq!(quit_unload_budget_for(0), Duration::from_secs(12));
+        assert_eq!(quit_unload_budget_for(100), Duration::from_secs(12));
+        // Eric Activate All (~2099): 2099 * 15ms = 31485ms — above floor, under cap
+        let two_k = quit_unload_budget_for(2_099);
+        assert_eq!(two_k, Duration::from_millis(31_485));
+        assert!(two_k > Duration::from_secs(12));
+        assert!(two_k < Duration::from_secs(180));
+        // ~11k library: 11_000 * 15ms = 165s — far above the old hard 4s kill
+        let eleven_k = quit_unload_budget_for(11_000);
+        assert!(
+            eleven_k > Duration::from_secs(60),
+            "11k paths must get well above floor (got {:?})",
+            eleven_k
+        );
+        assert_eq!(eleven_k, Duration::from_secs(165));
+        // Cap at 180s
+        assert_eq!(quit_unload_budget_for(12_000), Duration::from_secs(180));
+        assert_eq!(quit_unload_budget_for(500_000), Duration::from_secs(180));
     }
 
     #[test]

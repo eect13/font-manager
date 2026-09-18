@@ -1,10 +1,20 @@
-# Font Manager **1.0.184**
+# Font Manager **1.0.189**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.189.** Quit unload budget scales with path count (`15ms/path`, clamp 12s–180s) so Activate All (~2k) Remove can finish before the hung-GDI watchdog; worker exits when `session_end` completes. Documents library kept; no FontCache restart on quit. 1.0.188 remnant purge / no FS download / Settled honesty kept.
+
+**1.0.188.** Known-GDI-incapable: stop Fontsource downloads by default — calm Settled badge/toast only (no card/toast “Try Fontsource”). On Activate/Scan/Repair, purge orphan FS/latin-named faces (esp. undersized `try_fontsource` dest) so early-skip succeeds; keep full Google TTF + `.complete`. Hang root was undersized remnant → early_skip false → Add churn. 1.0.187 bar clear kept.
+
+**1.0.187.** Settled-idle download bar: `applyPayload` takes Rust `current` with `?? ""` (empty clear sticks — no stuck "Registering …" after 100%). Calm **Done** label + **Dismiss** (job → EMPTY; store settled stays) + ~16s auto-hide matching Settled toast. No GDI/allowlist/Activate/Fontsource/pool/catalog change.
+
+**1.0.186.** Shared known-GDI-incapable allowlist (Rust table + TS mirror): Settled / early-skip / `.complete` / toast-exempt / Fontsource offer for any allowlisted family — not Gidugu-only hardcodes. `try_fontsource_gdi_offer` dest + CDN URLs from family slug + subset plan (Gidugu stays first: telugu+latin). Finish toast: Settled → `toast.message` (calm), Try Fontsource passes first allowlisted settled name. Activated `poolForScope` maps locals/google once (no per-id `find`). 1.0.185 catalog regen kept.
+
+**1.0.185.** Settled Fontsource affordance honesty: card/title “try Fontsource” only for Gidugu (matches click + Rust `try_fontsource_gdi_offer`). Shipped catalogs regenerated from live Google + Fontsource (`cache: no-store`; ≈1946 + 154 exclusive). Activated `poolForScope` is O(live) — no 22k `allFonts` concat on facet/Activated ticks. 1.0.184 Google-drawer pool kept.
 
 **1.0.184.** 20k library: Google Fonts drawer does not concat/tally locals; Activated badge is `activated.length` (no 20k scan per GDI tick); `g:` lookup uses `FONT_BY_ID`. Preview subset stays CSS2 `text=` / latin — **not** pyftsubset/hb-subset on Documents TTFs (GDI needs the full font). 1.0.183 CSS LRU kept.
 

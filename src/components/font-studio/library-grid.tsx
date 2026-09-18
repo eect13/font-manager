@@ -113,7 +113,7 @@ export function LibraryGrid() {
     () => {
       const skip = hideDupIds.length ? new Set(hideDupIds) : null;
       const list = filterLibrary(
-        poolForScope(scope, localFonts, googleFonts, systemFonts),
+        poolForScope(scope, localFonts, googleFonts, systemFonts, liveIds),
         scope,
         deferredQuery,
         favorites,

@@ -1,6 +1,6 @@
 {
   "name": "font-manager",
-  "version": "1.0.184",
+  "version": "1.0.189",
   "description": "Font Manager \u2014 FontBase-style library: Fontsource, Google Fonts, uploads, session activation, glyphs, variable axes.",
   "sideEffects": false,
   "type": "module",
@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs'",
+    "regen:catalogs": "node scripts/regen-shipped-catalogs.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
     "desktop": "tauri dev",

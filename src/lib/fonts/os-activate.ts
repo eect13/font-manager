@@ -107,21 +107,17 @@ function notifyDownloadResult(
       const liveCount = useFontStore.getState().activated.length || live;
       const title = `Live ${liveCount.toLocaleString()} · Settled ${settled.toLocaleString()} · Library ${library.toLocaleString() || "—"}`;
       const settledPreview = settledNames.slice(0, 3).join(", ");
-      const offerGidugu = settledNames.some((n) => n.trim().toLowerCase() === "gidugu");
-      toast.success(title, {
+      // 1.0.188: no Try Fontsource download for allowlisted Settled — calm Open folder only.
+      const chrome = settled > 0 ? toast.message : toast.success;
+      chrome(title, {
         description: settled
           ? `${settledPreview || "Settled faces"} on disk · Windows won’t load for apps this session. Not Activated.`
           : "Files: Documents → Font Manager → FamilyName. Intact files were not fetched again.",
         duration: settled ? 16_000 : 8_000,
-        action: offerGidugu
-          ? {
-              label: "Try Fontsource",
-              onClick: () => void tryFontsourceGdiOffer("Gidugu"),
-            }
-          : {
-              label: "Open folder",
-              onClick: () => void openActivatedFolder(),
-            },
+        action: {
+          label: "Open folder",
+          onClick: () => void openActivatedFolder(),
+        },
       });
     });
   }
@@ -134,12 +130,13 @@ export type FontsourceOfferResult = {
   message: string;
 };
 
-/** Quiet Settled affordance — Activated only if Add>0. */
+/** 1.0.188: no-op Settled info — Rust no longer downloads Fontsource for allowlist. */
 export async function tryFontsourceGdiOffer(family: string): Promise<FontsourceOfferResult | null> {
   if (!(await inDesktopShell())) return null;
   try {
     const r = await tauriInvoke<FontsourceOfferResult>("try_fontsource_gdi_offer", { family });
     if (!r) return null;
+    // Activated only if Add>0 (should not happen — offer does not fetch). Keep honesty.
     if (r.added > 0) {
       const { useFontStore } = await import("./store");
       await commitReadyFamilies([r.family]);
@@ -151,14 +148,14 @@ export async function tryFontsourceGdiOffer(family: string): Promise<FontsourceO
       const { useFontStore } = await import("./store");
       useFontStore.getState().addSettledFamilies([r.family]);
       toast.message(`Settled — ${r.family}`, {
-        description: r.message || "Windows refused Google and Fontsource. On disk · not Activated.",
+        description: r.message || "On disk · Windows won’t load (not Activated). Fontsource download skipped.",
         duration: 14_000,
       });
     }
     return r;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err ?? "offer failed");
-    toast.message("Fontsource offer unavailable", { description: msg });
+    toast.message("Settled", { description: msg });
     return null;
   }
 }
@@ -611,6 +608,13 @@ function emit() {
   listeners.forEach((fn) => fn());
 }
 
+/** Clear the progress bar only — store settledFamilies stay. Settled-idle Done / auto-hide. */
+export function dismissDownloadBar() {
+  job = { ...EMPTY };
+  resetJobClock();
+  emit();
+}
+
 export function getDownloadJob(): DownloadJobState {
   return job;
 }
@@ -1043,7 +1047,8 @@ function applyPayload(p: {
     total: Math.max(p.total, p.done, job.paused || job.running ? job.total : 0),
     failed: p.failed,
     skipped,
-    current: p.current || job.current,
+    // 1.0.187: never `p.current || job.current` — Rust empty clear must stick (settled-idle hang).
+    current: p.current ?? "",
     failedNames: p.failed_names ?? [],
     failedDetails: p.failed_details ?? [],
     settledNames: p.settled_names ?? [],

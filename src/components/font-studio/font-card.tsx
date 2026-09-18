@@ -4,7 +4,6 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
-import { tryFontsourceGdiOffer } from "@/lib/fonts/os-activate";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
@@ -389,22 +388,13 @@ export const FontCard = memo(function FontCard({
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             {settled ? (
-              <button
-                type="button"
-                title="On disk · Windows won’t load. Optional: try Fontsource copy"
-                className="ml-auto inline-flex"
-                onPointerDown={isolate}
-                onClick={(e) => {
-                  isolate(e);
-                  if (font.family.trim().toLowerCase() === "gidugu") {
-                    void tryFontsourceGdiOffer(font.family);
-                  }
-                }}
+              <Badge
+                variant="outline"
+                className="ml-auto border-muted-foreground/40 text-muted-foreground"
+                title="On disk · Windows won’t load (not Activated)"
               >
-                <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
-                  Settled
-                </Badge>
-              </button>
+                Settled
+              </Badge>
             ) : font.source === "local" ? (
               <Badge variant="outline" className="ml-auto">Local</Badge>
             ) : null}
@@ -424,22 +414,13 @@ export const FontCard = memo(function FontCard({
                 </span>
               ) : null}
               {settled ? (
-                <button
-                  type="button"
-                  title="On disk · Windows won’t load. Optional: try Fontsource copy"
-                  className="inline-flex"
-                  onPointerDown={isolate}
-                  onClick={(e) => {
-                    isolate(e);
-                    if (font.family.trim().toLowerCase() === "gidugu") {
-                      void tryFontsourceGdiOffer(font.family);
-                    }
-                  }}
+                <Badge
+                  variant="outline"
+                  className="border-muted-foreground/40 text-muted-foreground"
+                  title="On disk · Windows won’t load (not Activated)"
                 >
-                  <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
-                    Settled
-                  </Badge>
-                </button>
+                  Settled
+                </Badge>
               ) : font.source === "local" ? (
                 <Badge variant="outline">Local</Badge>
               ) : null}
