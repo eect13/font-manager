@@ -614,6 +614,13 @@ function emit() {
   listeners.forEach((fn) => fn());
 }
 
+/** Clear the progress bar only — store settledFamilies stay. Settled-idle Done / auto-hide. */
+export function dismissDownloadBar() {
+  job = { ...EMPTY };
+  resetJobClock();
+  emit();
+}
+
 export function getDownloadJob(): DownloadJobState {
   return job;
 }
@@ -1046,7 +1053,8 @@ function applyPayload(p: {
     total: Math.max(p.total, p.done, job.paused || job.running ? job.total : 0),
     failed: p.failed,
     skipped,
-    current: p.current || job.current,
+    // 1.0.187: never `p.current || job.current` — Rust empty clear must stick (settled-idle hang).
+    current: p.current ?? "",
     failedNames: p.failed_names ?? [],
     failedDetails: p.failed_details ?? [],
     settledNames: p.settled_names ?? [],

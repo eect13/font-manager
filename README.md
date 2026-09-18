@@ -1,10 +1,12 @@
-# Font Manager **1.0.186**
+# Font Manager **1.0.187**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.187.** Settled-idle download bar: `applyPayload` takes Rust `current` with `?? ""` (empty clear sticks — no stuck "Registering …" after 100%). Calm **Done** label + **Dismiss** (job → EMPTY; store settled stays) + ~16s auto-hide matching Settled toast. No GDI/allowlist/Activate/Fontsource/pool/catalog change.
 
 **1.0.186.** Shared known-GDI-incapable allowlist (Rust table + TS mirror): Settled / early-skip / `.complete` / toast-exempt / Fontsource offer for any allowlisted family — not Gidugu-only hardcodes. `try_fontsource_gdi_offer` dest + CDN URLs from family slug + subset plan (Gidugu stays first: telugu+latin). Finish toast: Settled → `toast.message` (calm), Try Fontsource passes first allowlisted settled name. Activated `poolForScope` maps locals/google once (no per-id `find`). 1.0.185 catalog regen kept.
 

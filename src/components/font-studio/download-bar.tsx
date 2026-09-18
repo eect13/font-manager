@@ -3,6 +3,7 @@ import { FolderOpen, LoaderCircle, Pause, Play, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   cancelDownloadQueue,
+  dismissDownloadBar,
   getDownloadJob,
   getJobClock,
   openActivatedFolder,
@@ -32,6 +33,9 @@ function etaLabel(remaining: number, activeMs: number, processed: number): strin
   return rem ? `~${hr}h ${rem}m left` : `~${hr}h left`;
 }
 
+/** Match Settled finish toast duration (notifyDownloadResult). */
+const SETTLED_IDLE_AUTO_HIDE_MS = 16_000;
+
 export function DownloadBar() {
   const job = useSyncExternalStore(subscribeDownloadJob, getDownloadJob, getDownloadJob);
   const [, setTick] = useState(0);
@@ -56,6 +60,13 @@ export function DownloadBar() {
   }, [job.running, job.paused]);
 
   const settledIdle = (job.settledNames?.length ?? 0) > 0 && !job.running && !job.paused;
+  // 1.0.187: auto-hide settled-idle bar ~16s (same as Settled toast); store settled stays.
+  useEffect(() => {
+    if (!settledIdle) return;
+    const t = window.setTimeout(() => dismissDownloadBar(), SETTLED_IDLE_AUTO_HIDE_MS);
+    return () => window.clearTimeout(t);
+  }, [settledIdle]);
+
   if ((!job.running && !job.paused && job.mode === "idle" && !job.failedNames.length && !settledIdle) || empty) {
     holdPct.current = 0;
     return null;
@@ -66,27 +77,29 @@ export function DownloadBar() {
   if (pct > holdPct.current) holdPct.current = pct;
   const shownPct = job.paused ? Math.max(pct, holdPct.current) : pct;
   const clock = getJobClock();
-  const eta = job.paused || scanning ? "" : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
+  const eta = job.paused || scanning || settledIdle ? "" : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
   const label =
-    job.mode === "remove"
-      ? `Deactivating ${processed.toLocaleString()} / ${total.toLocaleString()}`
-      : job.failed && !job.running && !job.paused
-        ? `${job.failed.toLocaleString()} failed — retry or skip`
-        : job.paused
-          ? `Paused ${shownPct}% · ${processed.toLocaleString()} / ${total.toLocaleString()}`
-          : scanning
-            ? `Scanning Documents${total ? ` — ${total.toLocaleString()} queued` : ""}`
-            : registering && job.running
-              ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
-              : skipped && remaining === 0 && job.running
-                ? `Registering ${skipped.toLocaleString()} already on disk`
-                : skipped && job.running
-                  ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - Math.min(skipped, processed)).toLocaleString()} / ${Math.max(0, total - Math.min(skipped, total)).toLocaleString()}`
-                  : job.running
-                    ? `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`
-                    : skipped && remaining === 0
-                      ? `${skipped.toLocaleString()} already on disk`
-                      : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
+    settledIdle
+      ? "Done"
+      : job.mode === "remove"
+        ? `Deactivating ${processed.toLocaleString()} / ${total.toLocaleString()}`
+        : job.failed && !job.running && !job.paused
+          ? `${job.failed.toLocaleString()} failed — retry or skip`
+          : job.paused
+            ? `Paused ${shownPct}% · ${processed.toLocaleString()} / ${total.toLocaleString()}`
+            : scanning
+              ? `Scanning Documents${total ? ` — ${total.toLocaleString()} queued` : ""}`
+              : registering && job.running
+                ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                : skipped && remaining === 0 && job.running
+                  ? `Registering ${skipped.toLocaleString()} already on disk`
+                  : skipped && job.running
+                    ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - Math.min(skipped, processed)).toLocaleString()} / ${Math.max(0, total - Math.min(skipped, total)).toLocaleString()}`
+                    : job.running
+                      ? `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                      : skipped && remaining === 0
+                        ? `${skipped.toLocaleString()} already on disk`
+                        : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
 
   return (
     <div className="flex flex-col gap-1.5 border-b border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
@@ -94,7 +107,7 @@ export function DownloadBar() {
         {job.running && !job.paused ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" /> : null}
         <p className="min-w-0 flex-1 truncate">
           <span className="font-medium text-foreground">{label}</span>
-          {job.current && !scanning ? ` — ${job.current}` : ""}
+          {job.current && !scanning && !settledIdle ? ` — ${job.current}` : ""}
           {job.failedNames.length ? (
             <span className="block truncate text-destructive">
               Couldn’t load: {job.failedNames.slice(0, 8).join(", ")}
@@ -107,17 +120,19 @@ export function DownloadBar() {
             </span>
           ) : null}
           <span className="text-muted-foreground">
-            {job.paused
-              ? " · queue held at this percent — Resume continues, does not restart"
-              : scanning
-                ? " · checking Documents, not downloading yet"
-                : registering
-                  ? " · intact files register only — no fetch"
-                  : remaining === 0 && skipped
-                    ? " · nothing to fetch"
-                    : eta
-                      ? ` · ${eta}`
-                      : " · skip intact, download only missing or corrupt"}
+            {settledIdle
+              ? ""
+              : job.paused
+                ? " · queue held at this percent — Resume continues, does not restart"
+                : scanning
+                  ? " · checking Documents, not downloading yet"
+                  : registering
+                    ? " · intact files register only — no fetch"
+                    : remaining === 0 && skipped
+                      ? " · nothing to fetch"
+                      : eta
+                        ? ` · ${eta}`
+                        : " · skip intact, download only missing or corrupt"}
           </span>
         </p>
         <span
@@ -131,6 +146,12 @@ export function DownloadBar() {
           <FolderOpen />
           Folder
         </Button>
+        {settledIdle ? (
+          <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => dismissDownloadBar()}>
+            <X />
+            Dismiss
+          </Button>
+        ) : null}
         {job.running || job.paused ? (
           <>
             {job.mode !== "remove" ? (

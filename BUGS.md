@@ -1,5 +1,8 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.187
+- **Settled-idle bar false hang (P0):** After Activate All finished (honest Live/Library counts), bar stuck at 100% "N already on disk — Registering …" with Settled Gidugu and no Dismiss. Root: `applyPayload` used `current: p.current || job.current` so Rust’s empty clear never stuck; `settledIdle` kept the bar visible. Fix: `current: p.current ?? ""`; calm **Done** + **Dismiss** → job EMPTY (store settled stays); optional ~16s auto-hide matching Settled toast.
+
 ## Fixed in tip / 1.0.186
 - **Shared known-GDI-incapable allowlist (P0):** one Rust table (`KNOWN_GDI_SESSION_INCAPABLE`) + TS mirror (`gdi-incapable.ts`). Settled / early-skip / disk `.complete` / toast-exempt / card “Settled · try Fontsource” for **any** allowlisted family. Append a row (+ optional FS slug/subsets) for the next bad font.
 - **Toast calm Settled (P0):** `notifyDownloadResult` uses `toast.message` when `settledNames.length > 0` (not `toast.success`). “Try Fontsource” passes the first allowlisted settled family — never hardcoded `"Gidugu"`. Fail path stays `toast.error`.
