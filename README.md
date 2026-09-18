@@ -1,10 +1,12 @@
-# Font Manager **1.0.183**
+# Font Manager **1.0.184**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.184.** 20k library: Google Fonts drawer does not concat/tally locals; Activated badge is `activated.length` (no 20k scan per GDI tick); `g:` lookup uses `FONT_BY_ID`. Preview subset stays CSS2 `text=` / latin — **not** pyftsubset/hb-subset on Documents TTFs (GDI needs the full font). 1.0.183 CSS LRU kept.
 
 **1.0.183.** Google Fonts view: CSS LRU (96), CSS2 `text=` (not full Noto JP sheets), do not mark preview loaded on failed inject. Latin static on-disk uses `convertFileSrc` (Inter after Activate). CJK/VF/color still not local TTF. 1.0.182 card-preview-not-full kept.
 

@@ -1162,24 +1162,44 @@ bindAxesPersist((axes) => {
   useFontStore.setState({ previewAxes: axes });
 });
 
+export function allFonts(
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[] = GOOGLE_FONTS,
+): FontRecord[] {
+  if (!localFonts.length) return googleFonts;
+  if (!googleFonts.length) return localFonts;
+  return [...localFonts, ...googleFonts];
+}
+
+/** Narrow the array *before* filter/sort so 20k locals are not copied when viewing Google Fonts. */
+export function poolForScope(
+  scope: LibraryScope,
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[],
+  systemFonts: FontRecord[] = [],
+): FontRecord[] {
+  if (scope === "system") return systemFonts;
+  if (scope === "uploaded") return localFonts;
+  if (scope === "gfonts" || scope === "google") return googleFonts;
+  return allFonts(localFonts, googleFonts);
+}
+
 export function findFont(
   id: string,
   localFonts: FontRecord[],
   googleFonts: FontRecord[] = GOOGLE_FONTS,
 ): FontRecord | undefined {
+  if (id.startsWith("g:")) {
+    return FONT_BY_ID.get(id) ?? googleFonts.find((f) => f.id === id);
+  }
+  if (id.startsWith("s:")) {
+    return useFontStore.getState().systemFonts.find((f) => f.id === id);
+  }
   return (
     localFonts.find((f) => f.id === id) ??
     googleFonts.find((f) => f.id === id) ??
-    FONT_BY_ID.get(id) ??
-    (id.startsWith("s:") ? useFontStore.getState().systemFonts.find((f) => f.id === id) : undefined)
+    FONT_BY_ID.get(id)
   );
-}
-
-export function allFonts(
-  localFonts: FontRecord[],
-  googleFonts: FontRecord[] = GOOGLE_FONTS,
-): FontRecord[] {
-  return [...localFonts, ...googleFonts];
 }
 
 export function tagsFor(font: FontRecord, customTags: Record<string, string[]>): string[] {

@@ -27,7 +27,7 @@ import { ALL_TAGS, GOOGLE_DIRECTORY, isFontsourceOnly } from "@/lib/fonts/catalo
 import { getCatalogSyncState, subscribeCatalogSync, syncFontCatalog } from "@/lib/fonts/google-api";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
-import { allFonts, filterLibrary, tagsFor, useFontStore } from "@/lib/fonts/store";
+import { filterLibrary, poolForScope, tagsFor, useFontStore } from "@/lib/fonts/store";
 import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
 import type { FontLicense, FontRecord, LibraryFacet, LibraryScope } from "@/lib/fonts/types";
 import { CATEGORY_LABEL, CATEGORY_ORDER, LICENSE_LABEL, TAG_ORDER } from "@/lib/fonts/types";
@@ -42,6 +42,7 @@ const LICENSE_NAV: { id: FontLicense; icon: typeof Library }[] = [
 ];
 
 const KNOWN_TAGS = new Set(ALL_TAGS);
+const EMPTY_IDS: string[] = [];
 
 function tallyFonts(list: FontRecord[], customTags: Record<string, string[]>) {
   const license = { free: 0, freeware: 0, personal: 0, commercial: 0, unknown: 0 };
@@ -168,38 +169,37 @@ export function Sidebar({
   const systemFonts = useFontStore((s) => s.systemFonts);
   const systemCount = systemFonts.length;
   // Activated scope/badge = live activated[] only (never pendingActivate, never freeze).
-  const facetLiveIds = activated;
-  const counts = useMemo(() => {
-    const pool = scope === "system" ? systemFonts : allFonts(localFonts, googleFonts);
-    const liveIds = facetLiveIds;
-    const scoped = filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, "");
-    const viewed = facet
-      ? filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, facet)
-      : scoped;
-    const licenseList = facet.startsWith("license:") ? scoped : viewed;
-    const categoryList = facet.startsWith("category:") ? scoped : viewed;
-    const tagList = facet.startsWith("tag:") ? scoped : viewed;
-    const licenses = tallyFonts(licenseList, customTags);
-    const styles = tallyFonts(categoryList, customTags);
-    const tagged = tallyFonts(tagList, customTags);
-    const current = tallyFonts(viewed, customTags);
-    const on = new Set(liveIds);
+  const liveIds = scope === "activated" ? activated : EMPTY_IDS;
+  const providerCounts = useMemo(() => {
     let fontsource = 0;
     for (const font of googleFonts) {
       if (isFontsourceOnly(font)) fontsource += 1;
     }
+    return { fontsource, gfonts: GOOGLE_DIRECTORY.size };
+  }, [googleFonts]);
+  const facetCounts = useMemo(() => {
+    const pool = poolForScope(scope, localFonts, googleFonts, systemFonts);
+    const scoped = filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, "");
+    const viewed = facet
+      ? filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, facet)
+      : scoped;
+    const licenses = tallyFonts(facet.startsWith("license:") ? scoped : viewed, customTags);
+    const styles = tallyFonts(facet.startsWith("category:") ? scoped : viewed, customTags);
+    const tagged = tallyFonts(facet.startsWith("tag:") ? scoped : viewed, customTags);
+    const current = tallyFonts(viewed, customTags);
     return {
       license: licenses.license,
       category: styles.category,
       tags: tagged.tags,
       variable: current.variable,
       italic: current.italic,
-      activated: allFonts(localFonts, googleFonts).filter((font) => on.has(font.id)).length,
-      fontsource,
-      // Official fonts.google.com drawer — never GOOGLE_FONTS / Fontsource length.
-      gfonts: GOOGLE_DIRECTORY.size,
     };
-  }, [localFonts, googleFonts, systemFonts, scope, deferredQuery, facet, favorites, facetLiveIds, collections, customTags]);
+  }, [localFonts, googleFonts, systemFonts, scope, deferredQuery, facet, favorites, liveIds, collections, customTags]);
+  const counts = {
+    ...facetCounts,
+    ...providerCounts,
+    activated: activated.length,
+  };
 
   function go(next: LibraryScope) {
     setScope(next);

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { inDesktopShell, isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { primeGooglePreview } from "@/lib/fonts/loader";
 import { loadSystemFonts } from "@/lib/fonts/system-fonts";
-import { allFonts, filterLibrary, sortLibrary, useFontStore } from "@/lib/fonts/store";
+import { filterLibrary, poolForScope, sortLibrary, useFontStore } from "@/lib/fonts/store";
 import type { Collection, FontRecord } from "@/lib/fonts/types";
 
 const EMPTY_IDS: string[] = [];
@@ -113,7 +113,7 @@ export function LibraryGrid() {
     () => {
       const skip = hideDupIds.length ? new Set(hideDupIds) : null;
       const list = filterLibrary(
-        scope === "system" ? systemFonts : allFonts(localFonts, googleFonts),
+        poolForScope(scope, localFonts, googleFonts, systemFonts),
         scope,
         deferredQuery,
         favorites,

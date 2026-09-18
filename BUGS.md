@@ -1,5 +1,14 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.184
+- **20k fonts (P1):** Google/Fontsource drawers used `allFonts(local, google)` then filtered — 20k locals copied on every Activate tick. `poolForScope` passes google-only / local-only. Sidebar does not re-tally 20k when `activated[]` grows (`facetCounts` independent; badge = `activated.length`). `findFont("g:…")` is `FONT_BY_ID` (O(1)).
+- **Subsetter (wont-do on GDI):** pyftsubset / hb-subset / subset-font / allsorts are for **preview/web**. Documents + `AddFontResourceExW` stay **full** TTFs (Word/Adobe). Preview already uses Google CSS2 `text=` + latin woff2 (1.0.183). Do not wasm-subset 20k files.
+
+## Still open
+- Persist `localFonts` in localStorage will quota-crash around several thousand uploads (IDB catalog later).
+- Glyphs cmap of UnifontEX over IPC (cap later).
+- GDI Activate All of 20k is serialized by Windows.
+
 ## Fixed in tip / 1.0.183
 - **CSSOM leak / blank Google cards (P0):** 1.0.182 stopped VF-full on cards but (1) never evicted `<style>` tags, (2) still injected full CSS2 (Noto JP = 100+ faces), (3) marked `loadedGoogle` even when inject failed, (4) refused **all** local preview so desktop Inter needed the network. CSS LRU 96; preview CSS2 is `wght@400&text=`; mark loaded only if `familyLoaded`; latin static + on-disk `convertFileSrc` (never CJK/VF/Unifont TTF). No GDI/skip-Add change.
 
@@ -175,5 +184,5 @@
 
 ## Notes
 
-- Tip is 1.0.183 (unreleased pack — ask before NSIS).
+- Tip is 1.0.184 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).
