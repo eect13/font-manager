@@ -160,7 +160,7 @@ export async function pickWatchFolder(): Promise<
     directory: true,
     multiple: false,
     recursive: true,
-    title: "Watch a folder of fonts",
+    title: "Watch a folder in place (Dropbox, Drive, Downloads…)",
   });
   if (!dir || Array.isArray(dir)) return null;
   const blocked = forbiddenWatchReason(dir);

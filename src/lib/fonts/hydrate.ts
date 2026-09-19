@@ -16,6 +16,7 @@ import {
   bindDownloadEvents,
 } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
+import { applyDesktopPrefs } from "@/lib/desktop/prefs";
 import { startWatchPolling } from "./watch-folder";
 import { loadSystemFonts } from "./system-fonts";
 import { hydrateLiveAxes } from "./live-axes";
@@ -127,6 +128,7 @@ export function useHydrateFonts() {
       if (locals !== fromLs) useFontStore.setState({ localFonts: locals });
       if (locals.length) void saveLocalFontsMeta(locals);
       hydrateLiveAxes(useFontStore.getState().previewAxes);
+      void applyDesktopPrefs(useFontStore.getState().desktopPrefs);
       const { localFonts, setHydrated, googleFonts, collections, scope } = useFontStore.getState();
       if (
         typeof scope === "string" &&

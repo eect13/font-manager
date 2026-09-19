@@ -170,6 +170,7 @@ fn cmap_from_face(face: &Face<'_>) -> Vec<CmapGlyph> {
     let Some(cmap) = face.tables().cmap else {
         return Vec::new();
     };
+    const CMAP_GLYPH_CAP: usize = 8192;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for subtable in cmap.subtables {
@@ -177,6 +178,9 @@ fn cmap_from_face(face: &Face<'_>) -> Vec<CmapGlyph> {
             continue;
         }
         subtable.codepoints(|cp| {
+            if out.len() >= CMAP_GLYPH_CAP {
+                return;
+            }
             if cp < 0x20 || (0xD800..=0xDFFF).contains(&cp) {
                 return;
             }
@@ -190,6 +194,9 @@ fn cmap_from_face(face: &Face<'_>) -> Vec<CmapGlyph> {
                 name: String::new(),
             });
         });
+        if out.len() >= CMAP_GLYPH_CAP {
+            break;
+        }
     }
     out.sort_by_key(|g| g.cp);
     out

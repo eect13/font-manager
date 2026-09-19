@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { FolderOpen, Heart, Power, Trash2, X } from "lucide-react";
+import { FolderOpen, Heart, Power, Trash2, X, Copy } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,8 +25,10 @@ import { colorKindLabel, colorKindOf, windowsColorNote } from "@/lib/fonts/color
 import { DEFAULT_ON, FEATURE_DEMO, featureStyle, labelForFeature, togglesFor } from "@/lib/fonts/ot-features";
 import { openActivatedFolder, deleteFontFiles } from "@/lib/fonts/os-activate";
 import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
+import { copyText } from "@/lib/copy-text";
 import { idbGet, previewCacheId } from "@/lib/fonts/idb";
 
+const WATERFALL = [12, 16, 24, 36, 48, 72];
 const GLYPHS =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 &@$#%?!()[]{}";
 
@@ -52,6 +54,7 @@ export function FontInspector() {
   const preview = useFontStore((s) => s.preview);
   const storedAxes = useLiveAxes(selectedId);
   const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
+  const setFeaturePref = useFontStore((s) => s.setFeaturePref);
 
   const font = selectedId ? findFont(selectedId, localFonts, googleFonts) : undefined;
   const [tagDraft, setTagDraft] = useState("");
@@ -64,7 +67,7 @@ export function FontInspector() {
     if (!font) return;
     void loadFont(font, "full");
     setItalicOn(isItalicOnlyFace(font) || (hasRealItalic(font) && Boolean(preview.italic)));
-    setFeatures({});
+    setFeatures(useFontStore.getState().featurePrefs[font.id] ?? {});
     setTagDraft("");
     setParsedTags(font.otFeatures);
     const id = font.id;
@@ -357,7 +360,28 @@ export function FontInspector() {
               </label>
 
             <section className="space-y-2">
-              <Label>OpenType features</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label>OpenType features</Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => {
+                    const css = [
+                      `font-family: ${JSON.stringify(font.family)}, ${font.category === "mono" ? "monospace" : "sans-serif"};`,
+                      `font-feature-settings: ${featureCss.fontFeatureSettings ?? "normal"};`,
+                    ].join("\n");
+                    void copyText(css).then(
+                      () => undefined,
+                      () => undefined,
+                    );
+                  }}
+                >
+                  <Copy className="size-3.5" />
+                  Copy CSS
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">
                 {layoutTags?.length
                   ? `${layoutTags.length} GSUB/GPOS tags in this file. liga/calt/kern on by default. Toggle and watch the line below.`
@@ -380,11 +404,32 @@ export function FontInspector() {
                     </span>
                     <Switch
                       checked={features[tag] ?? DEFAULT_ON.has(tag)}
-                      onCheckedChange={(checked) =>
-                        setFeatures((prev) => ({ ...prev, [tag]: checked }))
-                      }
+                      onCheckedChange={(checked) => {
+                        setFeatures((prev) => ({ ...prev, [tag]: checked }));
+                        setFeaturePref(font.id, tag, checked);
+                      }}
                     />
                   </label>
+                ))}
+              </div>
+            </section>
+
+            <section className="space-y-2">
+              <Label>Waterfall</Label>
+              <div className="space-y-1 rounded-lg bg-paper px-3 py-2 text-ink">
+                {WATERFALL.map((size) => (
+                  <p
+                    key={size}
+                    className="fm-spec truncate leading-tight"
+                    style={{
+                      fontFamily: stack,
+                      fontWeight: weight,
+                      fontSize: size,
+                      ...featureCss,
+                    }}
+                  >
+                    {preview.sampleText || previewSample(font, "Hamburgefonstiv")}
+                  </p>
                 ))}
               </div>
             </section>
@@ -539,6 +584,9 @@ export function FontInspector() {
             </section>
 
             <section className="space-y-1 text-xs text-muted-foreground">
+              {font.fullName && font.fullName !== font.family && <p>Name · {font.fullName}</p>}
+              <p>Family · {font.family}</p>
+              {font.originPath && <p className="truncate" title={font.originPath}>Path · {font.originPath}</p>}
               {font.fileName && <p>File · {font.fileName}</p>}
               {font.fileSize ? <p>Size · {formatBytes(font.fileSize)}</p> : null}
               {font.glyphCount ? <p>Glyphs · {font.glyphCount}</p> : null}

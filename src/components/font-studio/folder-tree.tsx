@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { ChevronRight, Eye, Folder, FolderPlus, FolderSearch, Layers, Pencil, Power, Trash2 } from "lucide-react";
+import { ChevronRight, Eye, Folder, FolderPlus, FolderSearch, Layers, Package, Pencil, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +26,7 @@ import { ActivateMenuItem, DeactivateMenuItem } from "./activate-toggle";
 import { HelpTip } from "./help-tip";
 import { runFontImport } from "./import-fonts";
 import { addWatchedFolder } from "@/lib/fonts/watch-folder";
+import { exportCollectionZip } from "@/lib/fonts/export-collection";
 import { SidebarCount, SidebarOverflowMenu, sidebarMainClass } from "./sidebar-row";
 import type { Collection } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
@@ -183,7 +184,7 @@ function GroupTree({
         <HelpTip
           label={
             isFolder
-              ? "Watch a disk folder — files stay put, new fonts appear here"
+              ? "Watch Dropbox, Drive, or Downloads in place — files stay put, new fonts appear here"
               : "New collection — virtual group, files are not moved"
           }
         >
@@ -204,7 +205,7 @@ function GroupTree({
           className="mx-2.5 mb-1 w-[calc(100%-1.25rem)] rounded-md border border-dashed border-border px-2 py-2 text-left text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
         >
           {isFolder
-            ? "Watch a disk folder — files stay put, new fonts appear here."
+            ? "Watch Dropbox, Drive, or Downloads — files stay put, new fonts appear here."
             : "New collection — virtual group. Drag the grip on a card into it."}
         </button>
       )}
@@ -408,6 +409,14 @@ const GroupRow = memo(function GroupRow({
           )}
           <ActivateMenuItem ids={fontIds} label={folder.name} />
           <DeactivateMenuItem ids={fontIds} label={folder.name} />
+          <DropdownMenuItem
+            onSelect={() => {
+              void exportCollectionZip(folder.id);
+            }}
+          >
+            <Package className="size-3.5" />
+            Pack as zip
+          </DropdownMenuItem>
           {folder.watchPath ? (
             <>
               <DropdownMenuItem

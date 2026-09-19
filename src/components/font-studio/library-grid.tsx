@@ -71,10 +71,13 @@ export function LibraryGrid() {
   const collections = useFontStore((s) =>
     s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
   );
-  const systemFonts = useFontStore((s) => (s.scope === "system" ? s.systemFonts : EMPTY_FONTS));
+  const systemFonts = useFontStore((s) =>
+    s.scope === "system" || s.scope === "recent" ? s.systemFonts : EMPTY_FONTS,
+  );
   const systemBusy = useFontStore((s) => s.systemBusy);
   const hideDupIds = useFontStore((s) => (s.autoHideDuplicates ? s.duplicateHideIds : EMPTY_IDS));
   const facet = useFontStore((s) => s.facet);
+  const recentIds = useFontStore((s) => (s.scope === "recent" ? s.recentIds : EMPTY_IDS));
   const { boxRef, box } = useScroller();
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [desktopShell, setDesktopShell] = useState(isDesktopShellSync);
@@ -123,10 +126,12 @@ export function LibraryGrid() {
         collections,
         customTags,
         facet,
+        recentIds,
       );
-      return sortLibrary(skip ? list.filter((f) => !skip.has(f.id)) : list, sortMode);
+      const next = skip ? list.filter((f) => !skip.has(f.id)) : list;
+      return scope === "recent" ? next : sortLibrary(next, sortMode);
     },
-    [localFonts, googleFonts, systemFonts, scope, deferredQuery, favorites, liveIds, collections, customTags, sortMode, hideDupIds, facet],
+    [localFonts, googleFonts, systemFonts, scope, deferredQuery, favorites, liveIds, collections, customTags, sortMode, hideDupIds, facet, recentIds],
   );
 
   const inner = Math.max(280, box.width - 24);

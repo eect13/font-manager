@@ -13,6 +13,7 @@ use tauri::{
 };
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
+static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
 
 fn show_main(app: &tauri::AppHandle) {
     if QUITTING.load(Ordering::SeqCst) {
@@ -47,6 +48,36 @@ fn quit_gracefully(app: &tauri::AppHandle) {
         std::thread::sleep(budget);
         std::process::exit(0);
     });
+}
+
+#[tauri::command]
+fn set_desktop_prefs(close_to_tray: bool, start_with_windows: bool) {
+    CLOSE_TO_TRAY.store(close_to_tray, Ordering::SeqCst);
+    let _ = apply_start_with_windows(start_with_windows);
+}
+
+fn apply_start_with_windows(on: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var("APPDATA").map_err(|e| e.to_string())?;
+        let dir = std::path::PathBuf::from(appdata)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Startup");
+        let link = dir.join("Font Manager.cmd");
+        if on {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let body = format!("@echo off\r\nstart \"\" \"{}\"\r\n", exe.display());
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(&link, body).map_err(|e| e.to_string())?;
+        } else if link.exists() {
+            let _ = std::fs::remove_file(&link);
+        }
+    }
+    let _ = on;
+    Ok(())
 }
 
 fn main() {
@@ -106,6 +137,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_desktop_prefs,
             activate::activation_folder,
             activate::install_font_file,
             activate::unload_font_family,
@@ -153,6 +185,10 @@ fn main() {
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                if CLOSE_TO_TRAY.load(Ordering::SeqCst) {
+                    let _ = window.hide();
+                    return;
+                }
                 quit_gracefully(window.app_handle());
             }
         })

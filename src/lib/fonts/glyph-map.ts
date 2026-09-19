@@ -899,7 +899,9 @@ async function buildGlyphAtlas(font: FontRecord): Promise<GlyphAtlas> {
       }
     }
     if (rows) {
+      const { CMAP_GLYPH_CAP } = await import("./wasm-parse");
       entries = rows
+        .slice(0, CMAP_GLYPH_CAP)
         .filter((r) => r.cp >= 0x20 && (r.cp < 0xd800 || r.cp > 0xdfff))
         .map((r) => ({
           cp: r.cp,

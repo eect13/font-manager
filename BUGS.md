@@ -1,5 +1,17 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.197
+- **Close to tray / Start with Windows:** X can hide (GDI stays live); tray Quit still `session_end`. Startup writes `%APPDATA%\…\Startup\Font Manager.cmd`. Deactivate-on-process-exit stays on (no GDI leak after Quit).
+- **On-disk preview:** latin TTF/OTF including VF — not CJK/Unifont/color. CSS LRU 96 kept. Catalog-only still CSS2 `text=`.
+- **Watch honesty:** `originPath` skips IDB blob + Documents copy; auto-activate uses `setActivatedMany` (pending until Add>0). Nested folder tree already existed.
+- **Recent** scope (last 40 opened). Search stays an in-memory filter (`useDeferredValue`).
+- **OT toggles persist** per font; Copy CSS; inspector waterfall.
+- **Pack as zip** on collection/folder overflow (STORE zip + fonts.txt).
+- **Cmap cap 8192** (Rust + JS) so UnifontEX Glyphs does not dump 50k rows.
+- **WOFF2:** decode via `wawoff2` then existing sfnt parse (upload slider). Fail-soft stub remains if decode fails.
+- **Did not:** merge to `main` installer, NSIS attach, delete auth/pglite/PWA, Adobe auto-activate, DirectWrite/WebGPU renderer.
+- **ACL:** `try_fontsource_gdi_offer` is now in `font-activate.toml` (was invoke-registered, capability-denied).
+
 ## Fixed in tip / 1.0.196
 - **SIMD (honest):** duplicate `countByteDiffs` is Uint32 word-stride. Parse is not glyf — wasm SIMD crate wont-do. SHA-NI via SubtleCrypto.
 - **WebGPU (wont-do):** not Grok-only (WebView2 has it). Cards/glyphs stay CSS. GDI stays GDI. Custom GPU atlas would fight Chromium text on both surfaces.
@@ -54,9 +66,9 @@
 - **Subsetter (wont-do on GDI):** pyftsubset / hb-subset / subset-font / allsorts are for **preview/web**. Documents + `AddFontResourceExW` stay **full** TTFs (Word/Adobe). Preview already uses Google CSS2 `text=` + latin woff2 (1.0.183). Do not wasm-subset 20k files.
 
 ## Still open
-- Persist `localFonts` in localStorage will quota-crash around several thousand uploads (IDB catalog later).
-- Glyphs cmap of UnifontEX over IPC (cap later).
 - GDI Activate All of 20k is serialized by Windows.
+- NSIS installer: pack on Windows via `deploy.bat`; attach `*_x64-setup.exe` to the GitHub release. This Linux sandbox cannot.
+- Desktop smoke of the packed build (Inter slider stem, Variable ~567, Live 2099 + Settled Gidugu, two Power clicks, Quit Removes) — Windows only.
 
 ## Fixed in tip / 1.0.183
 - **CSSOM leak / blank Google cards (P0):** 1.0.182 stopped VF-full on cards but (1) never evicted `<style>` tags, (2) still injected full CSS2 (Noto JP = 100+ faces), (3) marked `loadedGoogle` even when inject failed, (4) refused **all** local preview so desktop Inter needed the network. CSS LRU 96; preview CSS2 is `wght@400&text=`; mark loaded only if `familyLoaded`; latin static + on-disk `convertFileSrc` (never CJK/VF/Unifont TTF). No GDI/skip-Add change.
@@ -233,5 +245,5 @@
 
 ## Notes
 
-- Tip is 1.0.196. NSIS is Windows `deploy.bat` only.
+- Tip is 1.0.197. NSIS is Windows `deploy.bat` only. `main` may still be 1.0.189 until the 197 tip is merged.
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

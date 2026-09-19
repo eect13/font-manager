@@ -366,12 +366,10 @@ export function googlePreviewCssHref(
   return `https://fonts.googleapis.com/css2?${face}&text=${googlePreviewTextQuery(font.family)}&display=swap`;
 }
 
-/** Latin static on-disk preview: convertFileSrc only. Never CJK / VF / color TTF. */
+/** Latin on-disk TTF/OTF for cards: convertFileSrc. Never CJK / Unifont / color. VF latin on disk is allowed. */
 export function googlePreviewMayUseLocalDisk(font: FontRecord) {
   return (
     font.source === "google" &&
-    !font.variable &&
-    !font.catalogVariable &&
     !isSpecialPreviewFont(font) &&
     scriptSubset(font.family) === "latin"
   );
@@ -649,10 +647,12 @@ async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
       return false;
     }
     const url = convertFileSrc(path);
+    const isVf = Boolean(font.variable || font.catalogVariable);
     const face = new FontFace(font.family, `url(${JSON.stringify(url)})`, {
       display: "swap",
       style: "normal",
-      weight: "400",
+      weight: isVf ? vfWeight(font) : "400",
+      ...(isVf ? { stretch: "50% 200%" } : {}),
     });
     await face.load();
     document.fonts.add(face);

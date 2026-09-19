@@ -1,7 +1,7 @@
 {
   "name": "font-manager",
-  "version": "1.0.196",
-  "description": "Font Manager \u2014 FontBase-style library: Fontsource, Google Fonts, uploads, session activation, glyphs, variable axes.",
+  "version": "1.0.197",
+  "description": "Font Manager — FontBase-style library: Fontsource, Google Fonts, uploads, session activation, glyphs, variable axes.",
   "sideEffects": false,
   "type": "module",
   "engines": {
@@ -79,6 +79,7 @@
     "tailwindcss": "^4.3.0",
     "tw-animate-css": "^1.3.4",
     "vaul": "^1.1.2",
+    "wawoff2": "^2.0.1",
     "zod": "^4.4.0",
     "zustand": "^5.0.0"
   },

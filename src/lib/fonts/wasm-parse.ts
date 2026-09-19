@@ -26,6 +26,8 @@
 export const PARSE_WORKER_MAX = 4;
 export const LAYOUT_IPC_MAX_BYTES = 8_000_000;
 export const CMAP_IPC_MAX_BYTES = 180_000;
+/** Glyph-map rows. UnifontEX ~50k would hitch the inspector; BMP-ish cap. */
+export const CMAP_GLYPH_CAP = 8192;
 
 export function parseWorkerCount(cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 2 : 2) {
   const n = Number(cores);

@@ -22,6 +22,7 @@ import type {
 import { DEFAULT_PREVIEW, isFacetScope } from "./types";
 import { fontLicense, licenseSearchHay, refineLicense, coerceLicense } from "./license";
 import { fontMime } from "./fs-drop";
+import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS, type DesktopPrefs } from "@/lib/desktop/prefs";
 
 
 const STORAGE_KEY = "font-manager:v1";
@@ -75,6 +76,9 @@ interface PersistedSlice {
   facet: LibraryFacet;
   previewAxes: Record<string, Record<string, number>>;
   autoHideDuplicates: boolean;
+  recentIds: string[];
+  featurePrefs: Record<string, Record<string, boolean>>;
+  desktopPrefs: DesktopPrefs;
 }
 
 interface FontState extends PersistedSlice {
@@ -116,6 +120,8 @@ interface FontState extends PersistedSlice {
   restoreActivation: (liveIds: string[], pendingIds: string[]) => void;
   selectFont: (id: string | null) => void;
   setInspectorOpen: (open: boolean) => void;
+  setFeaturePref: (fontId: string, tag: string, on: boolean) => void;
+  setDesktopPrefs: (patch: Partial<DesktopPrefs>) => void;
   setPreviewAxis: (id: string, tag: string, value: number) => void;
   setDiskFamilies: (names: string[]) => void;
   addDiskFamilies: (names: string[]) => void;
@@ -364,6 +370,9 @@ export const useFontStore = create<FontState>()(
       systemBusy: false,
       autoHideDuplicates: false,
       duplicateHideIds: [],
+      recentIds: [],
+      featurePrefs: {},
+      desktopPrefs: { ...DEFAULT_DESKTOP_PREFS },
       setHydrated: (value) => set({ hydrated: value }),
       setGoogleFonts: (fonts) =>
         set((s) => {
@@ -622,9 +631,22 @@ export const useFontStore = create<FontState>()(
         set({ ...withActivated(live), ...withPending(pending) });
       },
       selectFont: (id) =>
-        set({ selectedId: id, inspectorOpen: Boolean(id) }),
+        set((s) => ({
+          selectedId: id,
+          inspectorOpen: Boolean(id),
+          recentIds: id ? [id, ...s.recentIds.filter((x) => x !== id)].slice(0, 40) : s.recentIds,
+        })),
       setInspectorOpen: (open) =>
         set({ inspectorOpen: open, selectedId: open ? get().selectedId : null }),
+      setFeaturePref: (fontId, tag, on) =>
+        set((s) => ({
+          featurePrefs: {
+            ...s.featurePrefs,
+            [fontId]: { ...(s.featurePrefs[fontId] ?? {}), [tag]: on },
+          },
+        })),
+      setDesktopPrefs: (patch) =>
+        set((s) => ({ desktopPrefs: { ...s.desktopPrefs, ...patch } })),
       setPreviewAxis: (id, tag, value) => {
         setLiveAxis(id, tag, value);
       },
@@ -856,10 +878,12 @@ export const useFontStore = create<FontState>()(
             }
             const id = uid("l");
             existingHashes.add(parsed.checksum);
-            blobs.push({
-              id,
-              blob: new Blob([parsed.buffer], { type: fontMime(parsed.fileName) }),
-            });
+            if (!opts?.originPaths?.[i]) {
+              blobs.push({
+                id,
+                blob: new Blob([parsed.buffer], { type: fontMime(parsed.fileName) }),
+              });
+            }
             records.push({
               id,
               family: parsed.family,
@@ -957,16 +981,22 @@ export const useFontStore = create<FontState>()(
               const watchAuto =
                 Boolean(opts?.originPaths?.length) &&
                 Boolean(collections.find((c) => c.id === collectionId)?.autoActivate);
-              const activateNew = !opts?.originPaths?.length || watchAuto;
               return {
                 localFonts: [...records, ...s.localFonts],
-                ...(activateNew
+                ...(!opts?.originPaths?.length
                   ? withActivated(Array.from(new Set([...s.activated, ...newIds])))
                   : {}),
                 collections,
                 scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,
               };
             });
+            if (
+              opts?.originPaths?.length &&
+              newIds.length &&
+              get().collections.find((c) => c.id === collectionId)?.autoActivate
+            ) {
+              get().setActivatedMany(newIds, true);
+            }
             const local = get().localFonts;
             const google = get().googleFonts;
             newIds.slice(0, 2).forEach((id) => {
@@ -1054,7 +1084,7 @@ export const useFontStore = create<FontState>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 5,
+      version: 6,
       storage: createJSONStorage(() => persistStorage()),
       skipHydration: true,
       migrate: (persisted, from) => {
@@ -1071,6 +1101,10 @@ export const useFontStore = create<FontState>()(
           scope: (typeof p.scope === "string" ? p.scope : "all") as LibraryScope,
           facet: typeof p.facet === "string" ? (p.facet as LibraryFacet) : "",
           autoHideDuplicates: Boolean(p.autoHideDuplicates),
+          recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : [],
+          featurePrefs:
+            p.featurePrefs && typeof p.featurePrefs === "object" ? p.featurePrefs : {},
+          desktopPrefs: coerceDesktopPrefs(p.desktopPrefs),
         };
         if (from < 3 && isFacetScope(String(base.scope))) {
           base.facet = base.scope as LibraryFacet;
@@ -1140,6 +1174,9 @@ export const useFontStore = create<FontState>()(
           duplicateHideIds: Boolean(p.autoHideDuplicates)
             ? familyDuplicateHideIds(p.localFonts ?? current.localFonts, current.googleFonts, current.systemFonts)
             : [],
+          recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : current.recentIds,
+          featurePrefs: p.featurePrefs && typeof p.featurePrefs === "object" ? p.featurePrefs : current.featurePrefs,
+          desktopPrefs: coerceDesktopPrefs(p.desktopPrefs ?? current.desktopPrefs),
         };
       },
       partialize: (s): PersistedSlice => ({
@@ -1155,6 +1192,9 @@ export const useFontStore = create<FontState>()(
         scope: s.scope,
         facet: s.facet,
         autoHideDuplicates: s.autoHideDuplicates,
+        recentIds: s.recentIds,
+        featurePrefs: s.featurePrefs,
+        desktopPrefs: s.desktopPrefs,
       }),
     },
   ),
@@ -1188,6 +1228,7 @@ export function poolForScope(
   if (scope === "system") return systemFonts;
   if (scope === "uploaded") return localFonts;
   if (scope === "gfonts" || scope === "google") return googleFonts;
+  if (scope === "recent") return allFonts(localFonts, googleFonts).concat(systemFonts);
   // Activated drawer/facet: O(live), never allFonts(~22k) on every GDI tick.
   if (scope === "activated") {
     if (!liveIds.length) return [];
@@ -1421,6 +1462,7 @@ export function matchesQuery(
   const tokens = q.split(/\s+/);
   const hay = [
     font.family,
+    font.fullName ?? "",
     font.source,
     font.category,
     ...tagsFor(font, customTags),
@@ -1454,6 +1496,7 @@ export function filterLibrary(
   collections: Collection[],
   customTags: Record<string, string[]>,
   facet: LibraryFacet | string = "",
+  recentIds: readonly string[] = [],
 ): FontRecord[] {
   let list = fonts;
   const where = isFacetScope(scope) ? "all" : scope;
@@ -1464,6 +1507,10 @@ export function filterLibrary(
     const fav = new Set(favorites);
     list = list.filter((f) => fav.has(f.id));
   } else if (where === "uploaded") list = list.filter((f) => f.source === "local");
+  else if (where === "recent") {
+    const byId = new Map(list.map((f) => [f.id, f]));
+    list = recentIds.map((id) => byId.get(id)).filter((f): f is FontRecord => Boolean(f));
+  }
   else if (where === "google") list = list.filter(isFontsourceOnly);
   else if (where === "gfonts") list = list.filter(isGoogleCatalog);
   else if (where === "system") {

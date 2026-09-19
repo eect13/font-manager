@@ -1,7 +1,7 @@
 /** Desktop Rust parser (ttf-parser + sha2). Web keeps sfnt.ts / SubtleCrypto.
  *  Pass Uint8Array — never Array.from (JSON-boxes every byte). */
 
-import { shouldUseIpcCmap, shouldUseIpcLayout } from "./wasm-parse";
+import { CMAP_GLYPH_CAP, shouldUseIpcCmap, shouldUseIpcLayout } from "./wasm-parse";
 
 export type NativeGlyph = { cp: number; gid: number; name: string };
 export type NativeAxis = { tag: string; name: string; min: number; max: number; def: number };
@@ -27,7 +27,8 @@ function bytesArg(buffer: ArrayBuffer | Uint8Array) {
 }
 
 export async function nativeFamilyCmap(family: string): Promise<NativeGlyph[] | null> {
-  return invoke<NativeGlyph[]>("parse_family_cmap", { family });
+  const rows = await invoke<NativeGlyph[]>("parse_family_cmap", { family });
+  return rows ? rows.slice(0, CMAP_GLYPH_CAP) : null;
 }
 
 export async function nativeFamilyLayout(family: string): Promise<NativeLayout | null> {
@@ -55,7 +56,7 @@ export async function nativeLayoutsFromBytes(buffer: ArrayBuffer): Promise<Nativ
 export async function nativeCmapFromBytes(buffer: ArrayBuffer): Promise<NativeGlyph[] | null> {
   if (!shouldUseIpcCmap(buffer.byteLength)) return null;
   const rows = await invoke<NativeGlyph[]>("parse_font_cmap", { bytes: bytesArg(buffer) });
-  return rows?.length ? rows : null;
+  return rows?.length ? rows.slice(0, CMAP_GLYPH_CAP) : null;
 }
 
 export async function nativeHashBytes(buffer: ArrayBuffer): Promise<string | null> {

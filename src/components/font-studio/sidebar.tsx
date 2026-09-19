@@ -1,4 +1,5 @@
 import {
+  Clock,
   BadgeCheck,
   Briefcase,
   CircleHelp,
@@ -155,6 +156,8 @@ export function Sidebar({
   const facet = useFontStore((s) => s.facet);
   const setFacet = useFontStore((s) => s.setFacet);
   const favoriteCount = useFontStore((s) => s.favorites.length);
+  const recentCount = useFontStore((s) => s.recentIds.length);
+  const recentIds = useFontStore((s) => s.recentIds);
   const activated = useFontStore((s) => s.activated);
   const settledCount = useFontStore((s) => s.settledFamilies.length);
   const favorites = useFontStore((s) => s.favorites);
@@ -179,9 +182,9 @@ export function Sidebar({
   const facetCounts = useMemo(() => {
     const skipLocals = scope === "gfonts" || scope === "google" || scope === "system";
     const pool = poolForScope(scope, skipLocals ? [] : localFonts, googleFonts, systemFonts, liveIds);
-    const scoped = filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, "");
+    const scoped = filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, "", recentIds);
     const viewed = facet
-      ? filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, facet)
+      ? filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, facet, recentIds)
       : scoped;
     const licenses = tallyFonts(facet.startsWith("license:") ? scoped : viewed, customTags);
     const styles = tallyFonts(facet.startsWith("category:") ? scoped : viewed, customTags);
@@ -194,7 +197,7 @@ export function Sidebar({
       variable: current.variable,
       italic: current.italic,
     };
-  }, [localFonts, googleFonts, systemFonts, scope, deferredQuery, facet, favorites, liveIds, collections, customTags]);
+  }, [localFonts, googleFonts, systemFonts, scope, deferredQuery, facet, favorites, liveIds, collections, customTags, recentIds]);
   const counts = {
     ...facetCounts,
     ...providerCounts,
@@ -251,6 +254,14 @@ export function Sidebar({
               label="Favorites"
               count={favoriteCount}
               mainProps={{ "aria-label": "Favorites" }}
+            />
+            <SidebarRow
+              active={scope === "recent"}
+              onClick={() => go("recent")}
+              icon={<Clock className="size-4 shrink-0" />}
+              label="Recent"
+              count={recentCount}
+              mainProps={{ "aria-label": "Recent" }}
             />
             {counts.variable > 0 ? (
               <SidebarRow

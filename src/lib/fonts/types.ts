@@ -13,6 +13,7 @@ export type LibraryScope =
   | "google"
   | "gfonts"
   | "system"
+  | "recent"
   | `collection:${string}`
   | `category:${FontCategory}`
   | `tag:${string}`
