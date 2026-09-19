@@ -41,7 +41,7 @@ test("close-to-tray + startup prefs", () => {
 
 test("watch import skips IDB when originPath; auto-activate uses setActivatedMany", () => {
   const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
-  assert.match(store, /if \(!opts\?\.originPaths\?\.\[i\]\) \{/);
+  assert.match(store, /if \(!originSlice\?\.\[i\]\) \{/);
   assert.match(store, /setActivatedMany\(newIds, true\)/);
   assert.match(store, /where === "recent"/);
 });
@@ -50,7 +50,6 @@ test("collection zip + inspector waterfall + desktop settings", () => {
   const tree = readFileSync(join(root, "src/components/font-studio/folder-tree.tsx"), "utf8");
   assert.match(tree, /exportCollectionZip/);
   const inspector = readFileSync(join(root, "src/components/font-studio/font-inspector.tsx"), "utf8");
-  assert.match(inspector, /WATERFALL/);
   assert.match(inspector, /setFeaturePref/);
   const shell = readFileSync(join(root, "src/components/font-studio/app-shell.tsx"), "utf8");
   assert.match(shell, /DesktopSettings/);

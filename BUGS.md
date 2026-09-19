@@ -1,5 +1,46 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.202
+- **Inter is a fixture.** Not skipped for size. Figtree is wght-only (STAT 8 values, no opsz, no Thin); Inter is opsz+wght fvar plus a STAT-only `ital` axis and format-3 linked Regular/Bold (17 values, Thin 100). One family would bake the wrong STAT shape into tests.
+- **STAT subtables:** parsed in tests (ttf-parser `AxisValueSubtable` Format1/3 on Inter; synthetic Format2 range walker in JS). Production still does **not** call `subtables()` or `subtable_for_axis`. ttf-parser 0.25 Format2 skip-on-match is inverted (`==` continue vs fmt1/3 `!=`); we iterate `subtables()` ourselves. Format 2 `value()` is None — ranges need `nominal_value`. Unknown format **stops** the iterator. Do not chip STAT values (fvar instances already list Regular/Bold).
+- **Indexer cargo tests without WebKitGTK:** `tests/statcheck` is ttf-parser only. The Tauri app crate still links a WebView (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) — that is not “Windows-only”. This sandbox cannot apt-install GTK, so full desktop `cargo test` fails here on Linux too.
+- **Font testing frameworks:** Fontspector (Rust, skrifa; successor to Font Bakery) is foundry QA, not an app runtime. ttf-parser is maintenance-mode; skrifa later, not this tip. Did not add fontspector/fontbakery/skrifa.
+- **Did not:** wire STAT values into sliders, fontbakery/fontspector in the app, rayon index, harfbuzz, NSIS here, skrifa swap.
+
+## Later (not a bug)
+- **skrifa / read-fonts:** Google Fonts’ active OpenType stack. Parses STAT formats 1–4 as typed `AxisValueFormatN` (linked value + elidable flags without ttf-parser’s Format2 skip-on-match). Also named instances, variation metrics, COLR. Heavier than ttf-parser (not zero-alloc). ttf-parser is maintenance-mode; switch the *indexer* later if we need STAT ranges or COLR — not a GDI/Activate change. Fontspector already uses skrifa; still not an app dep.
+- **ttf-parser Format2 lookup:** inverted skip in 0.25 `subtable_for_axis`. Unused. Do not “fix” by calling it. If we ever need format 2 labels, iterate `subtables()` or use skrifa.
+
+## Fixed in tip / 1.0.201
+- **STAT on the Rust axis path:** ttf-parser `Face.tables().stat.axes` names overlay fvar when the fvar name is empty or equal to the tag. Same rule as JS `readStatAxisNames`. Axis *value* tables (Regular/Bold, elidable, linkedValue, format 4) stay unread — fvar instances already chip those.
+- **Collection indexing:** TTC/OTC still walks every face (`all_faces` / `parseSfntCollection`). Fixture `two-face.ttc` proves 2 families, not a source grep.
+- **Tests open real bytes:** Figtree VF (Google OFL, STAT+fvar), synthetic overlay TTF (opsz fvar name is the tag → STAT “Optical size”), two-face TTC. Cargo tests `include_bytes!` the same files. Did **not** rayon the indexer.
+- **Did not:** harfbuzz-wasm, keep-live-after-Quit, Adobe plugins, NSIS in this sandbox, STAT value tables.
+
+## Fixed in tip / 1.0.200
+- **Blank/wrong cards until select:** CSS2 `text=` was `Hamburgefonstiv`, so the pangram had missing glyphs. Unique pangram letters; cache `css:vf3:`. Visible cards pin CSS so LRU does not evict them; specimen paints immediately (no opacity-0). Catalog VF (`catalogVariable`, e.g. 42dot Sans) uses CSS2 `wght@min..max` + fontsource-variable even while the Variable *badge* is still disk-only. CSS fetch times out at 4.5s so one hung jsDelivr does not leave a blank card. Google CSS2 injects as `<link>` (no JS CORS) and waits for `onload` + `document.fonts` (~900ms) before treating the card as loaded; specimens stay at 80% until that face is actually there, then re-fit.
+- **Inspector cutoff:** desktop panel is `md:static` in the flex row (`md:inset-auto` clears overlay insets). Left nav still shrink-0. Cards reflow instead of hiding under the panel. Specimen wraps at 1.25rem. Mobile: full-screen overlay + dimmer.
+- **Redundant inspector Glyphs/Waterfall:** removed. Link to `/glyphs`. OpenType toggles stay.
+- **Watch 20k:** `index_font_paths` in Rust (ttf-parser on disk). No `File` buffers in JS. WOFF2 still JS fallback.
+- **fvar metadata:** STAT design-axis names overlay tag-only fvar names. Hidden axes skipped (not ital).
+- **Did not:** harfbuzz-wasm, keep-live-after-Quit, Adobe plugins, NSIS in this sandbox.
+
+## Fixed in tip / 1.0.199
+- **Inspector overlay:** selecting a font no longer inserts a 24rem flex sibling. Left library stays; panel is `absolute` right (`md:w-inspector`). Mobile: full overlay + dimmer. Escape closes. Grid virtualizer does not reflow on select (20k-safe).
+- **fvar 16.16:** snap min/def/max/instance coords in JS SFNT, opentype.js fallback, native ttf-parser JSON, and store patches. Integer stops (100, 400) absorb f32 dust within 2 ULPs so sliders do not show 99.999. Slider labels use `formatFvar`. Instance match epsilon is 0.51 for wght, 0.02 otherwise.
+- **SuperSearch dynamic:** chips count the current drawer in one pass (~60ms at 20k) and hide at 0 (xh/contrast gone on catalog-only). Keep the parser — do not ditch.
+- **20k uploads:** parse in waves of 256 (drop buffers after IDB); IDB puts chunks of 48. Watch-folder `originPath` still skips IDB.
+- **HarfBuzz:** wont-do. WebView2/Chromium already shapes CSS; wasm would fight that and would not AddFontResourceExW.
+- **Did not:** Adobe plugins, keep-live-after-Quit, DirectWrite/WebGPU, NSIS in this sandbox.
+
+## Fixed in tip / 1.0.198
+- **SuperSearch live:** `matchesQuery` now runs `fontMatchesSearch` / `parseSearchQuery` (OS/2 xh + PANOSE contrast + weight/width class + fvar axis overlap). Old haystack `weight:` was exact-or-any-VF; VF `weight:100` no longer matches every variable family.
+- **Metrics on import:** `importFiles` copies `parsed.metrics`. Native `FontLayout` hydrates OS/2 (upem/weight/width/xHeight/capHeight/PANOSE) so inspector/open can SuperSearch on-disk families.
+- **xh/contrast fail closed** when OS/2 is unread. Catalog-only Google still matches `weight:` / `width:` / `variable` / `wght:` / `opsz:` via catalog weights + `previewWghtAxis` / real fvar.
+- **SEARCH_PRESETS chips** (including `opsz:6-18` / `opsz:36-144`). Sibling chips in a group replace each other.
+- **Collection JSON** export/import (family names + optional favorites/tags). No account. Watched folders stay on disk.
+- **Did not:** Adobe auto-activate, team licenses, keep-live-after-Quit, DirectWrite/WebGPU, harfbuzz-wasm, NSIS in this sandbox.
+
 ## Fixed in tip / 1.0.197
 - **Close to tray / Start with Windows:** X can hide (GDI stays live); tray Quit still `session_end`. Startup writes `%APPDATA%\…\Startup\Font Manager.cmd`. Deactivate-on-process-exit stays on (no GDI leak after Quit).
 - **On-disk preview:** latin TTF/OTF including VF — not CJK/Unifont/color. CSS LRU 96 kept. Catalog-only still CSS2 `text=`.

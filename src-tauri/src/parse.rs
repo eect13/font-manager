@@ -24,10 +24,25 @@ pub struct CmapGlyph {
 pub struct FontAxisOut {
     pub tag: String,
     pub name: String,
-    pub min: f32,
-    pub max: f32,
+    pub min: f64,
+    pub max: f64,
     #[serde(rename = "def")]
-    pub def_value: f32,
+    pub def_value: f64,
+}
+
+#[derive(Serialize, Clone)]
+pub struct FontMetricsOut {
+    pub upem: u16,
+    #[serde(rename = "weightClass")]
+    pub weight_class: u16,
+    #[serde(rename = "widthClass")]
+    pub width_class: u16,
+    #[serde(rename = "xHeight", skip_serializing_if = "Option::is_none")]
+    pub x_height: Option<i16>,
+    #[serde(rename = "capHeight", skip_serializing_if = "Option::is_none")]
+    pub cap_height: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panose: Option<Vec<u8>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -38,6 +53,8 @@ pub struct FontLayout {
     pub variable: bool,
     #[serde(rename = "glyphCount")]
     pub glyph_count: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<FontMetricsOut>,
 }
 
 #[derive(Serialize, Clone)]
@@ -202,30 +219,96 @@ fn cmap_from_face(face: &Face<'_>) -> Vec<CmapGlyph> {
     out
 }
 
+fn snap_fvar(n: f32) -> f64 {
+    let x = f64::from(n);
+    if !x.is_finite() {
+        return 0.0;
+    }
+    let nearest = x.round();
+    let mag = x.abs().max(1.0);
+    let ulp = 2.0_f64.powf(mag.log2().floor() - 23.0);
+    if (x - nearest).abs() <= ulp * 2.0 {
+        return nearest;
+    }
+    (x * 65536.0).round() / 65536.0
+}
+
+fn name_by_id(face: &Face<'_>, name_id: u16) -> Option<String> {
+    for n in face.names() {
+        if n.name_id != name_id {
+            continue;
+        }
+        if let Some(s) = n.to_string() {
+            let t = s.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Design-axis names from STAT. Overlay when fvar's name is missing or just the tag.
+/// Axis *value* tables (Regular/Bold, 14pt, elidable, linkedValue, format 4) stay unread
+/// here — fvar named instances already chip those. STAT-only axes (Inter `ital`) are not
+/// fvar sliders. ttf-parser 0.25 Format2 skip-on-match in the per-axis lookup is inverted;
+/// tests walk every value table themselves. Production never reads those tables.
+fn stat_axis_names(face: &Face<'_>) -> HashMap<String, String> {
+    let Some(stat) = face.tables().stat else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for axis in stat.axes {
+        let tag = axis.tag.to_string();
+        if let Some(name) = name_by_id(face, axis.name_id) {
+            out.insert(tag, name);
+        }
+    }
+    out
+}
+
 fn axes_from_face(face: &Face<'_>) -> Vec<FontAxisOut> {
+    let stat_names = stat_axis_names(face);
     let mut axes = Vec::new();
     for axis in face.variation_axes() {
         let tag = axis.tag.to_string();
-        let mut name = tag.clone();
-        for n in face.names() {
-            if n.name_id == axis.name_id {
-                if let Some(s) = n.to_string() {
-                    if !s.trim().is_empty() {
-                        name = s;
-                        break;
-                    }
-                }
+        if axis.hidden && tag != "ital" {
+            continue;
+        }
+        let mut name = name_by_id(face, axis.name_id).unwrap_or_else(|| tag.clone());
+        if name == tag {
+            if let Some(stat) = stat_names.get(&tag) {
+                name = stat.clone();
             }
         }
         axes.push(FontAxisOut {
             tag,
             name,
-            min: axis.min_value,
-            max: axis.max_value,
-            def_value: axis.def_value,
+            min: snap_fvar(axis.min_value),
+            max: snap_fvar(axis.max_value),
+            def_value: snap_fvar(axis.def_value),
         });
     }
     axes
+}
+
+fn panose_from_face(face: &Face<'_>) -> Option<Vec<u8>> {
+    let data = face.raw_face().table(ttf_parser::Tag::from_bytes(b"OS/2"))?;
+    if data.len() < 42 {
+        return None;
+    }
+    Some(data[32..42].to_vec())
+}
+
+fn metrics_from_face(face: &Face<'_>) -> FontMetricsOut {
+    FontMetricsOut {
+        upem: face.units_per_em(),
+        weight_class: face.weight().to_number(),
+        width_class: face.width().to_number(),
+        x_height: face.x_height().filter(|n| *n > 0),
+        cap_height: face.capital_height().filter(|n| *n > 0),
+        panose: panose_from_face(face),
+    }
 }
 
 fn layout_from_face(face: &Face<'_>) -> FontLayout {
@@ -245,6 +328,7 @@ fn layout_from_face(face: &Face<'_>) -> FontLayout {
         glyph_count: face.number_of_glyphs(),
         axes,
         ot_features,
+        metrics: Some(metrics_from_face(face)),
     }
 }
 
@@ -362,6 +446,83 @@ pub fn hash_bytes(bytes: Vec<u8>) -> String {
 #[tauri::command]
 pub fn hash_font_path(path: String) -> Result<String, String> {
     hash_file(Path::new(&path))
+}
+
+#[derive(Serialize, Clone)]
+pub struct FontIndexOut {
+    pub path: String,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    #[serde(rename = "fileSize")]
+    pub file_size: u64,
+    pub family: String,
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+    pub weight: u16,
+    pub italic: bool,
+    pub variable: bool,
+    pub axes: Vec<FontAxisOut>,
+    pub metrics: Option<FontMetricsOut>,
+    pub checksum: String,
+    #[serde(rename = "glyphCount")]
+    pub glyph_count: u16,
+    #[serde(rename = "otFeatures")]
+    pub ot_features: Vec<String>,
+}
+
+fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "woff2" {
+        return Err("woff2".into());
+    }
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let file_size = meta.len();
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("font.ttf")
+        .to_string();
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let checksum = hex_sha256(&data);
+    let path_s = path.to_string_lossy().into_owned();
+    all_faces(&data, |_, face| {
+        let (family, full_name) = face_installed_names(face);
+        let layout = layout_from_face(face);
+        FontIndexOut {
+            path: path_s.clone(),
+            file_name: file_name.clone(),
+            file_size,
+            family,
+            full_name,
+            weight: face.weight().to_number(),
+            italic: face.is_italic(),
+            variable: layout.variable,
+            axes: layout.axes,
+            metrics: layout.metrics,
+            checksum: checksum.clone(),
+            glyph_count: layout.glyph_count,
+            ot_features: layout.ot_features,
+        }
+    })
+}
+
+/// Watch-folder / 20k local: parse on disk, no File bytes into JS. WOFF2 skipped.
+/// Sequential per path — JS already batches 256-path waves. Do not rayon without a profiler.
+#[tauri::command]
+pub fn index_font_paths(paths: Vec<String>) -> Vec<FontIndexOut> {
+    let mut out = Vec::new();
+    for path in paths {
+        let p = Path::new(&path);
+        match index_one_path(p) {
+            Ok(mut faces) => out.append(&mut faces),
+            Err(_) => continue,
+        }
+    }
+    out
 }
 
 #[tauri::command]
@@ -562,4 +723,98 @@ pub fn open_system_fonts_folder() -> Result<String, String> {
         let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
     }
     Ok(dir.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stat_overlays_tag_only_fvar_names() {
+        let bytes = include_bytes!("../../tests/fixtures/stat-overlay.ttf");
+        let face = Face::parse(bytes, 0).expect("overlay ttf");
+        assert!(face.tables().stat.is_some(), "STAT table present");
+        let axes = axes_from_face(&face);
+        let opsz = axes.iter().find(|a| a.tag == "opsz").expect("opsz");
+        assert_eq!(opsz.name, "Optical size");
+        assert_eq!(opsz.min, 8.0);
+        assert_eq!(opsz.max, 144.0);
+        let wght = axes.iter().find(|a| a.tag == "wght").expect("wght");
+        assert_eq!(wght.name, "Weight");
+        assert_eq!(wght.min, 100.0);
+        assert_eq!(wght.max, 900.0);
+    }
+
+    #[test]
+    fn figtree_real_vf_bytes() {
+        let bytes = include_bytes!("../../tests/fixtures/Figtree-wght.ttf");
+        let face = Face::parse(bytes, 0).expect("Figtree");
+        let stat = face.tables().stat.expect("STAT");
+        assert_eq!(stat.axes.len(), 2, "wght + STAT-only ital — not Inter's opsz+wght+ital");
+        assert_eq!(stat.subtables().count(), 8);
+        let axes = axes_from_face(&face);
+        let wght = axes.iter().find(|a| a.tag == "wght").expect("wght");
+        assert_eq!(wght.name, "Weight");
+        assert!(wght.min <= 300.0, "{}", wght.min);
+        assert!(wght.max >= 900.0, "{}", wght.max);
+        let (family, _) = face_installed_names(&face);
+        assert_eq!(family, "Figtree");
+    }
+
+    #[test]
+    fn inter_real_vf_bytes_not_figtree_shaped() {
+        let bytes = include_bytes!("../../tests/fixtures/Inter-opsz-wght.ttf");
+        let face = Face::parse(bytes, 0).expect("Inter");
+        let stat = face.tables().stat.expect("STAT");
+        assert_eq!(stat.axes.len(), 3);
+        let tags: Vec<String> = stat.axes.into_iter().map(|a| a.tag.to_string()).collect();
+        assert_eq!(tags, ["opsz", "wght", "ital"]);
+        let mut n1 = 0u16;
+        let mut n2 = 0u16;
+        let mut n3 = 0u16;
+        let mut n4 = 0u16;
+        let mut regular_linked = None;
+        let mut roman_linked = None;
+        for sub in stat.subtables() {
+            match sub {
+                ttf_parser::stat::AxisValueSubtable::Format1(_) => n1 += 1,
+                ttf_parser::stat::AxisValueSubtable::Format2(_) => n2 += 1,
+                ttf_parser::stat::AxisValueSubtable::Format3(f) => {
+                    n3 += 1;
+                    if (f.value.0 - 400.0).abs() < 0.01 {
+                        regular_linked = Some(f.linked_value.0);
+                    }
+                    if f.value.0.abs() < 0.01 {
+                        roman_linked = Some(f.linked_value.0);
+                    }
+                }
+                ttf_parser::stat::AxisValueSubtable::Format4(_) => n4 += 1,
+            }
+        }
+        assert_eq!((n1, n2, n3, n4), (15, 0, 2, 0), "Inter has no format 2/4");
+        assert_eq!(regular_linked, Some(700.0));
+        assert_eq!(roman_linked, Some(1.0));
+        let axes = axes_from_face(&face);
+        assert!(axes.iter().any(|a| a.tag == "opsz"));
+        assert!(axes.iter().any(|a| a.tag == "wght"));
+        assert!(
+            !axes.iter().any(|a| a.tag == "ital"),
+            "STAT-only ital is the italic companion, not an fvar slider"
+        );
+        let (family, _) = face_installed_names(&face);
+        assert_eq!(family, "Inter");
+    }
+
+    #[test]
+    fn ttc_indexes_every_face() {
+        let bytes = include_bytes!("../../tests/fixtures/two-face.ttc");
+        let dir = std::env::temp_dir();
+        let path = dir.join("fm-two-face.ttc");
+        std::fs::write(&path, bytes).expect("write ttc");
+        let rows = index_one_path(&path).expect("index ttc");
+        let names: Vec<String> = rows.iter().map(|r| r.family.clone()).collect();
+        assert_eq!(rows.len(), 2, "{names:?}");
+        assert!(names.iter().any(|n| n == "Alpha"), "{names:?}");
+        assert!(names.iter().any(|n| n == "Beta"), "{names:?}");
+    }
 }

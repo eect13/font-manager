@@ -1,11 +1,12 @@
 import { classifyLicenseText } from "./license";
 import { inferLocalStyle } from "./style-tags";
 import { detectColorTables, primaryColorKind, type ColorKind } from "./color-font";
-import type { FontCategory, FontLicense } from "./types";
-import type { FontAxis } from "./axes";
+import type { FontCategory, FontLicense, FontMetrics } from "./types";
+import { snapCoords, snapFvar, type FontAxis } from "./axes";
 import { tagsFromLayoutTables } from "./ot-features";
 import { parseSfntCollection, sniffFontFormat, type SfntFace } from "./sfnt";
 import { sha256Hex } from "./hash";
+import { metricsFromTables } from "./metrics";
 
 export interface ParsedLocalFont {
   family: string;
@@ -29,6 +30,7 @@ export interface ParsedLocalFont {
   otFeatures: string[];
   instances: { name: string; coords: Record<string, number> }[];
   varStorage: string;
+  metrics?: FontMetrics;
 }
 
 function guessWeight(subfamily: string, usWeight?: number): number {
@@ -140,9 +142,9 @@ function readFvar(font: OpenTypeFont): FontAxis[] {
       return {
         tag,
         name: name || tag,
-        min: axis.minValue as number,
-        max: axis.maxValue as number,
-        def: (axis.defaultValue as number) ?? axis.minValue ?? 0,
+        min: snapFvar(axis.minValue as number),
+        max: snapFvar(axis.maxValue as number),
+        def: snapFvar((axis.defaultValue as number) ?? axis.minValue ?? 0),
       };
     });
 }
@@ -174,7 +176,7 @@ function readInstances(font: OpenTypeFont): { name: string; coords: Record<strin
   return fvar.instances
     .map((inst) => {
       const coords = inst.coordinates ?? inst.coords ?? {};
-      return { name: flattenInstanceName(inst.name), coords };
+      return { name: flattenInstanceName(inst.name), coords: snapCoords(coords) };
     })
     .filter((inst) => inst.name && Object.keys(inst.coords).length);
 }
@@ -313,6 +315,7 @@ function finishParsed(
     otFeatures: string[];
     varStorage: string;
     buffer: ArrayBuffer;
+    metrics?: FontMetrics;
   },
   fileName: string,
   fileSize: number,
@@ -358,6 +361,7 @@ function finishParsed(
     otFeatures: face.otFeatures,
     instances: face.instances,
     varStorage: face.varStorage,
+    metrics: face.metrics,
   };
 }
 
@@ -381,6 +385,7 @@ function fromSfntFace(face: SfntFace, fileName: string, fileSize: number, checks
       otFeatures: face.otFeatures,
       varStorage: face.varStorage,
       buffer: face.buffer,
+      metrics: face.metrics,
     },
     baseName,
     fileSize,
@@ -429,8 +434,17 @@ async function parseFontFileFromBuffer(
     const subfamily =
       englishName(font, "preferredSubfamily") || englishName(font, "fontSubfamily") || "";
     const os2 = font.tables.os2 as
-      | { usWeightClass?: number; fsSelection?: number; sFamilyClass?: number; panose?: number[] }
+      | {
+          usWeightClass?: number;
+          usWidthClass?: number;
+          fsSelection?: number;
+          sFamilyClass?: number;
+          panose?: number[];
+          sxHeight?: number;
+          sCapHeight?: number;
+        }
       | undefined;
+    const head = font.tables.head as { unitsPerEm?: number } | undefined;
     const italic =
       Boolean(os2?.fsSelection && os2.fsSelection & 0x01) ||
       /italic|oblique/i.test(subfamily);
@@ -482,6 +496,14 @@ async function parseFontFileFromBuffer(
       otFeatures,
       instances,
       varStorage,
+      metrics: metricsFromTables({
+        upem: head?.unitsPerEm,
+        weightClass: os2?.usWeightClass,
+        widthClass: os2?.usWidthClass,
+        xHeight: os2?.sxHeight,
+        capHeight: os2?.sCapHeight,
+        panose: os2?.panose,
+      }),
     };
   } catch {
     const style = inferLocalStyle({ family: fallbackFamily, fileName });

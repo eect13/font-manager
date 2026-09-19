@@ -1,6 +1,9 @@
 import type { ParsedLocalFont } from "./parse-font";
 import { parseWorkerCount } from "./wasm-parse";
 
+/** Parse this many files before dropping buffers + committing to the library. 20k RAM bound. */
+export const PARSE_WAVE = 256;
+
 type Ok = { ok: true; file: File; faces: ParsedLocalFont[] };
 type Fail = { ok: false; file: File };
 export type ParsedBatchItem = Ok | Fail;

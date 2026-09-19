@@ -348,7 +348,10 @@ test("1.0.191: Activated pool prefers store googleFonts for disk VF badge honest
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
   assert.match(store, /Prefer store googleFonts \(disk VF honesty\)/);
-  assert.match(store, /isVariableCatalogFamily\(font\)/);
+  assert.match(store, /fontMatchesSearch\(font, parseSearchQuery\(query\)/);
+  const metrics = readFileSync(join(root, "src/lib/fonts/metrics.ts"), "utf8");
+  assert.match(metrics, /isWoff2OnlyVariableFamily/);
+  assert.match(metrics, /font\.variable \|\| font\.catalogVariable/);
   const sidebar = readFileSync(join(root, "src/components/font-studio/sidebar.tsx"), "utf8");
   assert.match(sidebar, /isVariableCatalogFamily\(font\)/);
   const catalog = readFileSync(join(root, "src/lib/fonts/catalog.ts"), "utf8");

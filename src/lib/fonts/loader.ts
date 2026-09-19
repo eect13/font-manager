@@ -57,6 +57,7 @@ const FACE_LRU = 384;
 /** Injected Google/Fontsource `<style>` tags — CSSOM has no FontFace LRU. */
 export const CSS_LRU = 96;
 const cssOrder: string[] = [];
+const cssPinned = new Set<string>();
 
 function evictFamily(family: string) {
   for (const face of familyFaces.get(family) ?? []) {
@@ -117,10 +118,28 @@ function latinRangeIfNeeded(source?: string) {
 const probedIds = new Set<string>();
 
 async function rememberFileAxes(font: FontRecord, buffer: ArrayBuffer): Promise<boolean | null> {
-  if (probedIds.has(font.id) && font.axes !== undefined) return font.axes.length > 0;
+  if (probedIds.has(font.id) && font.axes !== undefined && font.metrics) return font.axes.length > 0;
   try {
-    const { axesFromFamily, axesFromBuffer } = await import("./parse-font");
-    const axes = (await axesFromFamily(font.family)) ?? (await axesFromBuffer(buffer));
+    const { nativeFamilyLayout, nativeLayoutFromBytes, fontMetricsFromLayout } = await import("./native-parse");
+    const layout = (await nativeFamilyLayout(font.family)) ?? (await nativeLayoutFromBytes(buffer));
+    if (layout) {
+      probedIds.add(font.id);
+      const { useFontStore } = await import("./store");
+      const store = useFontStore.getState();
+      if (layout.axes.length) {
+        store.patchFontAxes(font.id, layout.axes);
+        font.axes = layout.axes;
+        font.variable = true;
+      }
+      const metrics = fontMetricsFromLayout(layout);
+      if (metrics) {
+        store.patchFontMetrics(font.id, metrics);
+        font.metrics = metrics;
+      }
+      return layout.axes.length > 0;
+    }
+    const { axesFromBuffer } = await import("./parse-font");
+    const axes = await axesFromBuffer(buffer);
     if (axes === null) return null;
     if (!axes.length) return false;
     probedIds.add(font.id);
@@ -160,14 +179,23 @@ async function loadGoogleFromLocal(font: FontRecord, mode: FontLoadMode = "previ
     try {
       const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
       const path = await invoke<string>("read_family_font", { family: font.family });
-      const { axesFromFamily } = await import("./parse-font");
-      const axes = await axesFromFamily(font.family);
-      if (axes?.length) {
+      const { nativeFamilyLayout, fontMetricsFromLayout } = await import("./native-parse");
+      const layout = await nativeFamilyLayout(font.family);
+      const axes = layout?.axes?.length ? layout.axes : null;
+      if (layout) {
         probedIds.add(font.id);
         const { useFontStore } = await import("./store");
-        useFontStore.getState().patchFontAxes(font.id, axes);
-        font.axes = axes;
-        font.variable = true; // real fvar from on-disk face
+        const store = useFontStore.getState();
+        if (axes) {
+          store.patchFontAxes(font.id, axes);
+          font.axes = axes;
+          font.variable = true; // real fvar from on-disk face
+        }
+        const metrics = fontMetricsFromLayout(layout);
+        if (metrics) {
+          store.patchFontMetrics(font.id, metrics);
+          font.metrics = metrics;
+        }
       }
       // Never treat catalog.variable alone as VF (42dot statics / Fontsource-other).
       const isVf = Boolean(axes?.length) || (font.variable && Boolean(font.axes?.length));
@@ -303,14 +331,29 @@ function slugFamily(family: string) {
     .replace(/^-|-$/g, "");
 }
 
+export function pinCss(key: string) {
+  cssPinned.add(key);
+  const at = cssOrder.indexOf(key);
+  if (at >= 0) {
+    cssOrder.splice(at, 1);
+    cssOrder.push(key);
+  }
+}
+
+export function unpinCss(key: string) {
+  cssPinned.delete(key);
+}
+
 function rememberCss(key: string, el: HTMLElement) {
   googleLinks.set(key, el);
   const at = cssOrder.indexOf(key);
   if (at >= 0) cssOrder.splice(at, 1);
   cssOrder.push(key);
   while (cssOrder.length > CSS_LRU) {
-    const old = cssOrder.shift();
-    if (!old || old === key) continue;
+    const old = cssOrder.find((k) => k !== key && !cssPinned.has(k));
+    if (!old) break;
+    const idx = cssOrder.indexOf(old);
+    if (idx >= 0) cssOrder.splice(idx, 1);
     const node = googleLinks.get(old);
     try {
       node?.remove();
@@ -321,6 +364,10 @@ function rememberCss(key: string, el: HTMLElement) {
   }
 }
 
+function previewIsVf(font: Pick<FontRecord, "variable" | "catalogVariable">) {
+  return Boolean(font.variable || font.catalogVariable);
+}
+
 function googleCssHref(param: string, display: string) {
   return `https://fonts.googleapis.com/css2?${param}&display=${display}`;
 }
@@ -328,8 +375,8 @@ function googleCssHref(param: string, display: string) {
 function previewFamilyParam(font: FontRecord, italic = false): string {
   const family = font.family.replace(/ /g, "+");
   if (isSpecialPreviewFont(font)) return `family=${family}`;
-  if (font.variable) {
-    const wght = axesForFont(font).find((a) => a.tag === "wght");
+  if (previewIsVf(font)) {
+    const wght = axesForFont(font).find((a) => a.tag === "wght") ?? previewWghtAxis(font);
     const min = Math.round(wght?.min ?? 100);
     const max = Math.round(wght?.max ?? 900);
     if (italic && font.italic) return `family=${family}:ital,wght@1,${min}..${max}`;
@@ -345,8 +392,19 @@ function previewFamilyParam(font: FontRecord, italic = false): string {
 /** Library CSS2: Regular 400 + `text=` of the specimen — not the full unicode-range sheet.
  *  Noto Sans JP CSS2 without text= is 100+ faces and freezes WebView2. */
 export function googlePreviewTextQuery(family: string) {
-  const sample = scriptSampleText(family) || "Hamburgefonstiv";
-  return encodeURIComponent(sample.slice(0, 48));
+  const sample = scriptSampleText(family);
+  const latin = scriptSubset(family) === "latin";
+  const pangram = "The quick brown fox jumps over the lazy dog ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789";
+  const raw = latin ? pangram : sample || pangram;
+  let out = "";
+  const seen = new Set<string>();
+  for (const ch of raw) {
+    if (seen.has(ch)) continue;
+    seen.add(ch);
+    out += ch;
+    if (out.length >= 80) break;
+  }
+  return encodeURIComponent(out || "Aa");
 }
 
 export function googlePreviewCssHref(
@@ -377,10 +435,11 @@ export function googlePreviewMayUseLocalDisk(font: FontRecord) {
 
 function catalogCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): string[] {
   const fontsource = fontsourceCssHrefs(font, mode, italic);
-  if (font.catalog === "other") return fontsource;
+  // Catalog VF (42dot, etc.) must use CSS2 wght range even when badge `variable` is still false.
   if (mode === "preview" && !isSpecialPreviewFont(font)) {
     return [googlePreviewCssHref(font, italic), ...fontsource];
   }
+  if (font.catalog === "other") return fontsource;
   const display = isSpecialPreviewFont(font) ? "block" : "swap";
   const google = googleCssHref(previewFamilyParam(font, italic), display);
   return [google, ...fontsource];
@@ -388,7 +447,7 @@ function catalogCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): 
 
 function fontsourceCssHref(font: FontRecord, mode: FontLoadMode, italic = false): string {
   const slug = slugFamily(font.family);
-  if (font.variable) {
+  if (previewIsVf(font)) {
     const face = italic ? "wght-italic.css" : "wght.css";
     return `https://cdn.jsdelivr.net/npm/@fontsource-variable/${slug}/${face}`;
   }
@@ -401,7 +460,7 @@ function fontsourceCssHref(font: FontRecord, mode: FontLoadMode, italic = false)
 function fontsourceCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): string[] {
   const slug = slugFamily(font.family);
   const primary = fontsourceCssHref(font, mode, italic);
-  if (font.variable) {
+  if (previewIsVf(font)) {
     const alt = italic
       ? `https://cdn.jsdelivr.net/fontsource/css/${slug}:vf@latest/wght-italic.css`
       : `https://cdn.jsdelivr.net/fontsource/css/${slug}:vf@latest/wght.css`;
@@ -470,6 +529,27 @@ function cssForInject(css: string, href: string, family?: string) {
   return text;
 }
 
+function injectLinkCss(href: string, key: string): Promise<void> {
+  return new Promise((resolve) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    link.dataset.fontKey = key;
+    link.dataset.href = href;
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    link.onload = done;
+    link.onerror = done;
+    window.setTimeout(done, 1800);
+    document.head.appendChild(link);
+    rememberCss(key, link);
+  });
+}
+
 function injectGoogleCss(href: string, key: string, family?: string): Promise<void> {
   if (typeof document === "undefined") return Promise.resolve();
   const existing = googleLinks.get(key);
@@ -485,14 +565,22 @@ function injectGoogleCss(href: string, key: string, family?: string): Promise<vo
     if (at >= 0) cssOrder.splice(at, 1);
   }
 
+  // Google CSS2 is already the right family + text= subset. Fetching it from JS
+  // trips CORS in the preview (console errors, blank cards). <link> uses the
+  // browser cache; wait for onload so waitForFamily sees the @font-face.
+  // Fontsource still needs fetch so we can rewrite family names.
+  if (/fonts\.googleapis\.com/i.test(href)) {
+    return injectLinkCss(href, key);
+  }
+
   return withCssSlot(async () => {
-    const cacheId = `css:vf2:${key}`;
+    const cacheId = `css:vf3:${key}`;
     try {
       const { idbGet, idbPut } = await import("./idb");
       const cached = await idbGet(cacheId);
       let text = cached ? await cached.text() : "";
       if (!text) {
-        const res = await fetch(href);
+        const res = await fetch(href, { cache: "force-cache", signal: AbortSignal.timeout(4500) });
         if (res.ok) text = await res.text();
         if (text.length > 80 && text.length < 400_000) {
           text = cssForInject(text, href, family);
@@ -511,8 +599,9 @@ function injectGoogleCss(href: string, key: string, family?: string): Promise<vo
         return;
       }
     } catch {
-      /* network / idb */
+      /* network / idb / CORS */
     }
+    injectLinkCss(href, key);
   });
 }
 
@@ -629,8 +718,6 @@ export function googlePreviewIsCssOnly(mode: FontLoadMode, special: boolean) {
 export function primeGooglePreviewAllows(font: FontRecord) {
   return (
     font.source === "google" &&
-    font.catalog !== "other" &&
-    !font.variable &&
     !isSpecialPreviewFont(font) &&
     scriptSubset(font.family) === "latin"
   );
@@ -674,7 +761,8 @@ function ensureCatalogCss(font: FontRecord) {
 export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview"): Promise<void> {
   if (font.source !== "google") return Promise.resolve();
   const have = loadedGoogle.get(font.id);
-  if (have === "full" || have === mode) return Promise.resolve();
+  if (have === "full") return Promise.resolve();
+  if (have === mode && (mode !== "preview" || googleLinks.has(`cover:${font.id}`))) return Promise.resolve();
   const gate = `${font.id}:${mode}`;
   const pending = inflight.get(gate);
   if (pending) return pending;
@@ -694,7 +782,7 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
       let ok = false;
       for (const href of hrefs) {
         await injectGoogleCss(href, `cover:${font.id}`, font.family);
-        await waitForFamily(font.family, probe, 280);
+        await waitForFamily(font.family, probe, 900);
         if (familyLoaded(font.family, probe)) {
           ok = true;
           break;

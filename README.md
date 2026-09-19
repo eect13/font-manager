@@ -1,10 +1,20 @@
-# Font Manager **1.0.197**
+# Font Manager **1.0.202**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.202.** Inter variable TTF is a test fixture (opsz+wght fvar, STAT ital companion, format-3 Regular↔Bold, 17 values). Figtree stays as the small latin VF (8 STAT values, no opsz) so one family cannot bias STAT parsing. STAT *value* tables are read in tests only — not a second instance picker. Format 3 `linkedValue` is the Bold/Italic companion for apps (Ctrl+B), not a slider stop. ttf-parser 0.25 `subtable_for_axis` Format2 skip is inverted; tests iterate `subtables()`. Production never calls it. Indexer tests run as `tests/statcheck` (ttf-parser, no WebKitGTK). Full desktop crate test needs the OS WebView. Fontspector/Fontbakery/skrifa stay out of the app. **Ship cut:** GitHub `v1.0.202` + Vercel catalog. NSIS still Windows `deploy.bat`.
+
+**1.0.201.** Watch-folder / native layout overlays STAT *design-axis names* onto fvar when the fvar name is missing or just the tag (`tables().stat.axes` — not Regular/Bold value tables). Tests open real TTF/TTC bytes (Figtree VF, overlay fixture, two-face collection). Index stays sequential (256-path waves). NSIS still Windows `deploy.bat`.
+
+**1.0.200.** Inspector is a real column on desktop (cards reflow; left nav does not move). Mobile overlay stays. Waterfall/glyph strip removed — use Glyphs. Catalog VF cards (42dot) use CSS2 wght range without waiting for a click. CSS2 `text=` is a pangram; Google sheets load via `<link>` and cards wait for the face (not a fallback at full opacity). Watch folders index on disk via ttf-parser. STAT axis names. NSIS still Windows `deploy.bat`.
+
+**1.0.199.** Inspector overlays the grid (left library stays put — selecting a font no longer squeezes a 24rem panel into the flex row). fvar values snap to OpenType 16.16 Fixed (slider/CSS no longer show 99.999). SuperSearch chips are live counts for this drawer — xh/contrast hide until OS/2 exists. 20k uploads parse in 256-file waves and IDB-chunk 48 so RAM does not hold every TTF. **No harfbuzz-wasm** — Chromium already shapes; GDI does not. NSIS still Windows `deploy.bat`.
+
+**1.0.198.** SuperSearch: live filter uses OS/2 + head metrics and fvar axis ranges (`xh:0.52-1`, `contrast:high`, `weight:700-1000`, `wght:100-900`, `opsz:8-14`, `axis:wdth=75-100`). xh/contrast fail closed when OS/2 is unread — catalog-only Google still matches weight/width/variable/axis. Upload parse copies metrics. Desktop ttf-parser hydrates OS/2 (including PANOSE) on inspector/open. Collection JSON export/import (family names, no account). **NSIS still Windows `deploy.bat` only.**
 
 **1.0.197.** FontBase-gap: close-to-tray + Start with Windows (opt-in). On-disk latin VF cards use `convertFileSrc` (still never CJK/Unifont/color). Watch folders skip IDB copies; auto-activate queues GDI (`setActivatedMany`). Recent drawer. OpenType toggles persist. Collection **Pack as zip**. Cmap cap 8192 (UnifontEX). WOFF2 decode via wawoff2 for upload sliders. Inspector waterfall. **NSIS still Windows `deploy.bat` only** — this sandbox cannot attach a setup.exe. Merge 190–196 is the 197 tip stacked on 196.
 
@@ -96,15 +106,31 @@ The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is t
 
 ## Screenshots
 
-| Library (desktop) | System fonts on this PC |
-| --- | --- |
-| ![Library](screenshots/library.png) | ![System](screenshots/system.png) |
+**Windows app** (specimens + System drawer; this is the product):
 
-| Variable facet (on-disk VF only) | Weight / axes |
+| Library | Inspector column |
 | --- | --- |
-| ![Variable](screenshots/variable-chip.png) | ![Axes](screenshots/variable-slider.png) |
+| ![Library](screenshots/library.png) | ![Inspector](screenshots/inspector-200.png) |
 
-Captures are from the **installed desktop app** so specimens actually paint (OS faces + catalog CSS). The website preview cannot register fonts for Word. **Variable** in sort/facet/badge means an intact `*-variable-*` file is on disk — catalog flags alone never put a family in Variable.
+| System fonts on this PC | Variable + weight slider |
+| --- | --- |
+| ![System](screenshots/system.png) | ![Axes](screenshots/variable-slider.png) |
+
+| Playground | Variable facet |
+| --- | --- |
+| ![Playground](screenshots/playground.png) | ![Variable](screenshots/variable-chip.png) |
+
+**Website catalog** (CSS only — no Word/GDI). Live at [font-manager-eta.vercel.app](https://font-manager-eta.vercel.app):
+
+| Catalog | Glyphs |
+| --- | --- |
+| ![Catalog web](screenshots/catalog-web.png) | ![Glyphs web](screenshots/glyphs-web.png) |
+
+| Playground | Mobile |
+| --- | --- |
+| ![Playground web](screenshots/playground-web.png) | ![Catalog mobile](screenshots/catalog-web-mobile.png) |
+
+Captures marked Windows are from the **installed desktop app** so OS faces actually paint. The website cannot register fonts for Word. **Variable** in sort/facet/badge means an intact `*-variable-*` file is on disk — catalog flags alone never put a family in Variable.
 
 ---
 

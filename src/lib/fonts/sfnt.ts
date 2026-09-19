@@ -1,4 +1,6 @@
 /** Fast SFNT / WOFF1 / TTC reader. Skips glyph outlines (opentype.js is the fallback). */
+import { metricsFromTables, type FontMetrics } from "./metrics";
+import { snapFvar } from "./axes";
 
 export type SfntAxis = { tag: string; name: string; min: number; max: number; def: number };
 export type SfntInstance = { name: string; coords: Record<string, number> };
@@ -20,6 +22,7 @@ export type SfntFace = {
   faceIndex: number;
   faceCount: number;
   format: string;
+  metrics: FontMetrics;
 };
 
 const NAME_FAMILY = 1;
@@ -35,6 +38,10 @@ const NAME_WWS_FAMILY = 21;
 function u16(v: DataView, o: number) {
   if (o + 2 > v.byteLength) return 0;
   return v.getUint16(o, false);
+}
+function i16(v: DataView, o: number) {
+  if (o + 2 > v.byteLength) return 0;
+  return v.getInt16(o, false);
 }
 function u32(v: DataView, o: number) {
   if (o + 4 > v.byteLength) return 0;
@@ -218,15 +225,48 @@ function readName(tables: Map<string, Table>): Record<number, string> {
   return out;
 }
 
-function readOs2(tables: Map<string, Table>): { weight: number; italic: boolean } {
+function readHead(tables: Map<string, Table>): { upem: number } {
+  const table = tables.get("head");
+  if (!table || table.length < 20) return { upem: 1000 };
+  const upem = u16(viewAt(table), 18);
+  return { upem: upem >= 16 && upem <= 16384 ? upem : 1000 };
+}
+
+function readOs2(tables: Map<string, Table>): {
+  weight: number;
+  italic: boolean;
+  width: number;
+  panose?: number[];
+  xHeight?: number;
+  capHeight?: number;
+} {
   const table = tables.get("OS/2");
-  if (!table || table.length < 64) return { weight: 400, italic: false };
+  if (!table || table.length < 64) return { weight: 400, italic: false, width: 5 };
   const v = viewAt(table);
+  const version = u16(v, 0);
   const weight = u16(v, 4);
+  const width = u16(v, 6);
   const fsSelection = u16(v, 62);
+  let panose: number[] | undefined;
+  if (table.length >= 42) {
+    const bytes = sliceTable(table);
+    panose = Array.from(bytes.subarray(32, 42));
+  }
+  let xHeight: number | undefined;
+  let capHeight: number | undefined;
+  if (version >= 2 && table.length >= 90) {
+    const xh = i16(v, 86);
+    const cap = i16(v, 88);
+    if (xh > 0) xHeight = xh;
+    if (cap > 0) capHeight = cap;
+  }
   return {
-    weight: weight >= 100 && weight <= 1000 ? weight : 400,
+    weight: weight >= 1 && weight <= 1000 ? weight : 400,
     italic: Boolean(fsSelection & 0x01),
+    width: width >= 1 && width <= 9 ? width : 5,
+    panose,
+    xHeight,
+    capHeight,
   };
 }
 
@@ -258,15 +298,21 @@ function readFvar(tables: Map<string, Table>, names: Record<number, string>): {
     const o = axisOff + i * axisSize;
     if (o + 20 > bytes.length) break;
     const t = tag(bytes, o);
-    const min = fixed16(v, o + 4);
-    const def = fixed16(v, o + 8);
-    const max = fixed16(v, o + 12);
+    const min = snapFvar(fixed16(v, o + 4));
+    const def = snapFvar(fixed16(v, o + 8));
+    const max = snapFvar(fixed16(v, o + 12));
+    const flags = u16(v, o + 16);
     const nameId = u16(v, o + 18);
-    if (!t || !(max > min) && t !== "ital") continue;
+    if (!t || (!(max > min) && t !== "ital")) continue;
+    if (flags & 1 && t !== "ital") continue;
     axes.push({ tag: t, name: names[nameId] || t, min, max, def });
   }
   const instances: SfntInstance[] = [];
   const instOff = axisOff + axisCount * axisSize;
+  const statNames = readStatAxisNames(tables, names);
+  for (const axis of axes) {
+    if (statNames[axis.tag] && (!axis.name || axis.name === axis.tag)) axis.name = statNames[axis.tag]!;
+  }
   for (let i = 0; i < instCount; i += 1) {
     const o = instOff + i * (instSize || 4 + 4 + 4 * axisCount);
     if (o + 4 > bytes.length) break;
@@ -276,13 +322,33 @@ function readFvar(tables: Map<string, Table>, names: Record<number, string>): {
     if (instSize >= 8 + 4 * axisCount) p = o + 8;
     for (let a = 0; a < axes.length; a += 1) {
       if (p + 4 > bytes.length) break;
-      coords[axes[a]!.tag] = fixed16(v, p);
+      coords[axes[a]!.tag] = snapFvar(fixed16(v, p));
       p += 4;
     }
     const name = names[nameId];
     if (name && Object.keys(coords).length) instances.push({ name, coords });
   }
   return { axes, instances };
+}
+
+function readStatAxisNames(tables: Map<string, Table>, names: Record<number, string>): Record<string, string> {
+  const table = tables.get("STAT");
+  if (!table || table.length < 16) return {};
+  const bytes = sliceTable(table);
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (u16(v, 0) !== 1) return {};
+  const axisSize = u16(v, 4) || 8;
+  const axisCount = u16(v, 6);
+  const axisOffset = u32(v, 8);
+  const out: Record<string, string> = {};
+  for (let i = 0; i < axisCount; i += 1) {
+    const o = axisOffset + i * axisSize;
+    if (o + 8 > bytes.length) break;
+    const t = tag(bytes, o);
+    const name = names[u16(v, o + 4)];
+    if (t && name) out[t] = name;
+  }
+  return out;
 }
 
 function readFeatureTags(tables: Map<string, Table>, tableTag: string): string[] {
@@ -344,6 +410,7 @@ function parseFaceFromTables(
 ): SfntFace {
   const names = readName(tables);
   const os2 = readOs2(tables);
+  const head = readHead(tables);
   const { axes, instances } = readFvar(tables, names);
   const ot = Array.from(
     new Set([...readFeatureTags(tables, "GSUB"), ...readFeatureTags(tables, "GPOS")]),
@@ -370,6 +437,14 @@ function parseFaceFromTables(
     faceIndex,
     faceCount,
     format,
+    metrics: metricsFromTables({
+      upem: head.upem,
+      weightClass: os2.weight,
+      widthClass: os2.width,
+      xHeight: os2.xHeight,
+      capHeight: os2.capHeight,
+      panose: os2.panose,
+    }),
   };
 }
 
@@ -436,6 +511,7 @@ export async function parseSfntCollection(buffer: ArrayBuffer, fileName: string)
         faceIndex: 0,
         faceCount: 1,
         format,
+        metrics: metricsFromTables({}),
       },
     ];
   }

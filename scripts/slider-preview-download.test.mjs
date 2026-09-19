@@ -59,7 +59,7 @@ test("preview slider exists for catalog VF before Activate", () => {
 });
 
 test("IDB CSS cache is vf2 and inject replaces on href change", () => {
-  assert.match(loader, /css:vf2:\$\{key\}/);
+  assert.match(loader, /css:vf3:\$\{key\}/);
   assert.match(loader, /existing\?\.dataset\.href === href/);
 });
 
@@ -108,7 +108,7 @@ test("source: card slider + CSS range + no local TTF for catalog VF", () => {
   assert.match(axes, /export function previewWghtAxis/);
   assert.match(card, /previewWghtAxis\(font\)/);
   assert.match(loader, /wght@\$\{Math\.round\(span\.min\)\}\.\.\$\{Math\.round\(span\.max\)\}/);
-  assert.match(loader, /!font\.catalogVariable/);
+  assert.match(loader, /export function googlePreviewMayUseLocalDisk/);
 });
 
 test("simultaneous card Activate merges — does not wait sibling idle", () => {

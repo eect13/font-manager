@@ -4,6 +4,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   axisLabel,
   axisStep,
+  formatFvar,
   instanceMatches,
   isBinaryAxis,
   type FontAxis,
@@ -73,7 +74,7 @@ export function AxisSliders({
                 <span className="ml-1 font-mono text-[10px] uppercase text-muted-foreground">{axis.tag}</span>
               </Label>
               <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                {step < 1 ? Number(value.toFixed(1)) : Math.round(value)}
+                {formatFvar(value, step)}
               </span>
             </div>
             <Slider

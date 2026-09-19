@@ -62,11 +62,10 @@ export async function addWatchedFolder(): Promise<void> {
   const id = existing?.id ?? store.addCollection(picked.name);
   store.setCollectionWatch(id, picked.path, existing?.autoActivate ?? true);
   store.setScope(`collection:${id}`);
-  if (picked.files.length) {
-    const result = await store.importFiles(picked.files, {
+  if (picked.originPaths.length) {
+    const result = await store.importOriginPaths(picked.originPaths, {
       collectionId: id,
       collectionName: picked.name,
-      originPaths: picked.originPaths,
     });
     toast.success(`Watching ${picked.name}`, {
       description: `${result.added.toLocaleString()} typeface${result.added === 1 ? "" : "s"} stay in that folder (Dropbox/Drive/Downloads ok). Auto-activate is on.`,
@@ -89,7 +88,7 @@ export async function refreshWatchedFolders(): Promise<void> {
   if (!(await inDesktopShell())) return;
   inflight = true;
   try {
-    const { collections, localFonts, importFiles, removeLocalFont } = useFontStore.getState();
+    const { collections, localFonts, importOriginPaths, importFiles, removeLocalFont } = useFontStore.getState();
     const watched = collections.filter((c) => c.watchPath);
     if (!watched.length) return;
     const allOrigins: string[] = [];
@@ -119,13 +118,19 @@ export async function refreshWatchedFolders(): Promise<void> {
         freshPaths.push(origin);
       }
       if (freshPaths.length) {
-        const scanned = await readWatchFiles(root, freshPaths);
-        if (scanned.files.length) {
-          await importFiles(scanned.files, {
-            collectionId: folder.id,
-            collectionName: folder.name,
-            originPaths: scanned.originPaths,
-          });
+        const result = await importOriginPaths(freshPaths, {
+          collectionId: folder.id,
+          collectionName: folder.name,
+        });
+        if (!result.added && !result.duplicates) {
+          const scanned = await readWatchFiles(root, freshPaths);
+          if (scanned.files.length) {
+            await importFiles(scanned.files, {
+              collectionId: folder.id,
+              collectionName: folder.name,
+              originPaths: scanned.originPaths,
+            });
+          }
         }
       }
     }

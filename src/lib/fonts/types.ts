@@ -52,7 +52,7 @@ export interface FontRecord {
   axes?: { tag: string; name: string; min: number; max: number; def: number }[];
   /** OpenType GSUB/GPOS feature tags when parsed from the file. */
   otFeatures?: string[];
-  /** Named instances from fvar/STAT (Regular, Bold, …). */
+  /** Named instances from fvar (Regular, Bold, …). STAT value tables are not a second chip list. */
   instances?: { name: string; coords: Record<string, number> }[];
   /** gvar, CFF2, or WOFF2 wrapper. */
   varStorage?: string;
@@ -69,6 +69,21 @@ export interface FontRecord {
   colorKind?: "none" | "colrv0" | "colrv1" | "svg" | "cbdt" | "sbix";
   /** Absolute path when this face comes from a watched folder (file stays put). */
   originPath?: string;
+  /** OS/2 + head SuperSearch metrics. Missing xh/contrast = unknown (fail closed). */
+  metrics?: FontMetrics;
+}
+
+/** From OS/2 + head only — never glyf. Contrast is Latin-Text PANOSE, not a stem raster. */
+export interface FontMetrics {
+  upem: number;
+  weightClass: number;
+  widthClass: number;
+  xHeight?: number;
+  capHeight?: number;
+  /** 0–1 from Latin-Text PANOSE contrast. Missing = unknown, not zero. */
+  contrast?: number;
+  /** x-height / UPM when both exist. */
+  xh?: number;
 }
 
 export interface Collection {

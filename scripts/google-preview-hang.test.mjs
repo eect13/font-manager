@@ -14,10 +14,13 @@ test("library cards always load preview, never VF full", () => {
   assert.match(loader, /googlePreviewIsCssOnly\(mode, special\)/);
 });
 
-test("prime CSS batch is latin static only", () => {
+test("prime CSS batch is latin, not emoji/special", () => {
   assert.match(loader, /export function primeGooglePreviewAllows/);
-  assert.match(loader, /scriptSubset\(font\.family\) === "latin"/);
-  assert.match(loader, /!font\.variable/);
+  const start = loader.indexOf("export function primeGooglePreviewAllows");
+  const fn = loader.slice(start, start + 280);
+  assert.match(fn, /scriptSubset\(font\.family\) === "latin"/);
+  assert.match(fn, /!isSpecialPreviewFont/);
+  assert.doesNotMatch(fn, /font\.catalog !== "other"/);
 });
 
 test("preview CSS2 uses text= not a full family sheet", () => {

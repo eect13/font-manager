@@ -1,5 +1,5 @@
-import type { FontLicense, FontRecord } from "./types";
-import { LICENSE_LABEL, LICENSE_OPTIONS } from "./types";
+import type { FontLicense, FontRecord } from "./types.ts";
+import { LICENSE_LABEL, LICENSE_OPTIONS } from "./types.ts";
 
 export type LicenseHit = { license: FontLicense; licenseName: string };
 

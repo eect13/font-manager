@@ -52,7 +52,7 @@ test("IDB localFonts persist prefers larger catalog (20k)", () => {
 
 test("source: localFonts out of localStorage; Activated skips 20k map when google-only", () => {
   const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
-  assert.match(store, /version: 5/);
+  assert.match(store, /version: 6/);
   assert.match(store, /localFonts: \[\]/);
   assert.match(store, /const googleOnly = liveIds\.every/);
   assert.match(store, /localById\?\.get\(id\)/);

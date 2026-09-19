@@ -1,0 +1,9 @@
+[package]
+name = "statcheck"
+version = "0.1.0"
+edition = "2021"
+description = "GTK-free ttf-parser tests for STAT/fvar fixtures. Not the Tauri app."
+publish = false
+
+[dependencies]
+ttf-parser = "0.25"

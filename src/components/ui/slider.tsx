@@ -60,6 +60,7 @@ export function Slider({
         const n = Number(e.currentTarget.value);
         if (Number.isFinite(n)) onValueChange?.([n]);
       }}
+      suppressHydrationWarning
       className={cn(
         "fm-weight-slider h-8 w-full cursor-pointer appearance-none bg-transparent accent-primary disabled:opacity-40",
         className,

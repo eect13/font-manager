@@ -39,6 +39,7 @@ commands.allow = [
   "parse_font_cmap",
   "hash_bytes",
   "hash_font_path",
+  "index_font_paths",
   "diff_font_bytes",
   "list_system_fonts",
   "open_system_fonts_folder",

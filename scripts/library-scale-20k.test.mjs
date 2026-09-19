@@ -76,6 +76,14 @@ test("source: poolForScope + gfonts grid + activated count is length", () => {
   );
 });
 
+test("20k uploads parse in waves; IDB puts chunk", () => {
+  const pool = readFileSync(join(root, "src/lib/fonts/parse-pool.ts"), "utf8");
+  const idb = readFileSync(join(root, "src/lib/fonts/idb.ts"), "utf8");
+  assert.match(pool, /export const PARSE_WAVE = 256/);
+  assert.match(idb, /export const IDB_PUT_CHUNK = 48/);
+  assert.match(store, /waveStart \+= PARSE_WAVE/);
+});
+
 test("preview subset is CSS text= / latin; GDI stays full fonts", () => {
   assert.match(loader, /googlePreviewCssHref/);
   assert.match(loader, /&text=\$\{googlePreviewTextQuery/);

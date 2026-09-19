@@ -1,6 +1,7 @@
 node_modules/
 src-tauri/target/
 src-tauri/gen/
+tests/statcheck/target/
 .vercel/
 .output/
 dist/
@@ -20,3 +21,8 @@ test-results/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/tasks.json
+.grok/preview.pid
+screenshots/*.json
+screenshots/app-builder-*.png
+screenshots/qa-debug.png
+

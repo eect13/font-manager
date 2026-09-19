@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties,
 import { GripVertical, Heart, Italic, Power } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
-import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
+import { cssFamilyStack, loadFont, loadItalicFace, pinCss, unpinCss } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, previewWghtAxis, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
@@ -40,6 +40,7 @@ function paintWeight(el: HTMLElement, weight: number, fvs?: string) {
 /** Shrink-to-fit listens to size/family/copy — never to weight, or heavier glyphs get smaller and cancel the axis. */
 const FitSpecimen = memo(function FitSpecimen({
   ready,
+  loaded,
   className,
   style,
   dir,
@@ -50,6 +51,7 @@ const FitSpecimen = memo(function FitSpecimen({
   specRef,
 }: {
   ready: boolean;
+  loaded?: boolean;
   className?: string;
   style: CSSProperties;
   dir?: string;
@@ -61,6 +63,31 @@ const FitSpecimen = memo(function FitSpecimen({
 }) {
   const maxSize = typeof style.fontSize === "number" ? style.fontSize : Number.parseFloat(String(style.fontSize ?? 36));
   const fittedPx = useRef(0);
+  const [faceTick, setFaceTick] = useState(0);
+
+  useEffect(() => {
+    if (!ready || typeof document === "undefined" || !document.fonts?.addEventListener) return;
+    const fam = String(style.fontFamily ?? "")
+      .split(",")[0]
+      ?.replace(/^["']|["']$/g, "")
+      .trim();
+    if (!fam) return;
+    let seen = false;
+    const bump = () => {
+      if (seen) return;
+      try {
+        if (document.fonts.check(`24px ${JSON.stringify(fam)}`)) {
+          seen = true;
+          setFaceTick((n) => n + 1);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    bump();
+    document.fonts.addEventListener("loadingdone", bump);
+    return () => document.fonts.removeEventListener("loadingdone", bump);
+  }, [ready, style.fontFamily]);
 
   useLayoutEffect(() => {
     const el = specRef.current;
@@ -88,7 +115,7 @@ const FitSpecimen = memo(function FitSpecimen({
       guard += 1;
     }
     fittedPx.current = size;
-  }, [ready, children, maxSize, style.fontFamily, style.fontStyle, specRef]);
+  }, [ready, loaded, faceTick, children, maxSize, style.fontFamily, style.fontStyle, specRef]);
 
   return (
     <p
@@ -116,6 +143,7 @@ export const FontCard = memo(function FontCard({
   const ref = useRef<HTMLElement>(null);
   const specRef = useRef<HTMLParagraphElement>(null);
   const [ready, setReady] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [italicOn, setItalicOn] = useState(isItalicOnlyFace(font) || Boolean(preview.italic));
   const [axisHeld, setAxisHeld] = useState(false);
   const vfPrimed = useRef(false);
@@ -135,29 +163,28 @@ export const FontCard = memo(function FontCard({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const cssKey = `cover:${font.id}`;
     const root = el.closest("[data-library-scroll]") as HTMLElement | null;
-    let timeout = 0;
     const io = new IntersectionObserver(
       ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        if (font.source === "system") {
-          setReady(true);
-          io.disconnect();
+        if (!entry?.isIntersecting) {
+          unpinCss(cssKey);
           return;
         }
-        // Library cards: CSS/latin preview only. VF "full" (woff2 FontFace) is
-        // the weight-slider path (vfPrimed) — loading full on every VF card hangs
-        // WebView2 on Google Fonts (567 VFs × jsDelivr).
-        void loadFont(font, "preview").finally(() => setReady(true));
-        timeout = window.setTimeout(() => setReady(true), 240);
-        io.disconnect();
+        pinCss(cssKey);
+        setReady(true);
+        if (font.source === "system") {
+          setLoaded(true);
+          return;
+        }
+        void loadFont(font, "preview").finally(() => setLoaded(true));
       },
       { root, rootMargin: "320px" },
     );
     io.observe(el);
     return () => {
+      unpinCss(cssKey);
       io.disconnect();
-      window.clearTimeout(timeout);
     };
   }, [font.id]);
 
@@ -320,6 +347,7 @@ export const FontCard = memo(function FontCard({
   const specimen = (
     <FitSpecimen
       ready={ready}
+      loaded={loaded}
       specRef={specRef}
       weight={paintWeightN}
       fvs={typeof paintFvs === "string" ? paintFvs : undefined}
@@ -329,7 +357,7 @@ export const FontCard = memo(function FontCard({
         font.variable ? "fm-spec-variable" : "fm-spec-static",
         italicOn && hasRealItalic(font) ? "fm-spec-real" : null,
         align,
-        ready ? "opacity-100" : "opacity-0",
+        loaded ? "opacity-100" : "opacity-80",
       )}
       dir={specimenDir}
       lang={specimenLang}

@@ -175,6 +175,7 @@ fn main() {
             parse::parse_font_cmap,
             parse::hash_bytes,
             parse::hash_font_path,
+            parse::index_font_paths,
             parse::diff_font_bytes,
             parse::list_system_fonts,
             parse::open_system_fonts_folder,

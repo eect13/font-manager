@@ -42,6 +42,7 @@
   --shadow-border-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
 
   --width-sidebar: 17rem;
+  --width-inspector: 22rem;
 }
 
 html {
@@ -212,6 +213,7 @@ html[data-theme="light"] {
   touch-action: none;
   -webkit-appearance: none;
   appearance: none;
+  caret-color: transparent;
 }
 .fm-weight-slider::-webkit-slider-runnable-track {
   height: 5px;

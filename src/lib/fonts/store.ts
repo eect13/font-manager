@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
-import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog, isVariableCatalogFamily } from "./catalog";
+import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { bytesNearlySame } from "./binary-diff";
 import { idbDelete, idbGet, idbPutMany } from "./idb";
@@ -13,6 +13,7 @@ import type {
   Collection,
   DuplicateGroup,
   FontLicense,
+  FontMetrics,
   FontRecord,
   LibraryFacet,
   LibraryScope,
@@ -20,10 +21,11 @@ import type {
   PreviewSettings,
 } from "./types";
 import { DEFAULT_PREVIEW, isFacetScope } from "./types";
-import { fontLicense, licenseSearchHay, refineLicense, coerceLicense } from "./license";
+import { fontLicense, refineLicense, coerceLicense } from "./license";
 import { fontMime } from "./fs-drop";
 import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS, type DesktopPrefs } from "@/lib/desktop/prefs";
-
+import { fontMatchesSearch, mergeMetrics, parseSearchQuery } from "./metrics";
+import { snapAxes } from "./axes";
 
 const STORAGE_KEY = "font-manager:v1";
 /** Persist version. v1 key kept so existing libraries don't vanish. v3 adds facet. */
@@ -104,6 +106,7 @@ interface FontState extends PersistedSlice {
   setHydrated: (value: boolean) => void;
   setGoogleFonts: (fonts: FontRecord[]) => void;
   patchFontAxes: (id: string, axes: { tag: string; name: string; min: number; max: number; def: number }[]) => void;
+  patchFontMetrics: (id: string, metrics: FontMetrics) => void;
   setCatalogLive: (value: boolean) => void;
   setScope: (scope: LibraryScope) => void;
   setFacet: (facet: LibraryFacet) => void;
@@ -152,6 +155,10 @@ interface FontState extends PersistedSlice {
     files: File[],
     opts?: { collectionName?: string; collectionId?: string; originPaths?: string[] },
   ) => Promise<{ added: number; duplicates: number; failed: number; collectionId?: string }>;
+  importOriginPaths: (
+    paths: string[],
+    opts?: { collectionName?: string; collectionId?: string },
+  ) => Promise<{ added: number; duplicates: number; failed: number; collectionId?: string }>;
   removeLocalFont: (id: string) => Promise<void>;
   clearLocalFonts: () => Promise<number>;
   resetLibrary: () => Promise<number>;
@@ -159,6 +166,16 @@ interface FontState extends PersistedSlice {
 
 function uid(prefix: string) {
   return `${prefix}-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+}
+
+function folderPathForOrigin(originPath: string, collectionName?: string): string[] {
+  const parts = originPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  parts.pop();
+  const name = collectionName?.trim();
+  if (!name) return parts.slice(-2);
+  const hit = parts.findIndex((p) => p.toLowerCase() === name.toLowerCase());
+  if (hit >= 0) return parts.slice(hit);
+  return [name];
 }
 
 function folderPathForFile(file: File, fallbackRoot?: string): string[] {
@@ -407,7 +424,7 @@ export const useFontStore = create<FontState>()(
               ? font
               : {
                   ...font,
-                  axes: axes.length ? axes : undefined,
+                  axes: axes.length ? snapAxes(axes) : undefined,
                   variable: axes.length > 0,
                 };
           const gi = s.googleFonts.findIndex((f) => f.id === id);
@@ -417,10 +434,38 @@ export const useFontStore = create<FontState>()(
             return { googleFonts };
           }
           const li = s.localFonts.findIndex((f) => f.id === id);
-          if (li < 0) return s;
-          const localFonts = s.localFonts.slice();
-          localFonts[li] = patch(localFonts[li]!);
-          return { localFonts };
+          if (li >= 0) {
+            const localFonts = s.localFonts.slice();
+            localFonts[li] = patch(localFonts[li]!);
+            return { localFonts };
+          }
+          const si = s.systemFonts.findIndex((f) => f.id === id);
+          if (si < 0) return s;
+          const systemFonts = s.systemFonts.slice();
+          systemFonts[si] = patch(systemFonts[si]!);
+          return { systemFonts };
+        }),
+      patchFontMetrics: (id, metrics) =>
+        set((s) => {
+          const patch = (font: FontRecord) =>
+            font.id !== id ? font : { ...font, metrics: mergeMetrics(font.metrics, metrics) };
+          const gi = s.googleFonts.findIndex((f) => f.id === id);
+          if (gi >= 0) {
+            const googleFonts = s.googleFonts.slice();
+            googleFonts[gi] = patch(googleFonts[gi]!);
+            return { googleFonts };
+          }
+          const li = s.localFonts.findIndex((f) => f.id === id);
+          if (li >= 0) {
+            const localFonts = s.localFonts.slice();
+            localFonts[li] = patch(localFonts[li]!);
+            return { localFonts };
+          }
+          const si = s.systemFonts.findIndex((f) => f.id === id);
+          if (si < 0) return s;
+          const systemFonts = s.systemFonts.slice();
+          systemFonts[si] = patch(systemFonts[si]!);
+          return { systemFonts };
         }),
       setCatalogLive: (value) => set({ catalogLive: value }),
       setScope: (scope) => {
@@ -844,167 +889,303 @@ export const useFontStore = create<FontState>()(
         const existingHashes = new Set(
           get().localFonts.map((f) => f.checksum).filter(Boolean) as string[],
         );
-        const records: FontRecord[] = [];
         const newIds: string[] = [];
-        const blobs: { id: string; blob: Blob }[] = [];
         const folderOf = new Map<string, string[]>();
 
         try {
-          const parsedList = await (await import("./parse-pool")).parseFilesPool(files);
-          for (const item of parsedList) {
-            if (!item.ok) continue;
-            item.faces = item.faces.map((parsed) => {
-              const refined = refineLicense(parsed, {
-                fileName: item.file.name,
-                relativePath: item.file.webkitRelativePath,
-                collectionName: opts?.collectionName,
-              });
-              return { ...parsed, ...refined };
-            });
-          }
-
-          const savedDisk = new Set<string>();
-          for (let i = 0; i < parsedList.length; i += 1) {
-            const item = parsedList[i]!;
-            const file = files[i];
-            if (!item.ok) {
-              failed += 1;
-              continue;
-            }
-            for (const parsed of item.faces) {
-            if (existingHashes.has(parsed.checksum)) {
-              duplicates += 1;
-              continue;
-            }
-            const id = uid("l");
-            existingHashes.add(parsed.checksum);
-            if (!opts?.originPaths?.[i]) {
-              blobs.push({
-                id,
-                blob: new Blob([parsed.buffer], { type: fontMime(parsed.fileName) }),
-              });
-            }
-            records.push({
-              id,
-              family: parsed.family,
-              fullName: parsed.fullName && parsed.fullName !== parsed.family ? parsed.fullName : undefined,
-              source: "local",
-              category: parsed.category,
-              weights: [parsed.weight],
-              italic: parsed.italic,
-              variable: parsed.variable,
-              axes: parsed.axes.length ? parsed.axes : undefined,
-              otFeatures: parsed.otFeatures.length ? parsed.otFeatures : undefined,
-              instances: parsed.instances.length ? parsed.instances : undefined,
-              varStorage: parsed.varStorage || undefined,
-              tags: parsed.tags.length ? parsed.tags : inferLocalStyle({ family: parsed.family, fileName: parsed.fileName }).tags,
-              popularity: 9999,
-              fileName: parsed.fileName,
-              fileSize: parsed.fileSize,
-              checksum: parsed.checksum,
-              version: parsed.version,
-              glyphCount: parsed.glyphCount,
-              cssFamily: parsed.family,
-              addedAt: Date.now(),
-              license: parsed.license,
-              licenseName: parsed.licenseName || undefined,
-              kerningKey: parsed.kerningKey,
-              colorKind: parsed.colorKind,
-              originPath: opts?.originPaths?.[i],
-            });
-            newIds.push(id);
-            added += 1;
-            folderOf.set(
-              id,
-              folderPathForFile(file ?? ({ webkitRelativePath: "" } as File), opts?.collectionName),
-            );
-            if (!opts?.originPaths?.[i] && file && !savedDisk.has(file.name)) {
-              savedDisk.add(file.name);
-              void saveUploadToDisk({
-                family: parsed.family,
-                fileName: parsed.fileName || file.name,
-                buffer: parsed.buffer,
-              });
-            }
-            }
-          }
-
-          if (blobs.length) {
-            try {
-              await idbPutMany(blobs);
-            } catch {
-              failed += blobs.length;
-              added = 0;
-              records.length = 0;
-              newIds.length = 0;
-            }
-          }
-
+          const { parseFilesPool, PARSE_WAVE } = await import("./parse-pool");
+          const fileArr = Array.from(files);
           let collectionId = opts?.collectionId;
-          if (records.length) {
-            const dropName = opts?.collectionName?.trim();
-            if (collectionId) {
-              const exists = get().collections.some((c) => c.id === collectionId);
-              if (!exists) collectionId = undefined;
+          let primed = false;
+          for (let waveStart = 0; waveStart < fileArr.length; waveStart += PARSE_WAVE) {
+            const wave = fileArr.slice(waveStart, waveStart + PARSE_WAVE);
+            const originSlice = opts?.originPaths?.slice(waveStart, waveStart + PARSE_WAVE);
+            const parsedList = await parseFilesPool(wave);
+            for (const item of parsedList) {
+              if (!item.ok) continue;
+              item.faces = item.faces.map((parsed) => {
+                const refined = refineLicense(parsed, {
+                  fileName: item.file.name,
+                  relativePath: item.file.webkitRelativePath,
+                  collectionName: opts?.collectionName,
+                });
+                return { ...parsed, ...refined };
+              });
             }
-            set((s) => {
-              let collections = s.collections.slice();
-              const parentName = collectionId
-                ? collections.find((c) => c.id === collectionId)?.name
-                : undefined;
-              let rootId = collectionId ?? null;
-              for (const record of records) {
-                let names = folderOf.get(record.id) ?? [];
-                if (collectionId && parentName && names[0] === parentName) {
-                  names = names.slice(1);
+
+            const waveRecords: FontRecord[] = [];
+            const waveBlobs: { id: string; blob: Blob }[] = [];
+            const waveIds: string[] = [];
+            const savedDisk = new Set<string>();
+            for (let i = 0; i < parsedList.length; i += 1) {
+              const item = parsedList[i]!;
+              const file = wave[i];
+              if (!item.ok) {
+                failed += 1;
+                continue;
+              }
+              for (const parsed of item.faces) {
+                if (existingHashes.has(parsed.checksum)) {
+                  duplicates += 1;
+                  continue;
                 }
-                if (!names.length && dropName && !collectionId) names = [dropName];
-                if (!names.length && !collectionId) continue;
-                const nested = ensureFolderPath(collections, collectionId ?? null, names);
-                collections = nested.collections;
-                const leaf = nested.leafId;
-                if (!rootId && names.length) {
-                  const top = collections.find(
-                    (c) => c.name === names[0] && (c.parentId ?? null) === null,
-                  );
-                  rootId = top?.id ?? leaf;
+                const id = uid("l");
+                existingHashes.add(parsed.checksum);
+                if (!originSlice?.[i]) {
+                  waveBlobs.push({
+                    id,
+                    blob: new Blob([parsed.buffer], { type: fontMime(parsed.fileName) }),
+                  });
                 }
-                if (leaf) {
-                  collections = collections.map((c) =>
-                    c.id === leaf
-                      ? { ...c, fontIds: Array.from(new Set([...c.fontIds, record.id])) }
-                      : c,
-                  );
+                const record: FontRecord = {
+                  id,
+                  family: parsed.family,
+                  fullName: parsed.fullName && parsed.fullName !== parsed.family ? parsed.fullName : undefined,
+                  source: "local",
+                  category: parsed.category,
+                  weights: [parsed.weight],
+                  italic: parsed.italic,
+                  variable: parsed.variable,
+                  axes: parsed.axes.length ? snapAxes(parsed.axes) : undefined,
+                  otFeatures: parsed.otFeatures.length ? parsed.otFeatures : undefined,
+                  instances: parsed.instances.length ? parsed.instances : undefined,
+                  varStorage: parsed.varStorage || undefined,
+                  tags: parsed.tags.length ? parsed.tags : inferLocalStyle({ family: parsed.family, fileName: parsed.fileName }).tags,
+                  popularity: 9999,
+                  fileName: parsed.fileName,
+                  fileSize: parsed.fileSize,
+                  checksum: parsed.checksum,
+                  version: parsed.version,
+                  glyphCount: parsed.glyphCount,
+                  cssFamily: parsed.family,
+                  addedAt: Date.now(),
+                  license: parsed.license,
+                  licenseName: parsed.licenseName || undefined,
+                  kerningKey: parsed.kerningKey,
+                  colorKind: parsed.colorKind,
+                  originPath: originSlice?.[i],
+                  metrics: parsed.metrics,
+                };
+                waveRecords.push(record);
+                waveIds.push(id);
+                newIds.push(id);
+                added += 1;
+                folderOf.set(
+                  id,
+                  folderPathForFile(file ?? ({ webkitRelativePath: "" } as File), opts?.collectionName),
+                );
+                if (!originSlice?.[i] && file && !savedDisk.has(file.name)) {
+                  savedDisk.add(file.name);
+                  void saveUploadToDisk({
+                    family: parsed.family,
+                    fileName: parsed.fileName || file.name,
+                    buffer: parsed.buffer,
+                  });
                 }
               }
-              collectionId = rootId ?? collectionId;
-              const watchAuto =
-                Boolean(opts?.originPaths?.length) &&
-                Boolean(collections.find((c) => c.id === collectionId)?.autoActivate);
-              return {
-                localFonts: [...records, ...s.localFonts],
-                ...(!opts?.originPaths?.length
-                  ? withActivated(Array.from(new Set([...s.activated, ...newIds])))
-                  : {}),
-                collections,
-                scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,
-              };
-            });
-            if (
-              opts?.originPaths?.length &&
-              newIds.length &&
-              get().collections.find((c) => c.id === collectionId)?.autoActivate
-            ) {
-              get().setActivatedMany(newIds, true);
             }
-            const local = get().localFonts;
-            const google = get().googleFonts;
-            newIds.slice(0, 2).forEach((id) => {
-              const font = findFont(id, local, google);
-              if (font) void loadFont(font);
-            });
+
+            if (waveBlobs.length) {
+              try {
+                await idbPutMany(waveBlobs);
+              } catch {
+                const drop = new Set(waveBlobs.map((b) => b.id));
+                failed += drop.size;
+                added -= drop.size;
+                for (let i = waveRecords.length - 1; i >= 0; i -= 1) {
+                  if (drop.has(waveRecords[i]!.id)) waveRecords.splice(i, 1);
+                }
+              }
+            }
+
+            if (waveRecords.length) {
+              const dropName = opts?.collectionName?.trim();
+              if (collectionId) {
+                const exists = get().collections.some((c) => c.id === collectionId);
+                if (!exists) collectionId = undefined;
+              }
+              set((s) => {
+                let collections = s.collections.slice();
+                const parentName = collectionId
+                  ? collections.find((c) => c.id === collectionId)?.name
+                  : undefined;
+                let rootId = collectionId ?? null;
+                for (const record of waveRecords) {
+                  let names = folderOf.get(record.id) ?? [];
+                  if (collectionId && parentName && names[0] === parentName) {
+                    names = names.slice(1);
+                  }
+                  if (!names.length && dropName && !collectionId) names = [dropName];
+                  if (!names.length && !collectionId) continue;
+                  const nested = ensureFolderPath(collections, collectionId ?? null, names);
+                  collections = nested.collections;
+                  const leaf = nested.leafId;
+                  if (!rootId && names.length) {
+                    const top = collections.find(
+                      (c) => c.name === names[0] && (c.parentId ?? null) === null,
+                    );
+                    rootId = top?.id ?? leaf;
+                  }
+                  if (leaf) {
+                    collections = collections.map((c) =>
+                      c.id === leaf
+                        ? { ...c, fontIds: Array.from(new Set([...c.fontIds, record.id])) }
+                        : c,
+                    );
+                  }
+                }
+                collectionId = rootId ?? collectionId;
+                return {
+                  localFonts: [...waveRecords, ...s.localFonts],
+                  ...(!opts?.originPaths?.length
+                    ? withActivated(Array.from(new Set([...s.activated, ...waveIds])))
+                    : {}),
+                  collections,
+                  scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,
+                };
+              });
+              if (!primed) {
+                primed = true;
+                const local = get().localFonts;
+                const google = get().googleFonts;
+                waveIds.slice(0, 2).forEach((id) => {
+                  const font = findFont(id, local, google);
+                  if (font) void loadFont(font);
+                });
+              }
+            }
+            await new Promise((r) => setTimeout(r, 0));
           }
 
+          if (
+            opts?.originPaths?.length &&
+            newIds.length &&
+            get().collections.find((c) => c.id === collectionId)?.autoActivate
+          ) {
+            get().setActivatedMany(newIds, true);
+          }
+
+          return { added, duplicates, failed, collectionId };
+        } finally {
+          set({ uploadBusy: false });
+        }
+      },
+      importOriginPaths: async (paths, opts) => {
+        set({ uploadBusy: true });
+        let added = 0;
+        let duplicates = 0;
+        let failed = 0;
+        const existingHashes = new Set(
+          get().localFonts.map((f) => f.checksum).filter(Boolean) as string[],
+        );
+        const newIds: string[] = [];
+        try {
+          const { indexFontPaths, fontMetricsFromLayout } = await import("./native-parse");
+          const { PARSE_WAVE } = await import("./parse-pool");
+          let collectionId = opts?.collectionId;
+          const fileArr = paths.filter(Boolean);
+          for (let waveStart = 0; waveStart < fileArr.length; waveStart += PARSE_WAVE) {
+            const wave = fileArr.slice(waveStart, waveStart + PARSE_WAVE);
+            const indexed = await indexFontPaths(wave);
+            const seenPath = new Set(indexed.map((row) => row.path));
+            for (const p of wave) {
+              if (!seenPath.has(p)) failed += 1;
+            }
+            const waveRecords: FontRecord[] = [];
+            const waveIds: string[] = [];
+            for (const row of indexed) {
+              if (existingHashes.has(row.checksum)) {
+                duplicates += 1;
+                continue;
+              }
+              existingHashes.add(row.checksum);
+              const id = uid("l");
+              const style = inferLocalStyle({ family: row.family, fileName: row.fileName });
+              const layoutMetrics = row.metrics
+                ? fontMetricsFromLayout({
+                    axes: row.axes,
+                    otFeatures: row.otFeatures,
+                    variable: row.variable,
+                    glyphCount: row.glyphCount,
+                    metrics: row.metrics,
+                  })
+                : undefined;
+              waveRecords.push({
+                id,
+                family: row.family,
+                fullName: row.fullName && row.fullName !== row.family ? row.fullName : undefined,
+                source: "local",
+                category: style.category,
+                weights: [row.weight || 400],
+                italic: row.italic,
+                variable: row.variable,
+                axes: row.axes.length ? row.axes : undefined,
+                otFeatures: row.otFeatures.length ? row.otFeatures : undefined,
+                tags: style.tags,
+                popularity: 9999,
+                fileName: row.fileName,
+                fileSize: row.fileSize,
+                checksum: row.checksum,
+                glyphCount: row.glyphCount,
+                cssFamily: row.family,
+                addedAt: Date.now(),
+                license: "unknown",
+                originPath: row.path,
+                metrics: layoutMetrics,
+              });
+              waveIds.push(id);
+              newIds.push(id);
+              added += 1;
+            }
+            if (waveRecords.length) {
+              if (collectionId) {
+                const exists = get().collections.some((c) => c.id === collectionId);
+                if (!exists) collectionId = undefined;
+              }
+              set((s) => {
+                let collections = s.collections.slice();
+                const parentName = collectionId
+                  ? collections.find((c) => c.id === collectionId)?.name
+                  : undefined;
+                let rootId = collectionId ?? null;
+                for (const record of waveRecords) {
+                  let names = folderPathForOrigin(record.originPath ?? "", opts?.collectionName);
+                  if (collectionId && parentName && names[0] === parentName) names = names.slice(1);
+                  if (!names.length && opts?.collectionName && !collectionId) names = [opts.collectionName];
+                  if (!names.length && !collectionId) continue;
+                  const nested = ensureFolderPath(collections, collectionId ?? null, names);
+                  collections = nested.collections;
+                  const leaf = nested.leafId;
+                  if (!rootId && names.length) {
+                    const top = collections.find(
+                      (c) => c.name === names[0] && (c.parentId ?? null) === null,
+                    );
+                    rootId = top?.id ?? leaf;
+                  }
+                  if (leaf) {
+                    collections = collections.map((c) =>
+                      c.id === leaf
+                        ? { ...c, fontIds: Array.from(new Set([...c.fontIds, record.id])) }
+                        : c,
+                    );
+                  }
+                }
+                collectionId = rootId ?? collectionId;
+                return {
+                  localFonts: [...waveRecords, ...s.localFonts],
+                  collections,
+                  scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,
+                };
+              });
+            }
+            await new Promise((r) => setTimeout(r, 0));
+          }
+          if (
+            newIds.length &&
+            get().collections.find((c) => c.id === collectionId)?.autoActivate
+          ) {
+            get().setActivatedMany(newIds, true);
+          }
           return { added, duplicates, failed, collectionId };
         } finally {
           set({ uploadBusy: false });
@@ -1457,34 +1638,7 @@ export function matchesQuery(
   query: string,
   customTags: Record<string, string[]>,
 ): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  const tokens = q.split(/\s+/);
-  const hay = [
-    font.family,
-    font.fullName ?? "",
-    font.source,
-    font.category,
-    ...tagsFor(font, customTags),
-    font.variable || font.catalogVariable ? "variable" : "",
-    font.italic ? "italic" : "",
-    font.fileName ?? "",
-    licenseSearchHay(font),
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  return tokens.every((token) => {
-    if (token.startsWith("weight:")) {
-      const w = Number(token.slice(7));
-      return font.weights.includes(w) || (font.variable && !Number.isNaN(w));
-    }
-    if (token === "variable") return isVariableCatalogFamily(font);
-    if (token === "italic") return font.italic;
-    if (token.startsWith("tag:")) return tagsFor(font, customTags).includes(token.slice(4));
-    if (token.startsWith("license:")) return fontLicense(font) === token.slice(8);
-    return hay.includes(token);
-  });
+  return fontMatchesSearch(font, parseSearchQuery(query), customTags);
 }
 
 export function filterLibrary(

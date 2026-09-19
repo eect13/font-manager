@@ -131,14 +131,14 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
             </Link>
           </div>
 
-          <HelpTip label="Search family or tag — or tap a chip. Press /">
+          <HelpTip label="SuperSearch: name, tag:, license:, weight:, width:, xh:, contrast:, wght:, opsz:, axis:tag=min-max. xh/contrast need OS/2 (uploads and on-disk). Catalog-only matches weight/width/variable/axis. Press /">
             <div className="relative min-w-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 ref={searchRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name, tag, variable, italic…"
+                placeholder="Search name or SuperSearch"
                 className="h-8 bg-card pl-8"
                 aria-label="Search typefaces"
               />
@@ -224,7 +224,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
         </header>
         <DownloadBar />
 
-        <div className="flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
           <Sidebar
             onNewCollection={openNewCollection}
             className="hidden w-sidebar shrink-0 border-r border-border md:flex"

@@ -8,6 +8,41 @@ export interface FontAxis {
   def: number;
 }
 
+/** OpenType fvar stores min/def/max as 16.16 Fixed.
+ *  ttf-parser/opentype.js expose f32, so 100 can arrive as 99.999984 (one 16.16 unit off).
+ *  Snap through 16.16, then to the nearest integer when the error is within 2 f32 ULPs. */
+export const FVAR_UNITS = 65536;
+
+export function snapFvar(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  const nearestInt = Math.round(n);
+  const mag = Math.max(1, Math.abs(n));
+  const f32Ulp = 2 ** (Math.floor(Math.log2(mag)) - 23);
+  if (Math.abs(n - nearestInt) <= f32Ulp * 2) return nearestInt;
+  return Math.round(n * FVAR_UNITS) / FVAR_UNITS;
+}
+
+export function snapAxis(axis: FontAxis): FontAxis {
+  return { ...axis, min: snapFvar(axis.min), max: snapFvar(axis.max), def: snapFvar(axis.def) };
+}
+
+export function snapAxes(axes: FontAxis[]): FontAxis[] {
+  return axes.map(snapAxis);
+}
+
+export function snapCoords(coords: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [tag, n] of Object.entries(coords)) out[tag] = snapFvar(n);
+  return out;
+}
+
+export function formatFvar(n: number, step = 0.01): string {
+  const v = snapFvar(n);
+  if (step >= 1 || Number.isInteger(v)) return String(Math.round(v));
+  const digits = step <= 0.01 ? 2 : 1;
+  return String(Number(v.toFixed(digits)));
+}
+
 /**
  * Registered (OpenType 1.9) plus common custom axes.
  * `ital` is 0/1. Smooth lean is `slnt` (usually degrees, often negative).
@@ -64,12 +99,12 @@ export function axisStep(axis: FontAxis) {
 
 export function clampAxis(axis: FontAxis, n: number) {
   if (!Number.isFinite(n)) return axis.def;
-  return Math.min(axis.max, Math.max(axis.min, n));
+  return Math.min(axis.max, Math.max(axis.min, snapFvar(n)));
 }
 
 export function axesForFont(font: Pick<FontRecord, "weights" | "variable" | "italic" | "axes">): FontAxis[] {
   if (font.axes && font.axes.length) {
-    return font.axes
+    return snapAxes(font.axes)
       .map((axis) =>
         axis.tag === "ital" ? { ...axis, min: 0, max: 1, def: axis.def >= 0.5 ? 1 : 0 } : axis,
       )
@@ -119,7 +154,7 @@ export function defaultAxisValues(axes: FontAxis[], instances: NamedInstance[] =
   const regular = instances.find((inst) => /^(regular|normal|book|roman)$/i.test(inst.name));
   if (regular) {
     for (const [tag, n] of Object.entries(regular.coords)) {
-      if (Number.isFinite(n)) out[tag] = n;
+      if (Number.isFinite(n)) out[tag] = snapFvar(n);
     }
   }
   return out;
@@ -129,14 +164,14 @@ export function defaultAxisValues(axes: FontAxis[], instances: NamedInstance[] =
 export function resolvedAxisValues(axes: FontAxis[], values: Record<string, number> = {}, instances: NamedInstance[] = []): Record<string, number> {
   const next = defaultAxisValues(axes, instances);
   for (const [tag, n] of Object.entries(values)) {
-    if (Number.isFinite(n)) next[tag] = n;
+    if (Number.isFinite(n)) next[tag] = snapFvar(n);
   }
   return next;
 }
 
 function formatAxisValue(axis: FontAxis | undefined, n: number) {
   if (axis && isBinaryAxis(axis)) return n >= 0.5 ? 1 : 0;
-  const v = axis ? clampAxis(axis, n) : n;
+  const v = axis ? clampAxis(axis, n) : snapFvar(n);
   if (Number.isInteger(v)) return v;
   const step = axis ? axisStep(axis) : 0.01;
   if (step >= 1) return Math.round(v);
@@ -227,7 +262,9 @@ const WEIGHT_INSTANCE: Record<number, string> = {
 export function instancesForFont(
   font: Pick<FontRecord, "weights" | "variable" | "italic" | "axes" | "instances">,
 ): NamedInstance[] {
-  if (font.instances?.length) return font.instances;
+  if (font.instances?.length) {
+    return font.instances.map((inst) => ({ ...inst, coords: snapCoords(inst.coords) }));
+  }
   if (!font.variable) return [];
   const axes = axesForFont(font);
   const wght = axes.find((a) => a.tag === "wght");
@@ -240,7 +277,10 @@ export function instancesForFont(
 }
 
 export function instanceMatches(instance: NamedInstance, values: Record<string, number>) {
-  return Object.entries(instance.coords).every(([tag, n]) => Math.abs((values[tag] ?? 0) - n) < 0.51);
+  return Object.entries(instance.coords).every(([tag, n]) => {
+    const eps = tag === "wght" ? 0.51 : 0.02;
+    return Math.abs((values[tag] ?? 0) - n) < eps;
+  });
 }
 
 /** Roman (upright) axis tuple — zeros ital/slnt so VF preview is not stuck italic. */
@@ -328,3 +368,4 @@ export function italicPreviewStyle(font: Pick<FontRecord, "variable" | "italic" 
     fontSynthesis: "none" as const,
   };
 }
+

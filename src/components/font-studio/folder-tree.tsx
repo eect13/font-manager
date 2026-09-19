@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { ChevronRight, Eye, Folder, FolderPlus, FolderSearch, Layers, Package, Pencil, Power, Trash2 } from "lucide-react";
+import { ChevronRight, Eye, FileJson, Folder, FolderPlus, FolderSearch, Layers, Package, Pencil, Power, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,7 +26,7 @@ import { ActivateMenuItem, DeactivateMenuItem } from "./activate-toggle";
 import { HelpTip } from "./help-tip";
 import { runFontImport } from "./import-fonts";
 import { addWatchedFolder } from "@/lib/fonts/watch-folder";
-import { exportCollectionZip } from "@/lib/fonts/export-collection";
+import { exportCollectionJson, exportCollectionZip, importCollectionJson } from "@/lib/fonts/export-collection";
 import { SidebarCount, SidebarOverflowMenu, sidebarMainClass } from "./sidebar-row";
 import type { Collection } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
@@ -197,6 +197,30 @@ function GroupTree({
             {isFolder ? <FolderSearch className="size-3.5" /> : <FolderPlus className="size-3.5" />}
           </button>
         </HelpTip>
+        {!isFolder ? (
+          <>
+            <HelpTip label="Import collections JSON — families match by name, no account">
+              <button
+                type="button"
+                aria-label="Import collections JSON"
+                onClick={() => void importCollectionJson()}
+                className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+              >
+                <Upload className="size-3.5" />
+              </button>
+            </HelpTip>
+            <HelpTip label="Export collections JSON for Dropbox-style sync without an account">
+              <button
+                type="button"
+                aria-label="Export collections JSON"
+                onClick={() => void exportCollectionJson()}
+                className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+              >
+                <FileJson className="size-3.5" />
+              </button>
+            </HelpTip>
+          </>
+        ) : null}
       </div>
       {rows.length === 0 && (
         <button
@@ -417,6 +441,16 @@ const GroupRow = memo(function GroupRow({
             <Package className="size-3.5" />
             Pack as zip
           </DropdownMenuItem>
+          {!isFolder ? (
+            <DropdownMenuItem
+              onSelect={() => {
+                void exportCollectionJson(folder.id);
+              }}
+            >
+              <FileJson className="size-3.5" />
+              Export JSON
+            </DropdownMenuItem>
+          ) : null}
           {folder.watchPath ? (
             <>
               <DropdownMenuItem

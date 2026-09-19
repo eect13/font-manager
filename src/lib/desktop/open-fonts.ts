@@ -168,8 +168,7 @@ export async function pickWatchFolder(): Promise<
     return { path: dir, name: baseName(dir), files: [], originPaths: [], blocked };
   }
   const listed = await listWatchFolder(dir);
-  const scanned = await readWatchFiles(dir, listed.paths);
-  return { path: dir, name: baseName(dir), ...scanned };
+  return { path: dir, name: baseName(dir), files: [], originPaths: listed.paths };
 }
 
 export type WatchListing = {

@@ -1,23 +1,10 @@
 import { X } from "lucide-react";
-import { useFontStore } from "@/lib/fonts/store";
+import { useDeferredValue, useMemo } from "react";
+import { filterLibrary, poolForScope, useFontStore } from "@/lib/fonts/store";
 import type { LibraryFacet } from "@/lib/fonts/types";
 import { CATEGORY_LABEL, LICENSE_LABEL, isFacetScope } from "@/lib/fonts/types";
+import { SEARCH_PRESETS, countSearchPresets, queryHasToken, toggleSearchPreset } from "@/lib/fonts/metrics";
 import { cn } from "@/lib/utils";
-
-function hasToken(query: string, token: string) {
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .includes(token.toLowerCase());
-}
-
-function toggleToken(query: string, token: string) {
-  const parts = query.trim().split(/\s+/).filter(Boolean);
-  const key = token.toLowerCase();
-  const next = parts.filter((p) => p.toLowerCase() !== key);
-  if (next.length === parts.length) next.push(token);
-  return next.join(" ");
-}
 
 function facetLabel(facet: LibraryFacet) {
   if (facet.startsWith("license:")) return LICENSE_LABEL[facet.slice(8) as keyof typeof LICENSE_LABEL] ?? facet;
@@ -26,38 +13,62 @@ function facetLabel(facet: LibraryFacet) {
   return facet;
 }
 
-const TOGGLES = [
-  { token: "variable", label: "Variable" },
-  { token: "italic", label: "Italic" },
-] as const;
+const EMPTY_IDS: string[] = [];
 
-/** Only chips that are on — Variable / Italic live in the sidebar, not as a static second filter row. */
+/** SuperSearch chips: live counts in this drawer. 0-count chips hide (xh/contrast until OS/2). */
 export function SearchChips() {
   const query = useFontStore((s) => s.query);
   const setQuery = useFontStore((s) => s.setQuery);
   const facet = useFontStore((s) => s.facet);
   const setFacet = useFontStore((s) => s.setFacet);
-
-  const activeToggles = TOGGLES.filter((chip) => hasToken(query, chip.token));
   const facetOn = isFacetScope(facet);
-  if (!activeToggles.length && !facetOn) return null;
+  const scope = useFontStore((s) => s.scope);
+  const localFonts = useFontStore((s) => s.localFonts);
+  const googleFonts = useFontStore((s) => s.googleFonts);
+  const systemFonts = useFontStore((s) => s.systemFonts);
+  const customTags = useFontStore((s) => s.customTags);
+  const favorites = useFontStore((s) => s.favorites);
+  const collections = useFontStore((s) => s.collections);
+  const activated = useFontStore((s) => s.activated);
+  const recentIds = useFontStore((s) => s.recentIds);
+  const deferredLocal = useDeferredValue(localFonts);
+  const deferredGoogle = useDeferredValue(googleFonts);
+
+  const counts = useMemo(() => {
+    const skipLocals = scope === "gfonts" || scope === "google" || scope === "system";
+    const liveIds = scope === "activated" ? activated : EMPTY_IDS;
+    const pool = poolForScope(scope, skipLocals ? [] : deferredLocal, deferredGoogle, systemFonts, liveIds);
+    const list = filterLibrary(pool, scope, "", favorites, liveIds, collections, customTags, "", recentIds);
+    return countSearchPresets(list, customTags);
+  }, [scope, deferredLocal, deferredGoogle, systemFonts, customTags, favorites, collections, activated, recentIds]);
+
+  const chips = SEARCH_PRESETS.filter((chip) => queryHasToken(query, chip.token) || (counts[chip.id] ?? 0) > 0);
+  if (!chips.length && !facetOn) return null;
 
   return (
-    <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Active filters">
-      {activeToggles.map((chip) => (
-        <button
-          key={chip.token}
-          type="button"
-          aria-pressed
-          onClick={() => setQuery(toggleToken(query, chip.token))}
-          className={cn(
-            "inline-flex h-6 shrink-0 items-center gap-1 rounded-full bg-primary px-2.5 text-[11px] font-medium text-primary-foreground",
-          )}
-        >
-          {chip.label}
-          <X className="size-3" />
-        </button>
-      ))}
+    <div className="flex flex-wrap gap-1" role="group" aria-label="SuperSearch">
+      {chips.map((chip) => {
+        const on = queryHasToken(query, chip.token);
+        const n = counts[chip.id] ?? 0;
+        return (
+          <button
+            key={chip.id}
+            type="button"
+            aria-pressed={on}
+            title={chip.hint}
+            onClick={() => setQuery(toggleSearchPreset(query, chip.token))}
+            className={cn(
+              "inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-colors duration-150",
+              on
+                ? "bg-primary text-primary-foreground"
+                : "bg-secondary text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {chip.label}
+            {n > 0 ? <span className="tabular-nums opacity-70">{n.toLocaleString()}</span> : null}
+          </button>
+        );
+      })}
       {facetOn ? (
         <button
           type="button"

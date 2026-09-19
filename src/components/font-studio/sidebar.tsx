@@ -32,6 +32,7 @@ import { filterLibrary, poolForScope, tagsFor, useFontStore } from "@/lib/fonts/
 import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
 import type { FontLicense, FontRecord, LibraryFacet, LibraryScope } from "@/lib/fonts/types";
 import { CATEGORY_LABEL, CATEGORY_ORDER, LICENSE_LABEL, TAG_ORDER } from "@/lib/fonts/types";
+import { queryHasToken, toggleSearchToken } from "@/lib/fonts/metrics";
 import { cn } from "@/lib/utils";
 
 const LICENSE_NAV: { id: FontLicense; icon: typeof Library }[] = [
@@ -62,21 +63,6 @@ function tallyFonts(list: FontRecord[], customTags: Record<string, string[]>) {
     }
   }
   return { license, category, tags, variable, italic };
-}
-
-function hasToken(query: string, token: string) {
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .includes(token.toLowerCase());
-}
-
-function toggleToken(query: string, token: string) {
-  const parts = query.trim().split(/\s+/).filter(Boolean);
-  const key = token.toLowerCase();
-  const next = parts.filter((p) => p.toLowerCase() !== key);
-  if (next.length === parts.length) next.push(token);
-  return next.join(" ");
 }
 
 const STYLE_TIP =
@@ -265,8 +251,8 @@ export function Sidebar({
             />
             {counts.variable > 0 ? (
               <SidebarRow
-                active={hasToken(query, "variable")}
-                onClick={() => setQuery(toggleToken(query, "variable"))}
+                active={queryHasToken(query, "variable")}
+                onClick={() => setQuery(toggleSearchToken(query, "variable"))}
                 icon={<SlidersHorizontal className="size-4 shrink-0" />}
                 label="Variable"
                 count={counts.variable}
@@ -275,8 +261,8 @@ export function Sidebar({
             ) : null}
             {counts.italic > 0 ? (
               <SidebarRow
-                active={hasToken(query, "italic")}
-                onClick={() => setQuery(toggleToken(query, "italic"))}
+                active={queryHasToken(query, "italic")}
+                onClick={() => setQuery(toggleSearchToken(query, "italic"))}
                 icon={<Italic className="size-4 shrink-0" />}
                 label="Italic"
                 count={counts.italic}

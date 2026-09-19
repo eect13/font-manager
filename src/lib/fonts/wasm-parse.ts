@@ -12,6 +12,8 @@
  *   4. opentype.js    last resort — parses glyf; WOFF2 / odd wrappers
  *
  * Do not add harfbuzz-wasm / pyftsubset / hb-subset here. GDI Documents stay full TTFs.
+ * HarfBuzz is already inside Chromium/WebView2 for CSS text. A wasm shaper would
+ * fight that renderer, not AddFontResourceExW, and would not help 20k import.
  *
  * SIMD: parse is table-dir (KB), not glyf. SubtleCrypto SHA-256 already uses SHA-NI.
  * Duplicate-scan uses word-stride in binary-diff.ts (Uint32). A wasm SIMD crate

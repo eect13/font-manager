@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { FolderOpen, Heart, Power, Trash2, X, Copy } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { FolderOpen, Heart, Power, Trash2, X, Copy, Grid3x3 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,8 +14,9 @@ import { synthesisForFont } from "@/lib/fonts/synthesis";
 import { findFont, folderTree, collectionIsWatched, tagsFor, useFontStore } from "@/lib/fonts/store";
 import { useLiveAxes } from "@/lib/fonts/live-axes";
 import { fontLicense } from "@/lib/fonts/license";
+import { contrastLabel, formatXh, metricsFor, toggleSearchToken, widthClassLabel } from "@/lib/fonts/metrics";
 import { CATEGORY_LABEL, LICENSE_HINT, LICENSE_LABEL, LICENSE_OPTIONS } from "@/lib/fonts/types";
-import { axesForFont, defaultWeightForFont, hasRealItalic, instancesForFont, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, realItalicAxes, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultWeightForFont, formatFvar, hasRealItalic, instancesForFont, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, realItalicAxes, variationStyle } from "@/lib/fonts/axes";
 import { AxisSliders } from "./axis-sliders";
 import { HelpTip } from "./help-tip";
 import { LicenseBadge } from "./license-badge";
@@ -27,10 +29,6 @@ import { openActivatedFolder, deleteFontFiles } from "@/lib/fonts/os-activate";
 import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
 import { copyText } from "@/lib/copy-text";
 import { idbGet, previewCacheId } from "@/lib/fonts/idb";
-
-const WATERFALL = [12, 16, 24, 36, 48, 72];
-const GLYPHS =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 &@$#%?!()[]{}";
 
 export function FontInspector() {
   const open = useFontStore((s) => s.inspectorOpen);
@@ -55,6 +53,8 @@ export function FontInspector() {
   const storedAxes = useLiveAxes(selectedId);
   const setPreviewAxis = useFontStore((s) => s.setPreviewAxis);
   const setFeaturePref = useFontStore((s) => s.setFeaturePref);
+  const query = useFontStore((s) => s.query);
+  const setQuery = useFontStore((s) => s.setQuery);
 
   const font = selectedId ? findFont(selectedId, localFonts, googleFonts) : undefined;
   const [tagDraft, setTagDraft] = useState("");
@@ -73,11 +73,15 @@ export function FontInspector() {
     const id = font.id;
     void (async () => {
       try {
-        const { nativeFamilyLayout } = await import("@/lib/fonts/native-parse");
+        const { nativeFamilyLayout, fontMetricsFromLayout } = await import("@/lib/fonts/native-parse");
         const layout = await nativeFamilyLayout(font.family);
-        if (layout?.otFeatures?.length) {
-          setParsedTags(layout.otFeatures);
-          return;
+        if (layout) {
+          if (layout.otFeatures?.length) setParsedTags(layout.otFeatures);
+          const store = useFontStore.getState();
+          if (layout.axes?.length) store.patchFontAxes(id, layout.axes);
+          const metrics = fontMetricsFromLayout(layout);
+          if (metrics) store.patchFontMetrics(id, metrics);
+          if (layout.otFeatures?.length) return;
         }
         let buf: ArrayBuffer | null = null;
         const blob = (await idbGet(id)) || (await idbGet(previewCacheId(id)));
@@ -91,6 +95,15 @@ export function FontInspector() {
       }
     })();
   }, [font?.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setInspectorOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, setInspectorOpen]);
 
   useEffect(() => {
     if (!font || !italicOn) return;
@@ -107,13 +120,21 @@ export function FontInspector() {
 
   if (!font) {
     return (
-      <aside className="flex h-full w-[min(100%,24rem)] shrink-0 flex-col border-l border-border bg-card">
-        <div className="flex justify-end p-3">
-          <Button size="icon-sm" variant="ghost" aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>
-            <X />
-          </Button>
-        </div>
-      </aside>
+      <>
+        <button
+          type="button"
+          className="absolute inset-0 z-20 bg-background/60 md:hidden"
+          aria-label="Close inspector"
+          onClick={() => setInspectorOpen(false)}
+        />
+        <aside className="fixed inset-y-0 right-0 z-30 flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-border bg-card shadow-border md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0">
+          <div className="flex justify-end p-3">
+            <Button size="icon-sm" variant="ghost" aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>
+              <X />
+            </Button>
+          </div>
+        </aside>
+      </>
     );
   }
 
@@ -133,12 +154,56 @@ export function FontInspector() {
     axes,
   );
   const tags = tagsFor(font, customTags);
+  const searchMetrics = metricsFor(font);
+  const searchChips: { label: string; token: string; title: string }[] = [];
+  {
+    const xh = formatXh(searchMetrics.xh);
+    const ctr = contrastLabel(searchMetrics.contrast);
+    const width = widthClassLabel(searchMetrics.widthClass);
+    if (xh) searchChips.push({ label: `xh ${xh}`, token: `xh:${xh}-${xh}`, title: "OS/2 sxHeight / UPM" });
+    if (ctr) {
+      searchChips.push({
+        label: `${ctr} contrast`,
+        token: `contrast:${ctr}`,
+        title: "Latin-Text PANOSE, not a stem raster",
+      });
+    }
+    searchChips.push({
+      label: `weight ${searchMetrics.weightClass}`,
+      token: `weight:${searchMetrics.weightClass}`,
+      title: "OS/2 usWeightClass or catalog weights",
+    });
+    if (width) {
+      searchChips.push({
+        label: width,
+        token: `width:${searchMetrics.widthClass}-${searchMetrics.widthClass}`,
+        title: "OS/2 usWidthClass",
+      });
+    }
+    searchChips.push({ label: `UPM ${searchMetrics.upem}`, token: "", title: "head unitsPerEm" });
+    for (const axis of axes) {
+      const lo = formatFvar(axis.min);
+      const hi = formatFvar(axis.max);
+      searchChips.push({
+        label: `${axis.tag} ${lo}–${hi}`,
+        token: `${axis.tag}:${lo}-${hi}`,
+        title: `fvar ${axis.name || axis.tag}`,
+      });
+    }
+  }
 
   return (
-    <aside className="flex h-full min-h-0 w-[min(100%,24rem)] shrink-0 flex-col overflow-hidden border-l border-border bg-card">
+    <>
+      <button
+        type="button"
+        className="absolute inset-0 z-20 bg-background/60 md:hidden"
+        aria-label="Close inspector"
+        onClick={() => setInspectorOpen(false)}
+      />
+    <aside className="fixed inset-y-0 right-0 z-30 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-l border-border bg-card shadow-border md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0">
       <div className="flex items-start justify-between gap-3 p-5 pb-3">
         <div className="min-w-0">
-          <h2 className="font-heading text-2xl leading-tight text-foreground break-words" style={{ fontFamily: stack }}>
+          <h2 className="font-heading min-w-0 max-w-full overflow-hidden text-xl leading-snug break-words text-foreground" style={{ fontFamily: stack, overflowWrap: "anywhere" }}>
             {font.family}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -162,7 +227,7 @@ export function FontInspector() {
           <div className="space-y-6 px-5 pb-10">
             <p
               className={cn(
-                "fm-spec overflow-hidden rounded-lg bg-paper px-4 py-5 text-ink",
+                "fm-spec min-w-0 max-w-full overflow-x-hidden overflow-hidden break-words rounded-lg bg-paper px-4 py-4 text-xl leading-snug text-ink",
                 italicOn && hasRealItalic(font) ? "fm-spec-italic" : "fm-spec-roman",
                 font.variable ? "fm-spec-variable" : "fm-spec-static",
                 italicOn && hasRealItalic(font) ? "fm-spec-real" : null,
@@ -173,8 +238,8 @@ export function FontInspector() {
               lang={scriptLang(font.family)}
               style={{
                 fontFamily: stack,
-                fontSize: "clamp(1.35rem, 3.6vw, 2.5rem)",
-                lineHeight: 1.2,
+                fontSize: "1.25rem",
+                lineHeight: 1.3,
                 ...featureCss,
                 fontWeight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
                 fontStyle: italicCss.fontStyle ?? "normal",
@@ -360,6 +425,32 @@ export function FontInspector() {
               </label>
 
             <section className="space-y-2">
+              <Label>SuperSearch</Label>
+              <p className="text-xs text-muted-foreground">
+                {searchMetrics.xh == null || searchMetrics.contrast == null
+                  ? "xh/contrast unknown until OS/2 is read (uploads and on-disk). Catalog-only families still match weight, width, variable, and axis ranges."
+                  : "From OS/2 + head. Tap a chip to filter the library."}
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {searchChips.map((chip) => (
+                  <button
+                    key={chip.label}
+                    type="button"
+                    disabled={!chip.token}
+                    title={chip.title}
+                    onClick={() => {
+                      if (!chip.token) return;
+                      setQuery(toggleSearchToken(query, chip.token));
+                    }}
+                    className="inline-flex h-6 items-center rounded-full bg-secondary px-2.5 text-[11px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-70"
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <Label>OpenType features</Label>
                 <Button
@@ -388,7 +479,7 @@ export function FontInspector() {
                   : "Reading GSUB… common tags until the file is parsed. Off means explicitly disable."}
               </p>
               <p
-                className="fm-spec rounded-lg bg-paper px-3 py-2 text-xl text-ink"
+                className="fm-spec min-w-0 max-w-full overflow-hidden break-words rounded-lg bg-paper px-3 py-2 text-xl text-ink"
                 style={{ fontFamily: stack, fontWeight: weight, ...featureCss }}
               >
                 {FEATURE_DEMO}
@@ -412,42 +503,13 @@ export function FontInspector() {
                   </label>
                 ))}
               </div>
-            </section>
-
-            <section className="space-y-2">
-              <Label>Waterfall</Label>
-              <div className="space-y-1 rounded-lg bg-paper px-3 py-2 text-ink">
-                {WATERFALL.map((size) => (
-                  <p
-                    key={size}
-                    className="fm-spec truncate leading-tight"
-                    style={{
-                      fontFamily: stack,
-                      fontWeight: weight,
-                      fontSize: size,
-                      ...featureCss,
-                    }}
-                  >
-                    {preview.sampleText || previewSample(font, "Hamburgefonstiv")}
-                  </p>
-                ))}
-              </div>
-            </section>
-
-            <section className="space-y-2">
-              <Label>Glyphs</Label>
-              <p
-                className="fm-spec rounded-lg bg-secondary p-3 text-lg leading-relaxed"
-                dir={scriptDir(font.family)}
-                lang={scriptLang(font.family)}
-                style={{
-                  fontFamily: stack,
-                  fontWeight: weight,
-                  ...featureCss,
-                }}
+              <Link
+                to="/glyphs"
+                className="inline-flex h-9 items-center gap-1.5 text-xs text-muted-foreground no-underline hover:text-foreground"
               >
-                {previewSample(font, GLYPHS)}
-              </p>
+                <Grid3x3 className="size-3.5" />
+                Full glyph map
+              </Link>
             </section>
 
             {colorKindOf(font) !== "none" ? (
@@ -598,5 +660,6 @@ export function FontInspector() {
           </div>
         </ScrollArea>
     </aside>
+    </>
   );
 }

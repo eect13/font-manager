@@ -148,23 +148,29 @@ export function previewCacheId(id: string) {
   return `${PREVIEW_PREFIX}${id}`;
 }
 
+export const IDB_PUT_CHUNK = 48;
+
 export async function idbPutMany(entries: { id: string; blob: Blob }[]): Promise<void> {
   if (!entries.length) return;
   const db = await openDb();
-  const write = () =>
+  const write = (slice: { id: string; blob: Blob }[]) =>
     new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
       const store = tx.objectStore(STORE);
-      for (const { id, blob } of entries) store.put(blob, id);
+      for (const { id, blob } of slice) store.put(blob, id);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-  try {
-    await write();
-  } catch (err) {
-    if (!isQuotaError(err)) throw err;
-    await evictPreviewKeys();
-    await write();
+  for (let i = 0; i < entries.length; i += IDB_PUT_CHUNK) {
+    const slice = entries.slice(i, i + IDB_PUT_CHUNK);
+    try {
+      await write(slice);
+    } catch (err) {
+      if (!isQuotaError(err)) throw err;
+      await evictPreviewKeys();
+      await write(slice);
+    }
+    if (i + IDB_PUT_CHUNK < entries.length) await new Promise((r) => setTimeout(r, 0));
   }
 }
 
