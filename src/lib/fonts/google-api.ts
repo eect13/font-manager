@@ -152,6 +152,19 @@ function slimRecord(font: FontRecord): FontRecord {
   };
 }
 
+/** IDB catalog never owns the Variable *badge*. Heal facet from bundled snapshot. */
+export function healCachedCatalogFont(
+  font: Pick<FontRecord, "family" | "id" | "catalogVariable" | "variable">,
+  bundled: Pick<FontRecord, "family" | "catalogVariable"> | undefined,
+): { catalogVariable: boolean; variable: false } {
+  return {
+    variable: false,
+    catalogVariable:
+      !isWoff2OnlyVariableFamily(font.family) &&
+      Boolean(font.catalogVariable || bundled?.catalogVariable),
+  };
+}
+
 function validCachedFonts(fonts: unknown): fonts is FontRecord[] {
   if (!Array.isArray(fonts) || fonts.length < BUNDLED_COUNT) return false;
   return fonts.every((font) => {
@@ -198,13 +211,20 @@ export async function loadCachedCatalog(): Promise<boolean> {
     if (!blob || typeof blob.text !== "function") return false;
     const parsed = JSON.parse(await blob.text()) as Partial<CatalogCache>;
     if (parsed.v !== 1 || !validCachedFonts(parsed.fonts)) return false;
-    const fonts = parsed.fonts.map((font) => ({
-      ...font,
-      source: "google" as const,
-      id: font.id.startsWith("g:") ? font.id : googleFontId(font.family),
-      catalog: catalogOf(font.family),
-      weights: font.weights?.length ? font.weights : [400],
-    }));
+    const bundledVar = new Map(GOOGLE_FONTS.map((font) => [font.family.toLowerCase(), font] as const));
+    const fonts = parsed.fonts.map((font) => {
+      const bundled = bundledVar.get(font.family.toLowerCase());
+      const healed = healCachedCatalogFont(font, bundled);
+      return {
+        ...font,
+        source: "google" as const,
+        id: font.id.startsWith("g:") ? font.id : googleFontId(font.family),
+        catalog: catalogOf(font.family),
+        weights: font.weights?.length ? font.weights : [400],
+        catalogVariable: healed.catalogVariable,
+        variable: healed.variable,
+      };
+    });
     applyLiveCatalog(fonts);
     if (typeof parsed.savedAt === "number" && parsed.savedAt > 0) markSynced(parsed.savedAt);
     return true;

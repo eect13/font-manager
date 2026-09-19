@@ -23,7 +23,7 @@ import { LibraryGroups } from "./folder-tree";
 import { GoogleActivateMenuItem, GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
 import { SidebarRow } from "./sidebar-row";
 import { HelpTip } from "./help-tip";
-import { ALL_TAGS, GOOGLE_DIRECTORY, isFontsourceOnly, isVariableCatalogFamily } from "@/lib/fonts/catalog";
+import { GOOGLE_DIRECTORY, isFontsourceOnly, isVariableCatalogFamily } from "@/lib/fonts/catalog";
 import { getCatalogSyncState, subscribeCatalogSync, syncFontCatalog } from "@/lib/fonts/google-api";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
@@ -41,7 +41,6 @@ const LICENSE_NAV: { id: FontLicense; icon: typeof Library }[] = [
   { id: "unknown", icon: CircleHelp },
 ];
 
-const KNOWN_TAGS = new Set(ALL_TAGS);
 const EMPTY_IDS: string[] = [];
 
 function tallyFonts(list: FontRecord[], customTags: Record<string, string[]>) {
@@ -56,7 +55,7 @@ function tallyFonts(list: FontRecord[], customTags: Record<string, string[]>) {
     if (isVariableCatalogFamily(font)) variable += 1;
     if (font.italic) italic += 1;
     for (const tag of tagsFor(font, customTags)) {
-      if (KNOWN_TAGS.has(tag) && (TAG_ORDER as readonly string[]).includes(tag)) {
+      if ((TAG_ORDER as readonly string[]).includes(tag)) {
         tags.set(tag, (tags.get(tag) ?? 0) + 1);
       }
     }

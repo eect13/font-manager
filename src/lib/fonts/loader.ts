@@ -475,10 +475,20 @@ function cssForInject(css: string, href: string, family?: string) {
 function injectGoogleCss(href: string, key: string, family?: string): Promise<void> {
   if (typeof document === "undefined") return Promise.resolve();
   const existing = googleLinks.get(key);
-  if (existing) return Promise.resolve();
+  if (existing?.dataset.href === href) return Promise.resolve();
+  if (existing) {
+    try {
+      existing.remove();
+    } catch {
+      /* ignore */
+    }
+    googleLinks.delete(key);
+    const at = cssOrder.indexOf(key);
+    if (at >= 0) cssOrder.splice(at, 1);
+  }
 
   return withCssSlot(async () => {
-    const cacheId = `css:${key}`;
+    const cacheId = `css:vf2:${key}`;
     try {
       const { idbGet, idbPut } = await import("./idb");
       const cached = await idbGet(cacheId);
@@ -496,6 +506,7 @@ function injectGoogleCss(href: string, key: string, family?: string): Promise<vo
       if (text) {
         const style = document.createElement("style");
         style.dataset.fontKey = key;
+        style.dataset.href = href;
         style.textContent = cssForInject(text, href, family);
         document.head.appendChild(style);
         rememberCss(key, style);

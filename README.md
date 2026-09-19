@@ -1,10 +1,12 @@
-# Font Manager **1.0.192**
+# Font Manager **1.0.193**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.193.** Slider + Variable facet cache: bust IDB CSS `css:cover:…` Regular-400 sheets (`css:vf2:`); replace injected CSS when href changes; heal `catalogVariable` from bundled snapshot on cache load (cache never owns the Variable badge); slider for disk VF without fvar too; `font-synthesis: none` so the slider is not fake-bold. 1.0.192 merge-Activate kept.
 
 **1.0.192.** Card weight slider works on catalog Variable fonts in preview (CSS2 `wght@min..max&text=` — not Regular 400). Badge/axes still on-disk only. Simultaneous Activate merges into the bulk queue — no wait for the other family’s idle. 1.0.191 Variable facet kept.
 

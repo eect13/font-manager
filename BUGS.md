@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.193
+- **Slider still Regular (P0):** 1.0.192 changed CSS2 to `wght@min..max` but `injectGoogleCss` keyed IDB as `css:cover:g:Inter` — leftover 1.0.183 Regular-400 sheets won. Cache `css:vf2:`; replace `<style>` when href changes. Disk VF (`variable:true`) with no fvar yet now gets `previewWghtAxis`. Specimen `font-synthesis: none` on VF cards.
+- **Variable facet cache (P0):** `loadCachedCatalog` applied IDB records as-is. Pre-1.0.191 cache omitted `catalogVariable` and could keep `variable:true` → facet collapsed or badge lied. Heal facet from bundled snapshot; **badge always false** until disk honesty.
+
 ## Fixed in tip / 1.0.192
 - **Card slider dead in preview (P0):** 1.0.191 restored Variable *facet* but `axesForFont` still returns [] without disk fvar, and CSS2 preview was `wght@400`. Catalog VF cards had no slider; dragging a disk-VF slider painted weight on a static Regular face. `previewWghtAxis` for catalog VF; CSS2 `wght@min..max&text=`; no local Regular TTF for catalog VF. Badge `font.variable` stays disk-only.
 - **Simultaneous Activate (P0):** each Power click `activateOnDiskAndWait`’d until the *whole* job idled — second family waited on the first download. Now `start_google_downloads` merge (Rust `pending.extend`); live still from `ready_names` only.
@@ -214,5 +218,5 @@
 
 ## Notes
 
-- Tip is 1.0.192 (unreleased pack — ask before NSIS).
+- Tip is 1.0.193 (unreleased pack — ask before NSIS).
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

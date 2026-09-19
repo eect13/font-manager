@@ -19,7 +19,7 @@ function axesForFontHonest(font) {
 function previewWghtAxis(font) {
   const real = axesForFontHonest(font).find((a) => a.tag === "wght");
   if (real && real.max > real.min) return real;
-  if (!font.catalogVariable) return null;
+  if (!font.catalogVariable && !font.variable) return null;
   const ws = font.weights?.filter((n) => Number.isFinite(n) && n > 0) ?? [];
   let min = ws.length ? Math.min(...ws) : 100;
   let max = ws.length ? Math.max(...ws) : 900;
@@ -53,6 +53,41 @@ test("preview slider exists for catalog VF before Activate", () => {
   assert.equal(span.min, 100);
   assert.equal(span.max, 900);
   assert.equal(previewWghtAxis({ family: "Roboto", variable: false, weights: [400, 700] }), null);
+  const diskVf = previewWghtAxis({ family: "Inter", variable: true, catalogVariable: false, weights: [100, 900] });
+  assert.ok(diskVf);
+  assert.equal(diskVf.min, 100);
+});
+
+test("IDB CSS cache is vf2 and inject replaces on href change", () => {
+  assert.match(loader, /css:vf2:\$\{key\}/);
+  assert.match(loader, /existing\?\.dataset\.href === href/);
+});
+
+test("catalog cache heals catalogVariable; never trusts cache.variable badge", () => {
+  const api = readFileSync(join(root, "src/lib/fonts/google-api.ts"), "utf8");
+  assert.match(api, /export function healCachedCatalogFont/);
+  assert.match(api, /variable: false/);
+  assert.match(api, /catalogVariable: healed\.catalogVariable/);
+  function healCachedCatalogFont(font, bundled) {
+    const woff2 = /material symbols/i.test(font.family);
+    return {
+      variable: false,
+      catalogVariable: !woff2 && Boolean(font.catalogVariable || bundled?.catalogVariable),
+    };
+  }
+  assert.deepEqual(
+    healCachedCatalogFont({ family: "Inter", catalogVariable: undefined, variable: true }, { catalogVariable: true }),
+    { variable: false, catalogVariable: true },
+  );
+  assert.deepEqual(
+    healCachedCatalogFont({ family: "Lora", catalogVariable: false, variable: true }, { catalogVariable: false }),
+    { variable: false, catalogVariable: false },
+  );
+  assert.equal(
+    healCachedCatalogFont({ family: "Material Symbols Outlined", catalogVariable: true }, { catalogVariable: true })
+      .catalogVariable,
+    false,
+  );
 });
 
 test("catalog VF preview CSS2 is a wght range + text=, not Regular 400", () => {

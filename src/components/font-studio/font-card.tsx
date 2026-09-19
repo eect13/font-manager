@@ -211,7 +211,7 @@ export const FontCard = memo(function FontCard({
     fontWeight: paintWeightN,
     fontVariationSettings: paintFvs,
     fontStretch: vs?.fontStretch,
-    fontSynthesis: italicCss.fontSynthesis,
+    fontSynthesis: catalogVf ? "none" : italicCss.fontSynthesis,
     fontOpticalSizing: vs?.fontOpticalSizing ?? (catalogVf ? "auto" : undefined),
     ...(font.colorKind && font.colorKind !== "none"
       ? { fontPalette: "normal", fontVariantEmoji: "emoji" as const }

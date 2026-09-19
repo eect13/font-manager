@@ -90,7 +90,7 @@ export function previewWghtAxis(
 ): FontAxis | null {
   const real = axesForFont(font).find((a) => a.tag === "wght");
   if (real && real.max > real.min) return real;
-  if (!font.catalogVariable) return null;
+  if (!font.catalogVariable && !font.variable) return null;
   const ws = font.weights?.filter((n) => Number.isFinite(n) && n > 0) ?? [];
   let min = ws.length ? Math.min(...ws) : 100;
   let max = ws.length ? Math.max(...ws) : 900;
