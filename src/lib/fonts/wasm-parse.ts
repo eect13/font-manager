@@ -12,6 +12,15 @@
  *   4. opentype.js    last resort — parses glyf; WOFF2 / odd wrappers
  *
  * Do not add harfbuzz-wasm / pyftsubset / hb-subset here. GDI Documents stay full TTFs.
+ *
+ * SIMD: parse is table-dir (KB), not glyf. SubtleCrypto SHA-256 already uses SHA-NI.
+ * Duplicate-scan uses word-stride in binary-diff.ts (Uint32). A wasm SIMD crate
+ * would re-parse what sfnt.ts already skips.
+ *
+ * WebGPU: available in WebView2 *and* the Grok browser (Chromium). It does **not**
+ * draw library cards (CSS @font-face + DirectWrite/Skia already GPU-composite).
+ * It does **not** AddFontResourceExW. A custom GPU glyph atlas is a second
+ * renderer fighting Chromium text — Grok-preview and desktop UI both lose.
  */
 
 export const PARSE_WORKER_MAX = 4;

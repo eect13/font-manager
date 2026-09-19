@@ -1,10 +1,12 @@
-# Font Manager **1.0.195**
+# Font Manager **1.0.196**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.196.** SIMD = word-stride byte-diff for duplicate scan (`Uint32Array`). SHA-256 stays SubtleCrypto. **No WebGPU text renderer** — cards/glyphs are CSS; GDI is AddFontResourceExW. WebGPU exists in WebView2 *and* the Grok browser; it does not Activate fonts.
 
 **1.0.195.** Upload parse: worker *pool* (≤4) with transferable `ArrayBuffer` (no File clone). Native layout IPC sends `Uint8Array` (no `Array.from` boxing, 8MB). sfnt-js still skips glyf. No harfbuzz-wasm / subset — GDI stays full TTF. 1.0.194 IDB persist kept.
 
