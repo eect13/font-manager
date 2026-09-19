@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isWoff2OnlyVariableFamily, replaceGoogleCatalog } from "./catalog";
+import { CATALOG_CACHE_VERSION, healCachedCatalogFont } from "./heal-catalog";
 import { classifyLicenseText, licenseFromCode } from "./license";
 import { guessGoogleColorKind } from "./color-font";
 import { tagsForGoogleFamily } from "./style-tags";
@@ -45,7 +46,7 @@ export type CatalogSyncResult = {
 };
 
 type CatalogCache = {
-  v: 1;
+  v: 1 | typeof CATALOG_CACHE_VERSION;
   savedAt: number;
   fonts: FontRecord[];
 };
@@ -143,7 +144,7 @@ function slimRecord(font: FontRecord): FontRecord {
     weights: font.weights,
     italic: font.italic,
     catalogVariable: font.catalogVariable,
-    variable: font.variable,
+    variable: false,
     tags: font.tags,
     popularity: font.popularity,
     license: font.license,
@@ -152,18 +153,7 @@ function slimRecord(font: FontRecord): FontRecord {
   };
 }
 
-/** IDB catalog never owns the Variable *badge*. Heal facet from bundled snapshot. */
-export function healCachedCatalogFont(
-  font: Pick<FontRecord, "family" | "id" | "catalogVariable" | "variable">,
-  bundled: Pick<FontRecord, "family" | "catalogVariable"> | undefined,
-): { catalogVariable: boolean; variable: false } {
-  return {
-    variable: false,
-    catalogVariable:
-      !isWoff2OnlyVariableFamily(font.family) &&
-      Boolean(font.catalogVariable || bundled?.catalogVariable),
-  };
-}
+export { CATALOG_CACHE_VERSION, healCachedCatalogFont } from "./heal-catalog";
 
 function validCachedFonts(fonts: unknown): fonts is FontRecord[] {
   if (!Array.isArray(fonts) || fonts.length < BUNDLED_COUNT) return false;
@@ -183,7 +173,7 @@ function validCachedFonts(fonts: unknown): fonts is FontRecord[] {
 
 async function saveCatalogCache(fonts: FontRecord[]) {
   try {
-    const payload: CatalogCache = { v: 1, savedAt: Date.now(), fonts: fonts.map(slimRecord) };
+    const payload: CatalogCache = { v: CATALOG_CACHE_VERSION, savedAt: Date.now(), fonts: fonts.map(slimRecord) };
     await idbPut(CATALOG_CACHE_ID, new Blob([JSON.stringify(payload)], { type: "application/json" }));
   } catch {
     /* quota — shipped snapshot still boots */
@@ -210,7 +200,8 @@ export async function loadCachedCatalog(): Promise<boolean> {
     const blob = await idbGet(CATALOG_CACHE_ID);
     if (!blob || typeof blob.text !== "function") return false;
     const parsed = JSON.parse(await blob.text()) as Partial<CatalogCache>;
-    if (parsed.v !== 1 || !validCachedFonts(parsed.fonts)) return false;
+    if (parsed.v !== 1 && parsed.v !== CATALOG_CACHE_VERSION) return false;
+    if (!validCachedFonts(parsed.fonts)) return false;
     const bundledVar = new Map(GOOGLE_FONTS.map((font) => [font.family.toLowerCase(), font] as const));
     const fonts = parsed.fonts.map((font) => {
       const bundled = bundledVar.get(font.family.toLowerCase());

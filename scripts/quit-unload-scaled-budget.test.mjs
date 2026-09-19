@@ -10,9 +10,9 @@ const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
 const versionTs = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
-test("1.0.193: version is 1.0.193 (quit unload budget from 1.0.189 kept)", () => {
-  assert.equal(pkg.version, "1.0.193");
-  assert.match(versionTs, /APP_VERSION\s*=\s*"1\.0\.193"/);
+test("1.0.194: version is 1.0.194 (quit unload budget from 1.0.189 kept)", () => {
+  assert.equal(pkg.version, "1.0.194");
+  assert.match(versionTs, /APP_VERSION\s*=\s*"1\.0\.194"/);
 });
 
 test("1.0.189: quit_unload_budget_for scales 15ms/path clamp 12s–180s", () => {

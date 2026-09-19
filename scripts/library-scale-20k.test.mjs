@@ -60,16 +60,16 @@ test("Activated pool is O(live) — no 22k concat on facet/Activated tick", () =
 test("source: poolForScope + gfonts grid + activated count is length", () => {
   assert.match(store, /export function poolForScope/);
   assert.match(store, /scope === "activated"/);
-  assert.match(grid, /poolForScope\(scope, localFonts, googleFonts, systemFonts, liveIds\)/);
-  assert.match(sidebar, /poolForScope\(scope, localFonts, googleFonts, systemFonts, liveIds\)/);
+  assert.match(grid, /poolForScope\(scope, localPool, googleFonts, systemFonts, liveIds\)/);
+  assert.match(sidebar, /poolForScope\(scope, skipLocals \? \[\] : localFonts, googleFonts, systemFonts, liveIds\)/);
   assert.match(sidebar, /activated: activated\.length/);
   assert.match(sidebar, /scope === "activated" \? activated : EMPTY_IDS/);
   assert.match(sidebar, /const facetCounts = useMemo/);
   assert.match(sidebar, /const providerCounts = useMemo/);
   assert.match(store, /id\.startsWith\("g:"\)/);
   // 1.0.186: map locals/google once — no per-live-id localFonts.find
-  assert.match(store, /const localById = new Map\(localFonts\.map/);
-  assert.match(store, /localById\.get\(id\)/);
+  assert.match(store, /googleOnly \? null : new Map\(localFonts\.map/);
+  assert.match(store, /localById\?\.get\(id\)/);
   assert.doesNotMatch(
     store.slice(store.indexOf("scope === \"activated\""), store.indexOf("return allFonts")),
     /localFonts\.find\(\(f\) => f\.id === id\)/,

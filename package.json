@@ -1,6 +1,6 @@
 {
   "name": "font-manager",
-  "version": "1.0.193",
+  "version": "1.0.194",
   "description": "Font Manager \u2014 FontBase-style library: Fontsource, Google Fonts, uploads, session activation, glyphs, variable axes.",
   "sideEffects": false,
   "type": "module",
@@ -18,7 +18,7 @@
     "preview": "node scripts/with-app-env.mjs vite preview",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --test 'scripts/**/*.test.mjs'",
+    "test": "node --experimental-strip-types --test 'scripts/**/*.test.mjs'",
     "regen:catalogs": "node scripts/regen-shipped-catalogs.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",

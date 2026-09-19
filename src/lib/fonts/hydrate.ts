@@ -19,6 +19,7 @@ import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { startWatchPolling } from "./watch-folder";
 import { loadSystemFonts } from "./system-fonts";
 import { hydrateLiveAxes } from "./live-axes";
+import { loadLocalFontsMeta, pickLocalFontsPersist, saveLocalFontsMeta } from "./persist-local";
 import type { FontRecord } from "./types";
 
 async function reclassifyStoredLocalFonts(cancelled: () => boolean) {
@@ -119,6 +120,12 @@ export function useHydrateFonts() {
       if (cancelled) return;
       await useFontStore.persist.rehydrate();
       if (cancelled) return;
+      const fromLs = useFontStore.getState().localFonts;
+      const fromIdb = await loadLocalFontsMeta();
+      if (cancelled) return;
+      const locals = pickLocalFontsPersist(fromIdb, fromLs);
+      if (locals !== fromLs) useFontStore.setState({ localFonts: locals });
+      if (locals.length) void saveLocalFontsMeta(locals);
       hydrateLiveAxes(useFontStore.getState().previewAxes);
       const { localFonts, setHydrated, googleFonts, collections, scope } = useFontStore.getState();
       if (

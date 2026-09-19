@@ -1,10 +1,12 @@
-# Font Manager **1.0.193**
+# Font Manager **1.0.194**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.194.** Finalize cut on 193: catalog IDB `v: 2` (heal is the schema); upload catalog in IndexedDB not localStorage (20k); Activated google-only skips the 20k local map; tests import real `healCachedCatalogFont` / `previewWghtAxis`. NSIS still packed on Windows via `deploy.bat` (`*_x64-setup.exe` → Desktop\\Vibe Apps\\Font Manager\\Installers). GitHub release has no sandbox-built NSIS — upload from that folder: `gh release upload v1.0.194 <setup.exe>`. GDI HOLD unchanged. Auth/pglite leftover not deleted (would break the web preview shell).
 
 **1.0.193.** Slider + Variable facet cache: bust IDB CSS `css:cover:…` Regular-400 sheets (`css:vf2:`); replace injected CSS when href changes; heal `catalogVariable` from bundled snapshot on cache load (cache never owns the Variable badge); slider for disk VF without fvar too; `font-synthesis: none` so the slider is not fake-bold. 1.0.192 merge-Activate kept.
 

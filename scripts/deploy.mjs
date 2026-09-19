@@ -15,12 +15,14 @@
  *   node scripts/deploy.mjs --out D:\builds\FontManager
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { basename, delimiter, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(fileURLToPath(new URL("..", import.meta.url)));
+const PKG = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+const APP_VER = String(PKG.version ?? "");
 const WIN = platform() === "win32";
 const noOpen = process.argv.includes("--no-open");
 
@@ -104,8 +106,8 @@ function walk(dir, acc = []) {
 function isInstaller(path) {
   const ext = extname(path).toLowerCase();
   if (INSTALLER_EXT.has(ext)) return true;
-  if (ext === ".exe" && /nsis|setup|font-manager/i.test(path)) return true;
   const base = path.split(/[/\\]/).pop() ?? "";
+  if (ext === ".exe" && /nsis|setup|font[._ -]?manager/i.test(base)) return true;
   return ext === "" && base === "font-manager";
 }
 
@@ -113,7 +115,8 @@ function isInstaller(path) {
 function isPackagedInstaller(path) {
   const ext = extname(path).toLowerCase();
   if (INSTALLER_EXT.has(ext)) return true;
-  return ext === ".exe" && /nsis|setup/i.test(path);
+  const base = path.split(/[/\\]/).pop() ?? "";
+  return ext === ".exe" && /nsis|setup/i.test(base);
 }
 
 console.log("Font Manager deploy — 4 steps. First time is slow; leave this window open.\n");
@@ -176,6 +179,15 @@ for (const src of toCopy) {
 if (copied.length) {
   console.log(`  Installers (default):`);
   for (const p of copied) console.log(`    ${p}`);
+  const nsis = copied.filter((p) => /\.exe$/i.test(p));
+  if (nsis.length) {
+    console.log("  NSIS for other PCs (no Node/Rust needed):");
+    for (const p of nsis) console.log(`    ${p}`);
+    console.log(`  GitHub (from this PC): gh release upload v${APP_VER} <that-nsis.exe> --clobber`);
+  }
+  if (!nsis.length) {
+    console.log("  No NSIS .exe in this bundle (WiX MSI-only or nsis skipped). Need nsis: tauri build --bundles nsis");
+  }
 } else if (show.length) {
   console.log(`  No files copied — check permissions for:\n    ${outDir}`);
 } else {

@@ -65,7 +65,7 @@ test("IDB CSS cache is vf2 and inject replaces on href change", () => {
 
 test("catalog cache heals catalogVariable; never trusts cache.variable badge", () => {
   const api = readFileSync(join(root, "src/lib/fonts/google-api.ts"), "utf8");
-  assert.match(api, /export function healCachedCatalogFont/);
+  assert.match(api, /healCachedCatalogFont/);
   assert.match(api, /variable: false/);
   assert.match(api, /catalogVariable: healed\.catalogVariable/);
   function healCachedCatalogFont(font, bundled) {

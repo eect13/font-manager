@@ -1,5 +1,12 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.194
+- **Catalog cache schema (P1):** IDB catalog writes `v: 2`; still reads v1. Heal is the schema. `slimRecord.variable` always false (badge is disk-only).
+- **20k upload persist (P0):** `localFonts` no longer in localStorage (5MB quota). Meta JSON in IndexedDB `meta:local-fonts`; file blobs already IDB. v5 persist; hydrate merges IDB vs leftover LS.
+- **Activated 2099 google-only:** skip mapping 20k locals when every live id is `g:`.
+- **NSIS details:** deploy copies `*setup.exe`; prints `gh release upload vVERSION`. Linux sandbox cannot produce NSIS — pack on Windows.
+- Tests import real `heal-catalog.ts` / `previewWghtAxis` / `pickLocalFontsPersist`.
+
 ## Fixed in tip / 1.0.193
 - **Slider still Regular (P0):** 1.0.192 changed CSS2 to `wght@min..max` but `injectGoogleCss` keyed IDB as `css:cover:g:Inter` — leftover 1.0.183 Regular-400 sheets won. Cache `css:vf2:`; replace `<style>` when href changes. Disk VF (`variable:true`) with no fvar yet now gets `previewWghtAxis`. Specimen `font-synthesis: none` on VF cards.
 - **Variable facet cache (P0):** `loadCachedCatalog` applied IDB records as-is. Pre-1.0.191 cache omitted `catalogVariable` and could keep `variable:true` → facet collapsed or badge lied. Heal facet from bundled snapshot; **badge always false** until disk honesty.
@@ -218,5 +225,5 @@
 
 ## Notes
 
-- Tip is 1.0.193 (unreleased pack — ask before NSIS).
+- Tip is 1.0.194. NSIS is Windows `deploy.bat` only — attach `*_x64-setup.exe` to the GitHub release from Desktop\\Vibe Apps\\Font Manager\\Installers.
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

@@ -8,6 +8,7 @@ import { loadFont, unloadLocalFont } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { bindAxesPersist, setLiveAxis } from "./live-axes";
 import { removeUploadFromDisk, saveUploadToDisk, syncFontOnSystem, syncFontsOnSystem, uninstallFontOnSystem } from "./os-activate";
+import { scheduleSaveLocalFontsMeta } from "./persist-local";
 import type {
   Collection,
   DuplicateGroup,
@@ -1053,7 +1054,7 @@ export const useFontStore = create<FontState>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 4,
+      version: 5,
       storage: createJSONStorage(() => persistStorage()),
       skipHydration: true,
       migrate: (persisted, from) => {
@@ -1147,7 +1148,8 @@ export const useFontStore = create<FontState>()(
         pendingActivate: [],
         collections: s.collections,
         customTags: s.customTags,
-        localFonts: s.localFonts,
+        // v5: upload catalog lives in IndexedDB (20k × JSON blows localStorage 5MB).
+        localFonts: [],
         preview: s.preview,
         previewAxes: s.previewAxes,
         scope: s.scope,
@@ -1160,6 +1162,10 @@ export const useFontStore = create<FontState>()(
 
 bindAxesPersist((axes) => {
   useFontStore.setState({ previewAxes: axes });
+});
+
+useFontStore.subscribe((s, prev) => {
+  if (s.localFonts !== prev.localFonts) scheduleSaveLocalFontsMeta(s.localFonts);
 });
 
 export function allFonts(
@@ -1185,8 +1191,8 @@ export function poolForScope(
   // Activated drawer/facet: O(live), never allFonts(~22k) on every GDI tick.
   if (scope === "activated") {
     if (!liveIds.length) return [];
-    // Map once — avoid O(live × locals) finds on every Activated facet tick.
-    const localById = new Map(localFonts.map((f) => [f.id, f]));
+    const googleOnly = liveIds.every((id) => id.startsWith("g:"));
+    const localById = googleOnly ? null : new Map(localFonts.map((f) => [f.id, f]));
     const googleById = new Map(googleFonts.map((f) => [f.id, f]));
     const systemById = systemFonts.length ? new Map(systemFonts.map((f) => [f.id, f])) : null;
     const out: FontRecord[] = [];
@@ -1196,7 +1202,7 @@ export function poolForScope(
       seen.add(id);
       // Prefer store googleFonts (disk VF honesty) over static FONT_BY_ID (variable:false).
       const font =
-        localById.get(id) ??
+        localById?.get(id) ??
         googleById.get(id) ??
         systemById?.get(id) ??
         (id.startsWith("g:") ? FONT_BY_ID.get(id) : undefined) ??

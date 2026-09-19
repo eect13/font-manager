@@ -177,7 +177,8 @@ export function Sidebar({
     return { fontsource, gfonts: GOOGLE_DIRECTORY.size };
   }, [googleFonts]);
   const facetCounts = useMemo(() => {
-    const pool = poolForScope(scope, localFonts, googleFonts, systemFonts, liveIds);
+    const skipLocals = scope === "gfonts" || scope === "google" || scope === "system";
+    const pool = poolForScope(scope, skipLocals ? [] : localFonts, googleFonts, systemFonts, liveIds);
     const scoped = filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, "");
     const viewed = facet
       ? filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, facet)

@@ -112,8 +112,10 @@ export function LibraryGrid() {
   const fonts = useMemo(
     () => {
       const skip = hideDupIds.length ? new Set(hideDupIds) : null;
+      const localPool =
+        scope === "gfonts" || scope === "google" || scope === "system" ? EMPTY_FONTS : localFonts;
       const list = filterLibrary(
-        poolForScope(scope, localFonts, googleFonts, systemFonts, liveIds),
+        poolForScope(scope, localPool, googleFonts, systemFonts, liveIds),
         scope,
         deferredQuery,
         favorites,
