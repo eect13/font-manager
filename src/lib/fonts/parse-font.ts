@@ -388,18 +388,26 @@ function fromSfntFace(face: SfntFace, fileName: string, fileSize: number, checks
   );
 }
 
-export async function parseFontCollection(file: File): Promise<ParsedLocalFont[]> {
-  const buffer = await file.arrayBuffer();
+export async function parseFontCollectionFromBuffer(
+  fileName: string,
+  fileSize: number,
+  buffer: ArrayBuffer,
+): Promise<ParsedLocalFont[]> {
   const checksum = await sha256Hex(buffer);
   try {
-    const faces = await parseSfntCollection(buffer, file.name);
+    const faces = await parseSfntCollection(buffer, fileName);
     if (faces.length) {
-      return faces.map((face) => fromSfntFace(face, file.name, file.size, checksum));
+      return faces.map((face) => fromSfntFace(face, fileName, fileSize, checksum));
     }
   } catch {
     /* opentype.js for odd wrappers */
   }
-  return [await parseFontFileFromBuffer(file.name, file.size, buffer, checksum)];
+  return [await parseFontFileFromBuffer(fileName, fileSize, buffer, checksum)];
+}
+
+export async function parseFontCollection(file: File): Promise<ParsedLocalFont[]> {
+  const buffer = await file.arrayBuffer();
+  return parseFontCollectionFromBuffer(file.name, file.size, buffer);
 }
 
 export async function parseFontFile(file: File): Promise<ParsedLocalFont> {

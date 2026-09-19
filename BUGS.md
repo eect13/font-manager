@@ -1,5 +1,9 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.195
+- **Upload parse 20k (P0):** one worker cloned `File` at concurrency 2. Pool ≤4 cores; transfer `ArrayBuffer`; parse from buffer. Native layout no longer `Array.from` every byte (180KB lie); Uint8Array + 8MB. Cmap IPC still 180KB (UnifontEX).
+- **WASM ttf-parser (wont-do this tip):** desktop already has ttf-parser; `sfnt.ts` already skips outlines. Extra wasm crate duplicates both. harfbuzz-wasm / subset still forbidden for GDI.
+
 ## Fixed in tip / 1.0.194
 - **Catalog cache schema (P1):** IDB catalog writes `v: 2`; still reads v1. Heal is the schema. `slimRecord.variable` always false (badge is disk-only).
 - **20k upload persist (P0):** `localFonts` no longer in localStorage (5MB quota). Meta JSON in IndexedDB `meta:local-fonts`; file blobs already IDB. v5 persist; hydrate merges IDB vs leftover LS.
@@ -225,5 +229,5 @@
 
 ## Notes
 
-- Tip is 1.0.194. NSIS is Windows `deploy.bat` only — attach `*_x64-setup.exe` to the GitHub release from Desktop\\Vibe Apps\\Font Manager\\Installers.
+- Tip is 1.0.195. NSIS is Windows `deploy.bat` only.
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

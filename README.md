@@ -1,10 +1,12 @@
-# Font Manager **1.0.194**
+# Font Manager **1.0.195**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.195.** Upload parse: worker *pool* (≤4) with transferable `ArrayBuffer` (no File clone). Native layout IPC sends `Uint8Array` (no `Array.from` boxing, 8MB). sfnt-js still skips glyf. No harfbuzz-wasm / subset — GDI stays full TTF. 1.0.194 IDB persist kept.
 
 **1.0.194.** Finalize cut on 193: catalog IDB `v: 2` (heal is the schema); upload catalog in IndexedDB not localStorage (20k); Activated google-only skips the 20k local map; tests import real `healCachedCatalogFont` / `previewWghtAxis`. NSIS still packed on Windows via `deploy.bat` (`*_x64-setup.exe` → Desktop\\Vibe Apps\\Font Manager\\Installers). GitHub release has no sandbox-built NSIS — upload from that folder: `gh release upload v1.0.194 <setup.exe>`. GDI HOLD unchanged. Auth/pglite leftover not deleted (would break the web preview shell).
 
