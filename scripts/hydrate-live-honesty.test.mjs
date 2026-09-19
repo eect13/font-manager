@@ -4,7 +4,8 @@ import test from "node:test";
 /**
  * 1.0.176 hydrate live honesty:
  * - Activated after boot = this-process GDI (result.ready ∪ bootReady)
- * - last-session sidecar is live only after session_begin pruned (bootDone)
+ * - 1.0.190: boot.ready chunks are live before boot.done (progressive hydrate)
+ * - last-session sidecar is live only after session_begin pruned (bootDone) when boot.ready empty
  * - onDisk (files in Documents) is NOT live
  * - Gidugu is live only when boot.ready includes it (GDI Add after Debg sanitize / 2015 pin)
  * - skipFailed never nuclear-clears pending when names match no ids
@@ -13,7 +14,13 @@ import test from "node:test";
 function hydrateLiveIds({ wantIds, fonts, ready, onDisk, sessionNames, bootReady, bootDone }) {
   const allow = new Set();
   for (const n of ready) allow.add(n.trim().toLowerCase());
-  const sessionLive = bootDone ? (bootReady?.length ? bootReady : sessionNames) : (bootReady ?? []);
+  // 1.0.190: boot.ready (this-process Add) is live even before boot.done.
+  // Sidecar sessionNames only after boot.done when boot.ready is empty.
+  const sessionLive = bootReady?.length
+    ? bootReady
+    : bootDone
+      ? sessionNames
+      : [];
   for (const n of sessionLive) allow.add(n.trim().toLowerCase());
   const live = [];
   const seen = new Set();
@@ -113,6 +120,20 @@ test("hydrate live: last-session sidecar before boot prune is not live", () => {
     bootDone: false,
   });
   assert.deepEqual(live, []);
+});
+
+test("1.0.190 progressive: boot.ready before boot.done marks Live (not sidecar)", () => {
+  const live = hydrateLiveIds({
+    wantIds: ["g:Nunito", "g:Gidugu"],
+    fonts,
+    ready: [],
+    onDisk: ["Nunito", "Gidugu"],
+    sessionNames: ["Nunito", "Gidugu"],
+    bootReady: ["Nunito"],
+    bootDone: false,
+  });
+  assert.deepEqual(live, ["g:Nunito"]);
+  assert.equal(live.includes("g:Gidugu"), false);
 });
 
 test("hydrate live: Gidugu not Activated unless this-process boot.ready (Add succeeded)", () => {

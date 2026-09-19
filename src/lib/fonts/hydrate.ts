@@ -10,16 +10,17 @@ import { inferLocalStyle } from "./style-tags";
 import {
   restoreSessionFromDisk,
   rememberSessionFamilies,
-  listSessionFamilies,
   waitSessionBoot,
   pruneUnknownFolders,
   syncManagedDocumentsRoot,
   bindDownloadEvents,
 } from "./os-activate";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
+import { applyDesktopPrefs } from "@/lib/desktop/prefs";
 import { startWatchPolling } from "./watch-folder";
 import { loadSystemFonts } from "./system-fonts";
 import { hydrateLiveAxes } from "./live-axes";
+import { loadLocalFontsMeta, pickLocalFontsPersist, saveLocalFontsMeta } from "./persist-local";
 import type { FontRecord } from "./types";
 
 async function reclassifyStoredLocalFonts(cancelled: () => boolean) {
@@ -120,7 +121,14 @@ export function useHydrateFonts() {
       if (cancelled) return;
       await useFontStore.persist.rehydrate();
       if (cancelled) return;
+      const fromLs = useFontStore.getState().localFonts;
+      const fromIdb = await loadLocalFontsMeta();
+      if (cancelled) return;
+      const locals = pickLocalFontsPersist(fromIdb, fromLs);
+      if (locals !== fromLs) useFontStore.setState({ localFonts: locals });
+      if (locals.length) void saveLocalFontsMeta(locals);
       hydrateLiveAxes(useFontStore.getState().previewAxes);
+      void applyDesktopPrefs(useFontStore.getState().desktopPrefs);
       const { localFonts, setHydrated, googleFonts, collections, scope } = useFontStore.getState();
       if (
         typeof scope === "string" &&
@@ -140,35 +148,16 @@ export function useHydrateFonts() {
       const wantIds = Array.from(new Set(useFontStore.getState().activated));
       const desktop = await inDesktopShell();
       if (desktop) {
-        const boot = await waitSessionBoot();
-        const bootReady = boot.done ? boot.ready : [];
-        // After session_begin prune this list is GDI-live. Do not read last-session
-        // sidecar before boot.done — that marked Gidugu Activated while Add=0.
-        const sessionNames = boot.done ? bootReady : await listSessionFamilies();
+        // Drop persisted Activated until this-process Add confirms (avoid false Live).
+        useFontStore.getState().restoreActivation([], []);
         const persistNames: string[] = [];
         for (const id of wantIds) {
           const font = findFont(id, localFonts, google);
           if (font && font.source !== "system") persistNames.push(font.family);
           else if (!font && id.startsWith("g:")) persistNames.push(id.slice(2));
         }
-        const bootSet = new Set(sessionNames.map((n) => n.trim().toLowerCase()));
-        const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
-        const needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
-        const restore = needRegister.length
-          ? restoreSessionFromDisk(needRegister)
-          : Promise.resolve({ ready: [] as string[], missing: [] as string[], onDisk: [] as string[] });
-        void restore.then((result) => {
-          if (cancelled) return;
-          const diskNames = result.onDisk;
-          if (diskNames.length) {
-            noteDiskFamilies(diskNames);
-            useFontStore.getState().setDiskFamilies(diskNames);
-          }
-          const allow = new Set<string>();
-          // Live = GDI-registered this process only (boot.ready ∪ restore ready).
-          // Last-session sidecar is used only after session_begin pruned it.
-          for (const n of result.ready) allow.add(n.trim().toLowerCase());
-          for (const n of sessionNames) allow.add(n.trim().toLowerCase());
+        const liveIdsFromReadyNames = (readyNames: string[]): string[] => {
+          const allow = new Set(readyNames.map((n) => n.trim().toLowerCase()).filter(Boolean));
           const live: string[] = [];
           const seen = new Set<string>();
           const consider = (id: string) => {
@@ -192,11 +181,38 @@ export function useHydrateFonts() {
           for (const id of wantIds) consider(id);
           const byFamily = new Map<string, string>();
           for (const font of [...localFonts, ...google]) byFamily.set(font.family.toLowerCase(), font.id);
-          for (const name of sessionNames) {
+          for (const name of readyNames) {
             const key = name.trim().toLowerCase();
             if (!allow.has(key)) continue;
             consider(byFamily.get(key) ?? `g:${name.trim()}`);
           }
+          return live;
+        };
+        // 1.0.190 progressive Live: flush session_boot.ready as Adds succeed —
+        // do not wait for boot.done (~2099) before restoreActivation.
+        const boot = await waitSessionBoot(180_000, (readyChunk, _done) => {
+          if (cancelled) return;
+          // boot.ready is this-process GDI only — never last-session sidecar.
+          const live = liveIdsFromReadyNames(readyChunk);
+          useFontStore.getState().restoreActivation(live, []);
+        });
+        const bootReady = boot.ready.slice();
+        const sessionNames = bootReady;
+        const bootSet = new Set(sessionNames.map((n) => n.trim().toLowerCase()));
+        const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
+        const needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
+        const restore = needRegister.length
+          ? restoreSessionFromDisk(needRegister)
+          : Promise.resolve({ ready: [] as string[], missing: [] as string[], onDisk: [] as string[] });
+        void restore.then((result) => {
+          if (cancelled) return;
+          const diskNames = result.onDisk;
+          if (diskNames.length) {
+            noteDiskFamilies(diskNames);
+            useFontStore.getState().setDiskFamilies(diskNames);
+          }
+          const allowNames = [...result.ready, ...sessionNames];
+          const live = liveIdsFromReadyNames(allowNames);
           useFontStore.getState().restoreActivation(live, []);
           void rememberSessionFamilies(
             live

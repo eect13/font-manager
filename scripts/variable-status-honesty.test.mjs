@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 /**
- * 1.0.168 Variable/status honesty mirrors:
- * - Facet/badge Variable = on-disk *-variable-* only (never catalog.variable alone)
+ * Variable/status honesty mirrors:
+ * - Card badge / axes = on-disk VF only (never catalog.variable alone)
+ * - Sidebar facet / `variable` query = catalogVariable OR on-disk (like Italic) — 1.0.170; restored 1.0.191
+ * - WOFF2-only Material Symbols never count in facet
  * - Toast never claims .complete without marker; split files / stamp / GDI cause
  * - Catalog-variable without VF → Incomplete / Repair needed
  * - Retry triggers re-stage+Add (register), not ambient skip-intact only
@@ -22,6 +24,20 @@ function applyDiskVariableHonesty(fonts, diskRows) {
 
 function tallyVariable(list) {
   return list.reduce((n, f) => n + (f.variable ? 1 : 0), 0);
+}
+
+function isWoff2OnlyVariableFamily(family) {
+  const t = family.trim().toLowerCase();
+  return t === "material symbols" || t.startsWith("material symbols ");
+}
+
+function isVariableCatalogFamily(font) {
+  if (isWoff2OnlyVariableFamily(font.family)) return false;
+  return Boolean(font.variable || font.catalogVariable);
+}
+
+function tallyVariableFacet(list) {
+  return list.reduce((n, f) => n + (isVariableCatalogFamily(f) ? 1 : 0), 0);
 }
 
 /** axesForFont honesty: no synthesized wght without real axes. */
@@ -72,7 +88,7 @@ function retryPlan(families, disk) {
   return { live, needFetch, failed, wipe: false, action: "restage+Add" };
 }
 
-test("facet/badge: Variable count from disk VF only — 42dot statics not Variable", () => {
+test("badge: Variable from disk VF only — 42dot statics not badged", () => {
   const fonts = [
     { family: "42dot Sans", variable: false, catalogVariable: true },
     { family: "Nunito", variable: false, catalogVariable: true },
@@ -87,13 +103,26 @@ test("facet/badge: Variable count from disk VF only — 42dot statics not Variab
   assert.equal(next.find((f) => f.family === "42dot Sans").variable, false);
   assert.equal(next.find((f) => f.family === "Nunito").variable, true);
   assert.equal(tallyVariable(next), 1);
-  // Catalog flag alone never wins
+  // Catalog flag alone never wins the badge
   const catalogOnly = applyDiskVariableHonesty(
     [{ family: "Roboto", variable: true, catalogVariable: true, axes: [{ tag: "wght" }] }],
     [],
   );
   assert.equal(catalogOnly[0].variable, false);
   assert.equal(catalogOnly[0].axes, undefined);
+});
+
+test("facet: Variable counts catalog-variable families (like Italic), not disk-only", () => {
+  const fonts = [
+    { family: "42dot Sans", variable: false, catalogVariable: true },
+    { family: "Nunito", variable: true, catalogVariable: true },
+    { family: "Clear Sans", variable: false, catalogVariable: false },
+    { family: "Material Symbols Outlined", variable: false, catalogVariable: true },
+  ];
+  assert.equal(tallyVariable(fonts), 1, "badge tally stays on-disk");
+  assert.equal(tallyVariableFacet(fonts), 2, "facet includes 42dot + Nunito, skips Material Symbols");
+  assert.equal(isVariableCatalogFamily(fonts[0]), true);
+  assert.equal(isVariableCatalogFamily(fonts[3]), false);
 });
 
 test("axesForFont does not synthesize wght without VF axes", () => {
@@ -291,4 +320,38 @@ test("undersized Incomplete is allowlisted (Gidugu) — not all Google 16–96KB
     }),
     false,
   );
+});
+
+test("shipped catalogs: Google 558 variable + Fontsource-other TTF VFs (not Material Symbols)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const gc = JSON.parse(readFileSync(join(root, "src/lib/fonts/google-catalog.json"), "utf8"));
+  const fo = JSON.parse(readFileSync(join(root, "src/lib/fonts/fontsource-other.json"), "utf8"));
+  const gVar = gc.families.filter((r) => r[4] === true).length;
+  const fsVar = fo.families.filter((r) => r[4] === true).map((r) => r[0]);
+  const fsTtfVar = fsVar.filter((n) => !isWoff2OnlyVariableFamily(n));
+  assert.equal(gc.count, 1946);
+  assert.equal(gVar, 558);
+  assert.ok(fo.count >= 154, `fontsource-other ${fo.count}`);
+  assert.ok(fsTtfVar.includes("42dot Sans"));
+  assert.ok(fsTtfVar.includes("Finlandica"));
+  assert.ok(!fsTtfVar.some((n) => n.toLowerCase().includes("material symbols")));
+  assert.equal(fsTtfVar.length, 9);
+});
+
+test("1.0.191: Activated pool prefers store googleFonts for disk VF badge honesty", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  assert.match(store, /Prefer store googleFonts \(disk VF honesty\)/);
+  assert.match(store, /isVariableCatalogFamily\(font\)/);
+  const sidebar = readFileSync(join(root, "src/components/font-studio/sidebar.tsx"), "utf8");
+  assert.match(sidebar, /isVariableCatalogFamily\(font\)/);
+  const catalog = readFileSync(join(root, "src/lib/fonts/catalog.ts"), "utf8");
+  assert.match(catalog, /export function isVariableCatalogFamily/);
+  assert.match(catalog, /export function isWoff2OnlyVariableFamily/);
 });

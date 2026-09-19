@@ -35,6 +35,25 @@ export function isOfficialGoogleFamily(family: string) {
   return GOOGLE_DIRECTORY.has(familyKey(family));
 }
 
+/** Fontsource WOFF2-only "variable" packs — no google/fonts TTF, never GDI VF. */
+export function isWoff2OnlyVariableFamily(family: string) {
+  const t = family.trim().toLowerCase();
+  return t === "material symbols" || t.startsWith("material symbols ");
+}
+
+/**
+ * Sidebar Variable facet / `variable` query — catalog claim OR on-disk VF.
+ * Same idea as Italic (catalog italic). Card badge / axes stay `font.variable` (disk).
+ */
+export function isVariableCatalogFamily(font: {
+  family: string;
+  variable?: boolean;
+  catalogVariable?: boolean;
+}) {
+  if (isWoff2OnlyVariableFamily(font.family)) return false;
+  return Boolean(font.variable || font.catalogVariable);
+}
+
 type SnapshotRow = [
   family: string,
   category: FontCategory,
@@ -78,8 +97,8 @@ function snapshotToRecord(row: SnapshotRow): FontRecord {
     category,
     weights: Array.isArray(weights) && weights.length ? weights : [400],
     italic,
-    catalogVariable: variable,
-    // Honesty: never badge/facet Variable from catalog alone (disk *-variable-* only).
+    catalogVariable: variable && !isWoff2OnlyVariableFamily(family),
+    // Honesty: never badge Variable from catalog alone (disk *-variable-* only).
     variable: false,
     tags: mergedTags,
     popularity: overlay ? overlay.index : 400 + popularity,
@@ -103,7 +122,7 @@ function otherToRecord(row: OtherRow): FontRecord {
     category,
     weights: Array.isArray(weights) && weights.length ? weights : [400],
     italic,
-    catalogVariable: variable,
+    catalogVariable: variable && !isWoff2OnlyVariableFamily(family),
     // Fontsource-other may mark catalogVariable; UI badge still needs on-disk VF.
     variable: false,
     tags: tagsForGoogleFamily(family, category, Array.isArray(tags) ? tags : []),

@@ -38,8 +38,12 @@ test("failed inject does not mark loadedGoogle preview", () => {
   assert.match(loader, /let ok = false/);
 });
 
-test("latin static on-disk preview is allowed; CJK/VF is not", () => {
+test("latin on-disk preview is allowed; CJK/Unifont/color is not", () => {
   assert.match(loader, /export function googlePreviewMayUseLocalDisk/);
   assert.match(loader, /loadGooglePreviewFromLocal/);
   assert.match(loader, /unifont\|cjk\|emoji/);
+  const start = loader.indexOf("export function googlePreviewMayUseLocalDisk");
+  const fn = loader.slice(start, start + 400);
+  assert.match(fn, /scriptSubset\(font\.family\) === "latin"/);
+  assert.doesNotMatch(fn, /!font\.variable/);
 });

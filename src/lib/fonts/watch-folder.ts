@@ -69,7 +69,7 @@ export async function addWatchedFolder(): Promise<void> {
       originPaths: picked.originPaths,
     });
     toast.success(`Watching ${picked.name}`, {
-      description: `${result.added.toLocaleString()} typeface${result.added === 1 ? "" : "s"} stay in that folder. Auto-activate is on.`,
+      description: `${result.added.toLocaleString()} typeface${result.added === 1 ? "" : "s"} stay in that folder (Dropbox/Drive/Downloads ok). Auto-activate is on.`,
     });
   } else {
     toast.message(`Watching ${picked.name}`, {

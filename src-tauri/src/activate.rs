@@ -2340,6 +2340,19 @@ fn session_boot_note_ready(ready: &[String]) {
     }
 }
 
+/// Progressive Live (1.0.190): flush each successful Add into session_boot.ready
+/// so hydrate can mark Activated before boot.done (~2099).
+fn session_boot_push_ready(family: &str) {
+    if !session_boot().running.load(Ordering::SeqCst) {
+        return;
+    }
+    if let Ok(mut g) = session_boot().ready.lock() {
+        if !g.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+            g.push(family.to_string());
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct SessionBootState {
     pub running: bool,
@@ -2397,40 +2410,60 @@ pub fn session_begin(app: &AppHandle) {
         // Targeted dirs only — do not walk all of Documents before the UI is up.
         // Parallelize register_intact_family across ready session families (bounded).
         let families = load_session_families(app);
-        let ready_targets = filter_ready_families_parallel(app, &families);
-        // Show "Restoring session…" on the DownloadBar when idle so boot GDI is
-        // not a silent freeze. Do not steal a user job already in flight.
+        let ready_all = filter_ready_families_parallel(app, &families);
+        // 1.0.190: known-incapable Settled never queued for Add (early-skip only).
+        let (ready_targets, settled_skip) = partition_session_restore_targets(app, &ready_all);
+        // Calm "Restoring N/T" on the DownloadBar when idle — not a download hang.
+        // Do not steal a user job already in flight.
         let own_progress = !bulk().running.load(Ordering::SeqCst);
-        let ready = if own_progress && !ready_targets.is_empty() {
+        let ready = if own_progress && (!ready_targets.is_empty() || !settled_skip.is_empty()) {
             if let Ok(mut p) = bulk().progress.lock() {
-                p.running = true;
+                p.running = !ready_targets.is_empty();
                 p.paused = false;
                 p.kind = "download".into();
                 p.done = 0;
                 p.total = ready_targets.len() as u32;
                 p.failed = 0;
                 p.skipped = 0;
-                p.current = format!("Restoring session — {} typefaces…", ready_targets.len());
+                p.current = if ready_targets.is_empty() {
+                    String::new()
+                } else {
+                    format!("Restoring 0/{}", ready_targets.len())
+                };
                 p.ready_names.clear();
                 p.failed_names.clear();
                 p.failed_details.clear();
                 p.settled_names.clear();
+                for name in &settled_skip {
+                    if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                        p.settled_names.push(name.clone());
+                    }
+                }
             }
-            bulk().running.store(true, Ordering::SeqCst);
-            emit_progress(app);
-            let registered = register_on_disk_parallel_progress(app, &ready_targets, 0);
-            if let Ok(mut p) = bulk().progress.lock() {
-                p.running = false;
-                p.paused = false;
-                p.current.clear();
-                p.done = p.ready_names.len() as u32;
-                p.total = p.total.max(p.done);
+            if !ready_targets.is_empty() {
+                bulk().running.store(true, Ordering::SeqCst);
+                emit_progress_force(app);
+                let registered = register_on_disk_parallel_progress(app, &ready_targets, 0);
+                if let Ok(mut p) = bulk().progress.lock() {
+                    p.running = false;
+                    p.paused = false;
+                    p.current.clear();
+                    p.done = p.ready_names.len() as u32;
+                    p.total = p.total.max(p.done);
+                }
+                bulk().running.store(false, Ordering::SeqCst);
+                emit_progress_force(app);
+                registered
+            } else {
+                // Settled-only session: surface quiet settle, no Add queue.
+                emit_progress_force(app);
+                Vec::new()
             }
-            bulk().running.store(false, Ordering::SeqCst);
-            emit_progress(app);
-            registered
-        } else {
+        } else if !ready_targets.is_empty() {
+            // User job owns the bar — still register (and progressive boot.ready).
             register_ready_families_parallel(app, &ready_targets).1
+        } else {
+            Vec::new()
         };
         if !ready.is_empty() {
             persist_activation_sidecars(app);
@@ -4085,7 +4118,12 @@ fn download_google_variable_ttfs(
 }
 
 fn is_variable_face_filename(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("-variable-")
+    let lower = name.to_ascii_lowercase();
+    // Dest names we write (`*-variable-*`) plus leftover google/fonts originals
+    // (`Family-VariableFont_wght.ttf`, `Family[wght].ttf`) so scan/honesty counts them.
+    lower.contains("-variable-")
+        || lower.contains("variablefont")
+        || name.contains('[')
 }
 
 /// `*-variable-*-italic.ttf` (or ends with `-italic.ttf` after the variable token).
@@ -5017,6 +5055,25 @@ fn sort_faces_var_first(files: &mut [PathBuf]) {
     });
 }
 
+/// Split ready-on-disk into Add queue vs known-incapable Settled (never queue Add).
+/// `family_is_ready` may stamp `.complete` for allowlisted faces; early-skip then
+/// drops them from the restore Add queue (1.0.190).
+fn partition_session_restore_targets(
+    app: &AppHandle,
+    ready: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let mut targets = Vec::new();
+    let mut settled = Vec::new();
+    for family in ready {
+        if family_early_skip_known_incapable(app, family) {
+            settled.push(family.clone());
+        } else {
+            targets.push(family.clone());
+        }
+    }
+    (targets, settled)
+}
+
 /// Disk-only ready check, parallel across families (no GDI). Used on boot and
 /// `plan_google_activation` so a 2,000-family session does not serially stat
 /// `.complete` on the invoke thread.
@@ -5085,6 +5142,7 @@ fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -
             if k > 0 {
                 files += k;
                 ready.push(family.clone());
+                session_boot_push_ready(family);
             }
         }
         return (files, ready);
@@ -5107,6 +5165,7 @@ fn register_ready_families_parallel(app: &AppHandle, ready_targets: &[String]) -
                 };
                 let k = register_intact_family(&app, &family);
                 if k > 0 {
+                    session_boot_push_ready(&family);
                     if let Ok(mut g) = results.lock() {
                         g.push((family, k));
                     }
@@ -6000,7 +6059,41 @@ fn accept_new_families(families: Vec<String>) -> Vec<String> {
     fresh
 }
 
+/// Throttle UI emits so webview stays interactive during restore/Activate
+/// (sort/slider/toggle). Force for start/finish; idle snapshots always land.
 fn emit_progress(app: &AppHandle) {
+    emit_progress_throttled(app, false);
+}
+
+fn emit_progress_force(app: &AppHandle) {
+    emit_progress_throttled(app, true);
+}
+
+fn emit_progress_throttle_ms() -> u64 {
+    350
+}
+
+fn emit_progress_throttled(app: &AppHandle, force: bool) {
+    static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    let last = LAST.get_or_init(|| Mutex::new(None));
+    let idle = bulk()
+        .progress
+        .lock()
+        .map(|p| !p.running && !p.paused)
+        .unwrap_or(false);
+    let force = force || idle;
+    if !force {
+        if let Ok(mut g) = last.lock() {
+            if let Some(t) = *g {
+                if t.elapsed() < Duration::from_millis(emit_progress_throttle_ms()) {
+                    return;
+                }
+            }
+            *g = Some(Instant::now());
+        }
+    } else if let Ok(mut g) = last.lock() {
+        *g = Some(Instant::now());
+    }
     if let Ok(p) = bulk().progress.lock() {
         let _ = app.emit("font-download", p.clone());
     }
@@ -7219,6 +7312,7 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                     denied.remove(&family.trim().to_lowercase());
                 }
                 let done_n = processed.fetch_add(1, Ordering::SeqCst) + 1;
+                let restoring = session_boot().running.load(Ordering::SeqCst);
                 if let Ok(mut p) = bulk().progress.lock() {
                     p.kind = "download".into();
                     p.running = true;
@@ -7230,7 +7324,12 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                     if p.total < p.done {
                         p.total = p.done;
                     }
-                    p.current = format!("Registering {family}");
+                    // Calm Restoring N/T during session_begin — not per-face download chrome.
+                    p.current = if restoring {
+                        format!("Restoring {}/{}", done_base + done_n, done_base + total)
+                    } else {
+                        format!("Registering {family}")
+                    };
                     if k > 0 {
                         // Honesty: this family did Add successfully — count it even
                         // if Cancel arrived mid-flight after Add returned.
@@ -7238,6 +7337,7 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                             p.ready_names.push(family.clone());
                             p.skipped = p.skipped.saturating_add(1);
                         }
+                        session_boot_push_ready(&family);
                         if let Ok(mut g) = registered.lock() {
                             g.push(family.clone());
                         }
@@ -7247,6 +7347,7 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                             p.ready_names.push(family.clone());
                             p.skipped = p.skipped.saturating_add(1);
                         }
+                        session_boot_push_ready(&family);
                         if let Ok(mut g) = registered.lock() {
                             g.push(family.clone());
                         }
@@ -7282,14 +7383,19 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                     break;
                 }
                 let last = done_n >= total;
+                // Pair with emit_progress 350ms throttle; force first/last so bar starts/clears.
                 let should_emit = last
                     || done_n == 1
                     || last_emit
                         .lock()
-                        .map(|t| t.elapsed() >= Duration::from_millis(150))
+                        .map(|t| t.elapsed() >= Duration::from_millis(emit_progress_throttle_ms()))
                         .unwrap_or(true);
                 if should_emit {
-                    emit_progress(&app);
+                    if last || done_n == 1 {
+                        emit_progress_force(&app);
+                    } else {
+                        emit_progress(&app);
+                    }
                     if let Ok(mut t) = last_emit.lock() {
                         *t = Instant::now();
                     }
@@ -8197,6 +8303,16 @@ mod complete_marker_tests {
         assert!(fs_only_google_vf_folder("42dot Sans").is_some());
         assert!(family_expects_dual_variable("Finlandica"));
         assert!(!family_expects_dual_variable("42dot Sans"));
+    }
+
+    #[test]
+    fn is_variable_face_filename_accepts_dest_and_google_originals() {
+        assert!(is_variable_face_filename("nunito-variable-wght.ttf"));
+        assert!(is_variable_face_filename("Nunito-VariableFont_wght.ttf"));
+        assert!(is_variable_face_filename("Nunito[wght].ttf"));
+        assert!(is_variable_face_filename("Nunito-Italic[wght].ttf"));
+        assert!(!is_variable_face_filename("nunito-400-normal.ttf"));
+        assert!(!is_variable_face_filename("roboto-700-italic.ttf"));
     }
 
     #[test]

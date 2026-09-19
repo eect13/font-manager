@@ -1,4 +1,5 @@
 import {
+  Clock,
   BadgeCheck,
   Briefcase,
   CircleHelp,
@@ -23,7 +24,7 @@ import { LibraryGroups } from "./folder-tree";
 import { GoogleActivateMenuItem, GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
 import { SidebarRow } from "./sidebar-row";
 import { HelpTip } from "./help-tip";
-import { ALL_TAGS, GOOGLE_DIRECTORY, isFontsourceOnly } from "@/lib/fonts/catalog";
+import { GOOGLE_DIRECTORY, isFontsourceOnly, isVariableCatalogFamily } from "@/lib/fonts/catalog";
 import { getCatalogSyncState, subscribeCatalogSync, syncFontCatalog } from "@/lib/fonts/google-api";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
@@ -41,7 +42,6 @@ const LICENSE_NAV: { id: FontLicense; icon: typeof Library }[] = [
   { id: "unknown", icon: CircleHelp },
 ];
 
-const KNOWN_TAGS = new Set(ALL_TAGS);
 const EMPTY_IDS: string[] = [];
 
 function tallyFonts(list: FontRecord[], customTags: Record<string, string[]>) {
@@ -53,10 +53,10 @@ function tallyFonts(list: FontRecord[], customTags: Record<string, string[]>) {
   for (const font of list) {
     license[fontLicense(font)] += 1;
     category[font.category] += 1;
-    if (font.variable) variable += 1;
+    if (isVariableCatalogFamily(font)) variable += 1;
     if (font.italic) italic += 1;
     for (const tag of tagsFor(font, customTags)) {
-      if (KNOWN_TAGS.has(tag) && (TAG_ORDER as readonly string[]).includes(tag)) {
+      if ((TAG_ORDER as readonly string[]).includes(tag)) {
         tags.set(tag, (tags.get(tag) ?? 0) + 1);
       }
     }
@@ -156,6 +156,8 @@ export function Sidebar({
   const facet = useFontStore((s) => s.facet);
   const setFacet = useFontStore((s) => s.setFacet);
   const favoriteCount = useFontStore((s) => s.favorites.length);
+  const recentCount = useFontStore((s) => s.recentIds.length);
+  const recentIds = useFontStore((s) => s.recentIds);
   const activated = useFontStore((s) => s.activated);
   const settledCount = useFontStore((s) => s.settledFamilies.length);
   const favorites = useFontStore((s) => s.favorites);
@@ -178,10 +180,11 @@ export function Sidebar({
     return { fontsource, gfonts: GOOGLE_DIRECTORY.size };
   }, [googleFonts]);
   const facetCounts = useMemo(() => {
-    const pool = poolForScope(scope, localFonts, googleFonts, systemFonts, liveIds);
-    const scoped = filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, "");
+    const skipLocals = scope === "gfonts" || scope === "google" || scope === "system";
+    const pool = poolForScope(scope, skipLocals ? [] : localFonts, googleFonts, systemFonts, liveIds);
+    const scoped = filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, "", recentIds);
     const viewed = facet
-      ? filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, facet)
+      ? filterLibrary(pool, scope, deferredQuery, favorites, liveIds, collections, customTags, facet, recentIds)
       : scoped;
     const licenses = tallyFonts(facet.startsWith("license:") ? scoped : viewed, customTags);
     const styles = tallyFonts(facet.startsWith("category:") ? scoped : viewed, customTags);
@@ -194,7 +197,7 @@ export function Sidebar({
       variable: current.variable,
       italic: current.italic,
     };
-  }, [localFonts, googleFonts, systemFonts, scope, deferredQuery, facet, favorites, liveIds, collections, customTags]);
+  }, [localFonts, googleFonts, systemFonts, scope, deferredQuery, facet, favorites, liveIds, collections, customTags, recentIds]);
   const counts = {
     ...facetCounts,
     ...providerCounts,
@@ -251,6 +254,14 @@ export function Sidebar({
               label="Favorites"
               count={favoriteCount}
               mainProps={{ "aria-label": "Favorites" }}
+            />
+            <SidebarRow
+              active={scope === "recent"}
+              onClick={() => go("recent")}
+              icon={<Clock className="size-4 shrink-0" />}
+              label="Recent"
+              count={recentCount}
+              mainProps={{ "aria-label": "Recent" }}
             />
             {counts.variable > 0 ? (
               <SidebarRow

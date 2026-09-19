@@ -1,4 +1,7 @@
-/** Desktop Rust parser (ttf-parser + sha2). Web keeps opentype.js / SubtleCrypto. */
+/** Desktop Rust parser (ttf-parser + sha2). Web keeps sfnt.ts / SubtleCrypto.
+ *  Pass Uint8Array — never Array.from (JSON-boxes every byte). */
+
+import { CMAP_GLYPH_CAP, shouldUseIpcCmap, shouldUseIpcLayout } from "./wasm-parse";
 
 export type NativeGlyph = { cp: number; gid: number; name: string };
 export type NativeAxis = { tag: string; name: string; min: number; max: number; def: number };
@@ -19,8 +22,13 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   }
 }
 
+function bytesArg(buffer: ArrayBuffer | Uint8Array) {
+  return buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+}
+
 export async function nativeFamilyCmap(family: string): Promise<NativeGlyph[] | null> {
-  return invoke<NativeGlyph[]>("parse_family_cmap", { family });
+  const rows = await invoke<NativeGlyph[]>("parse_family_cmap", { family });
+  return rows ? rows.slice(0, CMAP_GLYPH_CAP) : null;
 }
 
 export async function nativeFamilyLayout(family: string): Promise<NativeLayout | null> {
@@ -36,24 +44,24 @@ export async function nativeLayoutFromBytes(buffer: ArrayBuffer): Promise<Native
         : best,
     );
   }
-  if (buffer.byteLength > 180_000) return null;
-  return invoke<NativeLayout>("parse_font_layout", { bytes: Array.from(new Uint8Array(buffer)) });
+  if (!shouldUseIpcLayout(buffer.byteLength)) return null;
+  return invoke<NativeLayout>("parse_font_layout", { bytes: bytesArg(buffer) });
 }
 
 export async function nativeLayoutsFromBytes(buffer: ArrayBuffer): Promise<NativeLayout[] | null> {
-  if (buffer.byteLength > 180_000) return null;
-  return invoke<NativeLayout[]>("parse_font_layouts", { bytes: Array.from(new Uint8Array(buffer)) });
+  if (!shouldUseIpcLayout(buffer.byteLength)) return null;
+  return invoke<NativeLayout[]>("parse_font_layouts", { bytes: bytesArg(buffer) });
 }
 
 export async function nativeCmapFromBytes(buffer: ArrayBuffer): Promise<NativeGlyph[] | null> {
-  if (buffer.byteLength > 180_000) return null;
-  const rows = await invoke<NativeGlyph[]>("parse_font_cmap", { bytes: Array.from(new Uint8Array(buffer)) });
-  return rows?.length ? rows : null;
+  if (!shouldUseIpcCmap(buffer.byteLength)) return null;
+  const rows = await invoke<NativeGlyph[]>("parse_font_cmap", { bytes: bytesArg(buffer) });
+  return rows?.length ? rows.slice(0, CMAP_GLYPH_CAP) : null;
 }
 
 export async function nativeHashBytes(buffer: ArrayBuffer): Promise<string | null> {
   if (buffer.byteLength > 400_000) return null;
-  return invoke<string>("hash_bytes", { bytes: Array.from(new Uint8Array(buffer)) });
+  return invoke<string>("hash_bytes", { bytes: bytesArg(buffer) });
 }
 
 export async function nativeHashPath(path: string): Promise<string | null> {
@@ -66,7 +74,7 @@ export async function nativeDiffBytes(
 ): Promise<{ near: boolean; diffs: number } | null> {
   if (left.byteLength > 8_000_000 || right.byteLength > 8_000_000) return null;
   return invoke<{ near: boolean; diffs: number }>("diff_font_bytes", {
-    left: Array.from(left),
-    right: Array.from(right),
+    left: bytesArg(left),
+    right: bytesArg(right),
   });
 }

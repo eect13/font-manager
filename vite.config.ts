@@ -232,6 +232,7 @@ export default defineConfig(({ command, isPreview }) => {
       input: "desktop.html",
       plugins: [tailwindcss(), viteReact(), tauriIndexPlugin()],
       resolve: { tsconfigPaths: true },
+      optimizeDeps: { exclude: ["wawoff2"] },
       build: {
         outDir: join(projectRoot, ".vercel", "output", "static"),
         emptyOutDir: true,
@@ -271,6 +272,7 @@ export default defineConfig(({ command, isPreview }) => {
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
+  optimizeDeps: { exclude: ["wawoff2"] },
   plugins: [
     pgliteBootstrapPlugin(),
     windowsWatchGuardPlugin(),

@@ -1,7 +1,7 @@
 import type { FontRecord } from "./types";
 import { idbGet, idbPutPreview, previewCacheId } from "./idb";
 import { isEmojiFamily } from "./emoji";
-import { axesForFont } from "./axes";
+import { axesForFont, previewWghtAxis } from "./axes";
 import { isSpecialPreviewFont, notifyIfUnusual } from "./color-font";
 import { cssFamilyStack as stackFor } from "./fallback";
 import { scriptProbe, scriptSampleText, scriptSubset } from "./scripts";
@@ -350,19 +350,26 @@ export function googlePreviewTextQuery(family: string) {
 }
 
 export function googlePreviewCssHref(
-  font: Pick<FontRecord, "family" | "italic">,
+  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights">,
   italic = false,
 ) {
   const family = font.family.replace(/ /g, "+");
-  const face = italic && font.italic ? `family=${family}:ital,wght@1,400` : `family=${family}:wght@400`;
+  const span = previewWghtAxis(font);
+  const face =
+    italic && font.italic
+      ? span
+        ? `family=${family}:ital,wght@1,${Math.round(span.min)}..${Math.round(span.max)}`
+        : `family=${family}:ital,wght@1,400`
+      : span
+        ? `family=${family}:wght@${Math.round(span.min)}..${Math.round(span.max)}`
+        : `family=${family}:wght@400`;
   return `https://fonts.googleapis.com/css2?${face}&text=${googlePreviewTextQuery(font.family)}&display=swap`;
 }
 
-/** Latin static on-disk preview: convertFileSrc only. Never CJK / VF / color TTF. */
+/** Latin on-disk TTF/OTF for cards: convertFileSrc. Never CJK / Unifont / color. VF latin on disk is allowed. */
 export function googlePreviewMayUseLocalDisk(font: FontRecord) {
   return (
     font.source === "google" &&
-    !font.variable &&
     !isSpecialPreviewFont(font) &&
     scriptSubset(font.family) === "latin"
   );
@@ -466,10 +473,20 @@ function cssForInject(css: string, href: string, family?: string) {
 function injectGoogleCss(href: string, key: string, family?: string): Promise<void> {
   if (typeof document === "undefined") return Promise.resolve();
   const existing = googleLinks.get(key);
-  if (existing) return Promise.resolve();
+  if (existing?.dataset.href === href) return Promise.resolve();
+  if (existing) {
+    try {
+      existing.remove();
+    } catch {
+      /* ignore */
+    }
+    googleLinks.delete(key);
+    const at = cssOrder.indexOf(key);
+    if (at >= 0) cssOrder.splice(at, 1);
+  }
 
   return withCssSlot(async () => {
-    const cacheId = `css:${key}`;
+    const cacheId = `css:vf2:${key}`;
     try {
       const { idbGet, idbPut } = await import("./idb");
       const cached = await idbGet(cacheId);
@@ -487,6 +504,7 @@ function injectGoogleCss(href: string, key: string, family?: string): Promise<vo
       if (text) {
         const style = document.createElement("style");
         style.dataset.fontKey = key;
+        style.dataset.href = href;
         style.textContent = cssForInject(text, href, family);
         document.head.appendChild(style);
         rememberCss(key, style);
@@ -629,10 +647,12 @@ async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
       return false;
     }
     const url = convertFileSrc(path);
+    const isVf = Boolean(font.variable || font.catalogVariable);
     const face = new FontFace(font.family, `url(${JSON.stringify(url)})`, {
       display: "swap",
       style: "normal",
-      weight: "400",
+      weight: isVf ? vfWeight(font) : "400",
+      ...(isVf ? { stretch: "50% 200%" } : {}),
     });
     await face.load();
     document.fonts.add(face);

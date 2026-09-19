@@ -409,6 +409,15 @@ export async function parseSfntCollection(buffer: ArrayBuffer, fileName: string)
   const fallback = fallbackNameFromFile(fileName);
 
   if (format === "WOFF2") {
+    try {
+      const { decodeWoff2ToSfnt } = await import("./woff2-decode");
+      const sfntBuf = await decodeWoff2ToSfnt(original);
+      if (sfntBuf && sfntBuf.byteLength >= 12) {
+        return parseSfntCollection(sfntBuf, fileName.replace(/\.woff2$/i, ".ttf"));
+      }
+    } catch {
+      /* stub below */
+    }
     return [
       {
         family: fallback,

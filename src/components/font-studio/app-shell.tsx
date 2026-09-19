@@ -12,6 +12,7 @@ import { FontInspector } from "./font-inspector";
 import { Sidebar } from "./sidebar";
 import { TabPanes } from "./tab-panes";
 import { ThemeToggle } from "./theme-toggle";
+import { DesktopSettings } from "./desktop-settings";
 import { HelpTip } from "./help-tip";
 import { runFontImport } from "./import-fonts";
 import { pickFontFiles, pickFontFolder } from "@/lib/desktop/open-fonts";
@@ -137,7 +138,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
                 ref={searchRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name or tag…"
+                placeholder="Search name, tag, variable, italic…"
                 className="h-8 bg-card pl-8"
                 aria-label="Search typefaces"
               />
@@ -167,6 +168,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
               ))}
             </nav>
             <ThemeToggle />
+            <DesktopSettings />
             <HelpTip label="Export CSS for activated fonts">
               <Button size="sm" variant="secondary" className="h-8 px-2.5" onClick={() => setCssOpen(true)}>
                 <Code2 />
@@ -193,6 +195,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
           </div>
           <div className="flex items-center gap-0.5 sm:hidden">
             <ThemeToggle />
+            <DesktopSettings />
             <HelpTip label="Export CSS">
               <Button size="icon-sm" variant="secondary" aria-label="Export CSS" onClick={() => setCssOpen(true)}>
                 <Code2 />

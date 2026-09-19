@@ -1,5 +1,46 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.197
+- **Close to tray / Start with Windows:** X can hide (GDI stays live); tray Quit still `session_end`. Startup writes `%APPDATA%\…\Startup\Font Manager.cmd`. Deactivate-on-process-exit stays on (no GDI leak after Quit).
+- **On-disk preview:** latin TTF/OTF including VF — not CJK/Unifont/color. CSS LRU 96 kept. Catalog-only still CSS2 `text=`.
+- **Watch honesty:** `originPath` skips IDB blob + Documents copy; auto-activate uses `setActivatedMany` (pending until Add>0). Nested folder tree already existed.
+- **Recent** scope (last 40 opened). Search stays an in-memory filter (`useDeferredValue`).
+- **OT toggles persist** per font; Copy CSS; inspector waterfall.
+- **Pack as zip** on collection/folder overflow (STORE zip + fonts.txt).
+- **Cmap cap 8192** (Rust + JS) so UnifontEX Glyphs does not dump 50k rows.
+- **WOFF2:** decode via `wawoff2` then existing sfnt parse (upload slider). Fail-soft stub remains if decode fails.
+- **Did not:** merge to `main` installer, NSIS attach, delete auth/pglite/PWA, Adobe auto-activate, DirectWrite/WebGPU renderer.
+- **ACL:** `try_fontsource_gdi_offer` is now in `font-activate.toml` (was invoke-registered, capability-denied).
+
+## Fixed in tip / 1.0.196
+- **SIMD (honest):** duplicate `countByteDiffs` is Uint32 word-stride. Parse is not glyf — wasm SIMD crate wont-do. SHA-NI via SubtleCrypto.
+- **WebGPU (wont-do):** not Grok-only (WebView2 has it). Cards/glyphs stay CSS. GDI stays GDI. Custom GPU atlas would fight Chromium text on both surfaces.
+
+## Fixed in tip / 1.0.195
+- **Upload parse 20k (P0):** one worker cloned `File` at concurrency 2. Pool ≤4 cores; transfer `ArrayBuffer`; parse from buffer. Native layout no longer `Array.from` every byte (180KB lie); Uint8Array + 8MB. Cmap IPC still 180KB (UnifontEX).
+- **WASM ttf-parser (wont-do this tip):** desktop already has ttf-parser; `sfnt.ts` already skips outlines. Extra wasm crate duplicates both. harfbuzz-wasm / subset still forbidden for GDI.
+
+## Fixed in tip / 1.0.194
+- **Catalog cache schema (P1):** IDB catalog writes `v: 2`; still reads v1. Heal is the schema. `slimRecord.variable` always false (badge is disk-only).
+- **20k upload persist (P0):** `localFonts` no longer in localStorage (5MB quota). Meta JSON in IndexedDB `meta:local-fonts`; file blobs already IDB. v5 persist; hydrate merges IDB vs leftover LS.
+- **Activated 2099 google-only:** skip mapping 20k locals when every live id is `g:`.
+- **NSIS details:** deploy copies `*setup.exe`; prints `gh release upload vVERSION`. Linux sandbox cannot produce NSIS — pack on Windows.
+- Tests import real `heal-catalog.ts` / `previewWghtAxis` / `pickLocalFontsPersist`.
+
+## Fixed in tip / 1.0.193
+- **Slider still Regular (P0):** 1.0.192 changed CSS2 to `wght@min..max` but `injectGoogleCss` keyed IDB as `css:cover:g:Inter` — leftover 1.0.183 Regular-400 sheets won. Cache `css:vf2:`; replace `<style>` when href changes. Disk VF (`variable:true`) with no fvar yet now gets `previewWghtAxis`. Specimen `font-synthesis: none` on VF cards.
+- **Variable facet cache (P0):** `loadCachedCatalog` applied IDB records as-is. Pre-1.0.191 cache omitted `catalogVariable` and could keep `variable:true` → facet collapsed or badge lied. Heal facet from bundled snapshot; **badge always false** until disk honesty.
+
+## Fixed in tip / 1.0.192
+- **Card slider dead in preview (P0):** 1.0.191 restored Variable *facet* but `axesForFont` still returns [] without disk fvar, and CSS2 preview was `wght@400`. Catalog VF cards had no slider; dragging a disk-VF slider painted weight on a static Regular face. `previewWghtAxis` for catalog VF; CSS2 `wght@min..max&text=`; no local Regular TTF for catalog VF. Badge `font.variable` stays disk-only.
+- **Simultaneous Activate (P0):** each Power click `activateOnDiskAndWait`’d until the *whole* job idled — second family waited on the first download. Now `start_google_downloads` merge (Rust `pending.extend`); live still from `ready_names` only.
+
+## Fixed in tip / 1.0.191
+- **Variable list lacking (P0 regression):** 1.0.176 accidentally reverted 1.0.170’s catalog Variable facet when landing Gidugu/Clear Sans. Sidebar / `variable` query again = **catalogVariable OR on-disk VF** (like Italic); card badge / axes stay on-disk `*-variable-*` only. Material Symbols* WOFF2-only excluded. Scan `has_variable` again accepts `VariableFont_` / bracket names. Activated `poolForScope` prefers store `googleFonts` so disk VF badge honesty is not wiped by static `FONT_BY_ID` (`variable:false`). Expected facet ≈ Google **558** + **9** Fontsource TTF VFs. Progressive session restore (1.0.190) kept. No tip-install/pack.
+
+## Fixed in tip / 1.0.190
+- **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Deferred P1:** visible/favorites/first-page first.
+
 ## Fixed in tip / 1.0.189
 - **Quit kill mid-Remove (P0):** `quit_unload_budget_for` was hard-coded 4s for any path count — Activate All (~2k) quit watchdog `process::exit(0)` mid-Remove, leaving GDI-live faces and locked Documents folders. Restored **scaled** budget: `max(12s, min(180s, path_count × 15ms))` (~2k ≈ 31.5s, ~11k ≈ 165s). Watchdog is hung-GDI backstop only; worker still `exit(0)` when `session_end` completes. No FontCache restart on quit (Explorer hang). Hide-window + worker unload + next-boot recover kept.
 
@@ -25,9 +66,9 @@
 - **Subsetter (wont-do on GDI):** pyftsubset / hb-subset / subset-font / allsorts are for **preview/web**. Documents + `AddFontResourceExW` stay **full** TTFs (Word/Adobe). Preview already uses Google CSS2 `text=` + latin woff2 (1.0.183). Do not wasm-subset 20k files.
 
 ## Still open
-- Persist `localFonts` in localStorage will quota-crash around several thousand uploads (IDB catalog later).
-- Glyphs cmap of UnifontEX over IPC (cap later).
 - GDI Activate All of 20k is serialized by Windows.
+- NSIS installer: pack on Windows via `deploy.bat`; attach `*_x64-setup.exe` to the GitHub release. This Linux sandbox cannot.
+- Desktop smoke of the packed build (Inter slider stem, Variable ~567, Live 2099 + Settled Gidugu, two Power clicks, Quit Removes) — Windows only.
 
 ## Fixed in tip / 1.0.183
 - **CSSOM leak / blank Google cards (P0):** 1.0.182 stopped VF-full on cards but (1) never evicted `<style>` tags, (2) still injected full CSS2 (Noto JP = 100+ faces), (3) marked `loadedGoogle` even when inject failed, (4) refused **all** local preview so desktop Inter needed the network. CSS LRU 96; preview CSS2 is `wght@400&text=`; mark loaded only if `familyLoaded`; latin static + on-disk `convertFileSrc` (never CJK/VF/Unifont TTF). No GDI/skip-Add change.
@@ -204,5 +245,5 @@
 
 ## Notes
 
-- Tip is 1.0.184 (unreleased pack — ask before NSIS).
+- Tip is 1.0.197. NSIS is Windows `deploy.bat` only. `main` may still be 1.0.189 until the 197 tip is merged.
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

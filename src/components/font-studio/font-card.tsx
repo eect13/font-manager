@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, loadFont, loadItalicFace } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
-import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, previewWghtAxis, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
 import { useFontStore } from "@/lib/fonts/store";
@@ -180,14 +180,15 @@ export const FontCard = memo(function FontCard({
 
   const stack = cssFamilyStack(font);
   const axes = axesForFont(font);
-  const wghtAxis = axes.find((a) => a.tag === "wght");
+  const wghtAxis = axes.find((a) => a.tag === "wght") ?? previewWghtAxis(font);
+  const catalogVf = Boolean(font.catalogVariable || font.variable);
   const align = ALIGN[preview.align ?? "left"];
   const metaTone =
     preview.theme === "paper" || preview.theme === "newsprint"
       ? "border-ink/10 bg-ink/5"
       : "border-paper/10 bg-paper/5";
   const italicCss = italicPreviewStyle(font, italicOn);
-  const axisValues = font.variable ? previewAxisValues(font, storedAxes, cardWeight, italicOn) : null;
+  const axisValues = catalogVf ? previewAxisValues(font, storedAxes, cardWeight, italicOn) : null;
   // Keep card optical-sizing: auto (tracks preview font-size) until the user
   // overrides opsz via the Optical size slider — then FVS opsz + none.
   const userOpsz = typeof storedAxes?.opsz === "number";
@@ -200,7 +201,7 @@ export const FontCard = memo(function FontCard({
   const specimenDir = scriptDir(font.family);
   const specimenLang = scriptLang(font.family);
   const paintFvs = vs?.fontVariationSettings ?? italicCss.fontVariationSettings;
-  const paintWeightN = vs?.fontWeight ?? (font.variable ? cardWeight : defaultWeightForFont(font));
+  const paintWeightN = vs?.fontWeight ?? (catalogVf ? cardWeight : defaultWeightForFont(font));
   const specimenStyle: CSSProperties = {
     fontFamily: stack,
     fontSize: layout === "list" ? Math.min(preview.fontSize, 48) : preview.fontSize,
@@ -210,8 +211,8 @@ export const FontCard = memo(function FontCard({
     fontWeight: paintWeightN,
     fontVariationSettings: paintFvs,
     fontStretch: vs?.fontStretch,
-    fontSynthesis: italicCss.fontSynthesis,
-    fontOpticalSizing: vs?.fontOpticalSizing ?? (font.variable ? "auto" : undefined),
+    fontSynthesis: catalogVf ? "none" : italicCss.fontSynthesis,
+    fontOpticalSizing: vs?.fontOpticalSizing ?? (catalogVf ? "auto" : undefined),
     ...(font.colorKind && font.colorKind !== "none"
       ? { fontPalette: "normal", fontVariantEmoji: "emoji" as const }
       : {}),
@@ -227,9 +228,10 @@ export const FontCard = memo(function FontCard({
       }
     }
     setPreviewAxis(font.id, tag, n);
-    if (font.variable && !vfPrimed.current) {
+    if (catalogVf && !vfPrimed.current) {
       vfPrimed.current = true;
-      void loadFont(font, "full");
+      // Disk VF: FontFace full. Catalog VF: CSS2 wght range already in preview.
+      if (font.variable) void loadFont(font, "full");
     }
   }
 

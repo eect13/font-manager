@@ -73,11 +73,13 @@ export function DownloadBar() {
   }
   const scanning = /scanning/i.test(job.current);
   const registering = /registering/i.test(job.current);
+  // 1.0.190: calm Restoring N/T — not download hang chrome.
+  const restoring = /restoring/i.test(job.current);
   const pct = job.total > 0 || job.done > 0 ? clampPct((100 * processed) / total) : job.paused ? holdPct.current : 0;
   if (pct > holdPct.current) holdPct.current = pct;
   const shownPct = job.paused ? Math.max(pct, holdPct.current) : pct;
   const clock = getJobClock();
-  const eta = job.paused || scanning || settledIdle ? "" : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
+  const eta = job.paused || scanning || restoring || settledIdle ? "" : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
   const label =
     settledIdle
       ? "Done"
@@ -89,17 +91,19 @@ export function DownloadBar() {
             ? `Paused ${shownPct}% · ${processed.toLocaleString()} / ${total.toLocaleString()}`
             : scanning
               ? `Scanning Documents${total ? ` — ${total.toLocaleString()} queued` : ""}`
-              : registering && job.running
-                ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
-                : skipped && remaining === 0 && job.running
-                  ? `Registering ${skipped.toLocaleString()} already on disk`
-                  : skipped && job.running
-                    ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - Math.min(skipped, processed)).toLocaleString()} / ${Math.max(0, total - Math.min(skipped, total)).toLocaleString()}`
-                    : job.running
-                      ? `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`
-                      : skipped && remaining === 0
-                        ? `${skipped.toLocaleString()} already on disk`
-                        : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
+              : restoring && job.running
+                ? `Restoring ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                : registering && job.running
+                  ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                  : skipped && remaining === 0 && job.running
+                    ? `Registering ${skipped.toLocaleString()} already on disk`
+                    : skipped && job.running
+                      ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - Math.min(skipped, processed)).toLocaleString()} / ${Math.max(0, total - Math.min(skipped, total)).toLocaleString()}`
+                      : job.running
+                        ? `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                        : skipped && remaining === 0
+                          ? `${skipped.toLocaleString()} already on disk`
+                          : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
 
   return (
     <div className="flex flex-col gap-1.5 border-b border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
@@ -107,7 +111,7 @@ export function DownloadBar() {
         {job.running && !job.paused ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" /> : null}
         <p className="min-w-0 flex-1 truncate">
           <span className="font-medium text-foreground">{label}</span>
-          {job.current && !scanning && !settledIdle ? ` — ${job.current}` : ""}
+          {job.current && !scanning && !restoring && !settledIdle ? ` — ${job.current}` : ""}
           {job.failedNames.length ? (
             <span className="block truncate text-destructive">
               Couldn’t load: {job.failedNames.slice(0, 8).join(", ")}
@@ -126,9 +130,11 @@ export function DownloadBar() {
                 ? " · queue held at this percent — Resume continues, does not restart"
                 : scanning
                   ? " · checking Documents, not downloading yet"
-                  : registering
-                    ? " · intact files register only — no fetch"
-                    : remaining === 0 && skipped
+                  : restoring
+                    ? " · session GDI restore — UI stays interactive"
+                    : registering
+                      ? " · intact files register only — no fetch"
+                      : remaining === 0 && skipped
                       ? " · nothing to fetch"
                       : eta
                         ? ` · ${eta}`

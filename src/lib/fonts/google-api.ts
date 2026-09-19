@@ -1,5 +1,6 @@
 import { toast } from "sonner";
-import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, replaceGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isWoff2OnlyVariableFamily, replaceGoogleCatalog } from "./catalog";
+import { CATALOG_CACHE_VERSION, healCachedCatalogFont } from "./heal-catalog";
 import { classifyLicenseText, licenseFromCode } from "./license";
 import { guessGoogleColorKind } from "./color-font";
 import { tagsForGoogleFamily } from "./style-tags";
@@ -45,7 +46,7 @@ export type CatalogSyncResult = {
 };
 
 type CatalogCache = {
-  v: 1;
+  v: 1 | typeof CATALOG_CACHE_VERSION;
   savedAt: number;
   fonts: FontRecord[];
 };
@@ -120,7 +121,9 @@ function fromFontsource(item: FontsourceItem, popularity: number, existing?: Fon
     category,
     weights: item.weights?.length ? item.weights : existing?.weights ?? [400],
     italic: item.styles?.includes("italic") ?? existing?.italic ?? false,
-    catalogVariable: Boolean(item.variable) || Boolean(existing?.catalogVariable),
+    catalogVariable:
+      (Boolean(item.variable) || Boolean(existing?.catalogVariable)) &&
+      !isWoff2OnlyVariableFamily(item.family),
     // Live Fontsource sync can claim variable:true — UI badge needs on-disk VF only.
     variable: false,
     tags: tagsForGoogleFamily(item.family, category, extra),
@@ -141,7 +144,7 @@ function slimRecord(font: FontRecord): FontRecord {
     weights: font.weights,
     italic: font.italic,
     catalogVariable: font.catalogVariable,
-    variable: font.variable,
+    variable: false,
     tags: font.tags,
     popularity: font.popularity,
     license: font.license,
@@ -149,6 +152,8 @@ function slimRecord(font: FontRecord): FontRecord {
     colorKind: font.colorKind,
   };
 }
+
+export { CATALOG_CACHE_VERSION, healCachedCatalogFont } from "./heal-catalog";
 
 function validCachedFonts(fonts: unknown): fonts is FontRecord[] {
   if (!Array.isArray(fonts) || fonts.length < BUNDLED_COUNT) return false;
@@ -168,7 +173,7 @@ function validCachedFonts(fonts: unknown): fonts is FontRecord[] {
 
 async function saveCatalogCache(fonts: FontRecord[]) {
   try {
-    const payload: CatalogCache = { v: 1, savedAt: Date.now(), fonts: fonts.map(slimRecord) };
+    const payload: CatalogCache = { v: CATALOG_CACHE_VERSION, savedAt: Date.now(), fonts: fonts.map(slimRecord) };
     await idbPut(CATALOG_CACHE_ID, new Blob([JSON.stringify(payload)], { type: "application/json" }));
   } catch {
     /* quota — shipped snapshot still boots */
@@ -195,14 +200,22 @@ export async function loadCachedCatalog(): Promise<boolean> {
     const blob = await idbGet(CATALOG_CACHE_ID);
     if (!blob || typeof blob.text !== "function") return false;
     const parsed = JSON.parse(await blob.text()) as Partial<CatalogCache>;
-    if (parsed.v !== 1 || !validCachedFonts(parsed.fonts)) return false;
-    const fonts = parsed.fonts.map((font) => ({
-      ...font,
-      source: "google" as const,
-      id: font.id.startsWith("g:") ? font.id : googleFontId(font.family),
-      catalog: catalogOf(font.family),
-      weights: font.weights?.length ? font.weights : [400],
-    }));
+    if (parsed.v !== 1 && parsed.v !== CATALOG_CACHE_VERSION) return false;
+    if (!validCachedFonts(parsed.fonts)) return false;
+    const bundledVar = new Map(GOOGLE_FONTS.map((font) => [font.family.toLowerCase(), font] as const));
+    const fonts = parsed.fonts.map((font) => {
+      const bundled = bundledVar.get(font.family.toLowerCase());
+      const healed = healCachedCatalogFont(font, bundled);
+      return {
+        ...font,
+        source: "google" as const,
+        id: font.id.startsWith("g:") ? font.id : googleFontId(font.family),
+        catalog: catalogOf(font.family),
+        weights: font.weights?.length ? font.weights : [400],
+        catalogVariable: healed.catalogVariable,
+        variable: healed.variable,
+      };
+    });
     applyLiveCatalog(fonts);
     if (typeof parsed.savedAt === "number" && parsed.savedAt > 0) markSynced(parsed.savedAt);
     return true;
@@ -275,7 +288,9 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
         category: CATEGORY[item.category ?? ""] ?? existing.category,
         weights: item.weights?.length ? item.weights : existing.weights,
         italic: item.styles?.includes("italic") ?? existing.italic,
-        catalogVariable: Boolean(item.variable) || Boolean(existing.catalogVariable),
+        catalogVariable:
+          (Boolean(item.variable) || Boolean(existing.catalogVariable)) &&
+          !isWoff2OnlyVariableFamily(item.family),
         // Preserve applyDiskStatusHonesty: on-disk VF may set variable:true without axes yet.
         variable: Boolean(existing.variable),
         tags: tagsForGoogleFamily(

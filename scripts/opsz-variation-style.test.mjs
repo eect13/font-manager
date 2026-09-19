@@ -110,8 +110,8 @@ const inspectorSrc = readFileSync(join(root, "src/components/font-studio/font-in
 const playgroundSrc = readFileSync(join(root, "src/components/font-studio/playground.tsx"), "utf8");
 const cardSrc = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
 
-test("version.ts APP_VERSION is 1.0.189", () => {
-  assert.match(versionSrc, /export const APP_VERSION = "1\.0\.189"/);
+test("version.ts APP_VERSION is 1.0.197", () => {
+  assert.match(versionSrc, /export const APP_VERSION = "1\.0\.197"/);
 });
 
 test("italicPreviewStyle does not emit full-axis FVS (no variationCss call)", () => {
@@ -142,7 +142,7 @@ test("playground: both panes spread leftVarStyle/rightVarStyle from variationSty
 
 test("card keeps auto until storedAxes.opsz override", () => {
   assert.match(cardSrc, /userOpsz = typeof storedAxes\?\.opsz === "number"/);
-  assert.match(cardSrc, /fontOpticalSizing:\s*vs\?\.fontOpticalSizing \?\? \(font\.variable \? "auto"/);
+  assert.match(cardSrc, /fontOpticalSizing:\s*vs\?\.fontOpticalSizing \?\? \(catalogVf \? "auto"/);
 });
 
 test("wght stays high-level: opsz+wght together does not put wght in FVS", () => {
