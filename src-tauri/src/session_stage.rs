@@ -228,6 +228,11 @@ mod tests {
         assert!(!must_not_register_as_gdi_path(legacy));
         assert!(is_legacy_fontmanager_stage_path(legacy));
         assert!(is_session_stage_path(legacy));
+        let system = Path::new(r"C:\Windows\Fonts\arial.ttf");
+        let other_user = Path::new(r"C:\Users\Eric\AppData\Local\Microsoft\Windows\Fonts\Comic.ttf");
+        assert!(!is_legacy_fontmanager_stage_path(system));
+        assert!(!is_legacy_fontmanager_stage_path(other_user));
+        assert!(!is_session_stage_path(system));
     }
 
     #[test]

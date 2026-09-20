@@ -22,7 +22,15 @@ test-results/
 !.vscode/extensions.json
 !.vscode/tasks.json
 .grok/preview.pid
+.grok/status
+.grok/project_memory.md
+.grok/skills/auth/references/grok-identity.md
+.grok/skills/og/references/brand-pass.md
+.project_id
+attachments/
+artifacts/searched_images/
 screenshots/*.json
 screenshots/app-builder-*.png
 screenshots/qa-debug.png
-
+screenshots/inspector-overlay*.png
+screenshots/windows-web*.png

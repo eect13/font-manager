@@ -435,11 +435,13 @@ export function googlePreviewMayUseLocalDisk(font: FontRecord) {
 
 function catalogCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): string[] {
   const fontsource = fontsourceCssHrefs(font, mode, italic);
+  // Fontsource-exclusive families are not on fonts.googleapis.com — CSS2 404s
+  // plus a second Fontsource fetch froze the Fontsource drawer on desktop.
+  if (font.catalog === "other") return fontsource;
   // Catalog VF (42dot, etc.) must use CSS2 wght range even when badge `variable` is still false.
   if (mode === "preview" && !isSpecialPreviewFont(font)) {
     return [googlePreviewCssHref(font, italic), ...fontsource];
   }
-  if (font.catalog === "other") return fontsource;
   const display = isSpecialPreviewFont(font) ? "block" : "swap";
   const google = googleCssHref(previewFamilyParam(font, italic), display);
   return [google, ...fontsource];
@@ -726,6 +728,9 @@ export function primeGooglePreviewAllows(font: FontRecord) {
 async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
   if (!googlePreviewMayUseLocalDisk(font)) return false;
   if (typeof document === "undefined") return false;
+  // GDI-live families already resolve in WebView2 — do not FontFace.load the
+  // same TTF (that hung Fontsource browsing at ~98 Live).
+  if (familyLoaded(font.family, scriptProbe(font.family))) return true;
   if (!(await inTauri()) || !likelyOnDisk(font)) return false;
   try {
     const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
@@ -775,6 +780,10 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
     // Card preview: CSS only (static + VF range). Do not fetch VF woff2 / parse
     // axes / convertFileSrc a CJK TTF — that hangs Google Fonts scrolling.
     if (googlePreviewIsCssOnly(mode, special)) {
+      if (familyLoaded(font.family, probe)) {
+        loadedGoogle.set(font.id, "preview");
+        return;
+      }
       if (await loadGooglePreviewFromLocal(font)) {
         loadedGoogle.set(font.id, "preview");
         return;
@@ -1060,11 +1069,17 @@ export function googleCssUrls(fonts: FontRecord[]): string[] {
   });
 }
 
-/** Batched Google CSS for the visible page; Fontsource CSS if a family 404s. */
+/** Batched CSS for the visible page. Official Google → CSS2; exclusive → Fontsource. */
 export function primeGooglePreview(fonts: FontRecord[]): Promise<void> {
   const google = fonts.filter(primeGooglePreviewAllows);
   if (!google.length || typeof document === "undefined") return Promise.resolve();
   return Promise.all(
-    google.map((font) => injectGoogleCss(googlePreviewCssHref(font), `cover:${font.id}`, font.family)),
+    google.map((font) => {
+      const href =
+        font.catalog === "other"
+          ? fontsourceCssHrefs(font, "preview")[0]
+          : googlePreviewCssHref(font);
+      return href ? injectGoogleCss(href, `cover:${font.id}`, font.family) : Promise.resolve();
+    }),
   ).then(() => undefined);
 }

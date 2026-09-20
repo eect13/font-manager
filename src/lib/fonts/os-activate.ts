@@ -552,6 +552,18 @@ function toastSessionRecoveryLocked(locked: number, attempted = 0) {
   });
 }
 
+function toastGdiPressure(objects: number, quota: number, message?: string) {
+  const n = Math.max(0, objects);
+  const cap = quota > 0 ? quota : 10_000;
+  toast.message(`GDI objects ${n.toLocaleString()} / ${cap.toLocaleString()}`, {
+    id: "gdi-pressure",
+    description:
+      message ||
+      "Windows per-process quota is 10,000 GDI objects (HFONT/HDC), not one per activated family. Deactivate some typefaces if this window hitchs. Live marks stay honest.",
+    duration: 16_000,
+  });
+}
+
 function toastFontCacheHeld(locked: number, accessDenied = false) {
   const n = Math.max(locked, accessDenied ? 1 : 0);
   toast.error(`Font Cache still holding ${n.toLocaleString()} files — retry as admin or reboot`, {
@@ -1172,6 +1184,11 @@ export async function bindDownloadEvents() {
       if (locked > 0 || p.access_denied) {
         toastFontCacheHeld(locked, !!p.access_denied);
       }
+    });
+    await listen("gdi-pressure", (ev) => {
+      const p = ev.payload as { objects?: number; quota?: number; message?: string };
+      const objects = p.objects ?? 0;
+      if (objects > 0) toastGdiPressure(objects, p.quota ?? 10_000, p.message);
     });
   } catch {
     eventsBound = false;

@@ -1,10 +1,12 @@
-# Font Manager **1.0.202**
+# Font Manager **1.0.203**
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
 **100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit (Repair / Explorer delete can proceed).
 
 The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**1.0.203.** Session-only: still no `C:\Windows\Fonts` install, still enumerable GDI so Word sees faces while this process is alive, still Remove on Quit (close-to-tray off). Fixes: Fontsource cards no longer hit Google CSS2 first; GDI-live cards skip `FontFace.load`; leftover 1.0.156 copies under `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager` are Removed then deleted on boot (that folder looked like installed fonts). Soft-warn at 8,000 `GetGuiResources` GDI objects — Windows quota is 10,000 HFONT/HDC per process, **not** one object per AddFontResource. Never skip Add, never raise `GDIProcessHandleQuota`. Unused `attachments/` QA dumps (~8.7MB) dropped from git. **Ship cut:** GitHub `v1.0.203` + Vercel catalog. NSIS still Windows `deploy.bat`.
 
 **1.0.202.** Inter variable TTF is a test fixture (opsz+wght fvar, STAT ital companion, format-3 Regular↔Bold, 17 values). Figtree stays as the small latin VF (8 STAT values, no opsz) so one family cannot bias STAT parsing. STAT *value* tables are read in tests only — not a second instance picker. Format 3 `linkedValue` is the Bold/Italic companion for apps (Ctrl+B), not a slider stop. ttf-parser 0.25 `subtable_for_axis` Format2 skip is inverted; tests iterate `subtables()`. Production never calls it. Indexer tests run as `tests/statcheck` (ttf-parser, no WebKitGTK). Full desktop crate test needs the OS WebView. Fontspector/Fontbakery/skrifa stay out of the app. **Ship cut:** GitHub `v1.0.202` + Vercel catalog. NSIS still Windows `deploy.bat`.
 

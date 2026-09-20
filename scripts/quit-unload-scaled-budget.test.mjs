@@ -10,9 +10,9 @@ const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
 const versionTs = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
-test("1.0.202: version is 1.0.202 (quit unload budget from 1.0.189 kept)", () => {
-  assert.equal(pkg.version, "1.0.202");
-  assert.match(versionTs, /APP_VERSION\s*=\s*"1\.0\.202"/);
+test("1.0.203: version is 1.0.203 (quit unload budget from 1.0.189 kept)", () => {
+  assert.equal(pkg.version, "1.0.203");
+  assert.match(versionTs, /APP_VERSION\s*=\s*"1\.0\.203"/);
 });
 
 test("1.0.189: quit_unload_budget_for scales 15ms/path clamp 12s–180s", () => {
@@ -62,4 +62,16 @@ test("1.0.189: session_end Removes stage+loaded; no FontCache on quit path", () 
 test("1.0.188 remnant purge / no FS download still intact", () => {
   assert.match(activateRs, /fn purge_known_incapable_fontsource_remnants/);
   assert.match(activateRs, /Fontsource download skipped/);
+});
+
+test("legacy FontManager user-fonts stage is owned — Remove+delete, not sacred", () => {
+  assert.match(activateRs, /fn purge_legacy_fontmanager_user_fonts_stage/);
+  assert.match(activateRs, /is_legacy_fontmanager_stage_path\(path\)/);
+  assert.match(activateRs, /join\("FontManager"\)/);
+  const guard = activateRs.match(
+    /pub\(crate\) fn is_windows_fonts_path\(path: &Path\) -> bool \{[\s\S]*?\n    \}/,
+  );
+  assert.ok(guard, "is_windows_fonts_path missing");
+  assert.match(guard[0], /is_legacy_fontmanager_stage_path/);
+  assert.match(guard[0], /\\\\windows\\\\fonts/);
 });

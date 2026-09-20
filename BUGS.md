@@ -1,5 +1,12 @@
 # Font Manager — known issues / follow-ups
 
+## Fixed in tip / 1.0.203
+- **Fontsource drawer Not Responding:** exclusive families primed Google CSS2 (404) then Fontsource CSS; activated cards also `read_family_font` + `FontFace.load` of the same TTF GDI already added. Catalog `other` preview is Fontsource-only; GDI-live `document.fonts.check` skips disk FontFace; FitSpecimen does not keep `loadingdone` after the face is live. Activate/Remove honesty unchanged.
+- **1.0.156 leftover “installed” fonts:** stage lived at `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager`. `is_windows_fonts_path` treated the whole `\windows\fonts` tree as sacred so Remove skipped those files and Settings → Fonts kept them after Quit. Guard exempts only that `FontManager` folder; boot `purge_legacy_fontmanager_user_fonts_stage` Removes then deletes it. `C:\Windows\Fonts` and other user fonts untouched. No registry write.
+- **GDI object limits:** Windows default `GDIProcessHandleQuota` is **10,000 per process** (session theoretical 65,535). `AddFontResourceEx` is the **font table**, not one GDI object per face. `GetGuiResources(GR_GDIOBJECTS)` counts HFONT/HDC/bitmaps in *this* process (WebView2). Soft-warn toast at **8,000** once per process after session restore / on-disk Activate. **Never skip Add. Never raise the quota.** FR_ENUMERABLE stays 0 (Word must see faces). Quit still does not restart Font Cache.
+- **Did not:** FR_PRIVATE, keep-live-after-Quit, wipe `FontCache*.dat`, Activate All of 2100 as the daily path.
+- **Repo remnants dropped:** unused `attachments/` QA dumps (~8.7MB), stale `artifacts/` 1.0.73 README + searched images, sandbox `.grok/status` untracked. Auth/pglite/PWA scaffolding kept.
+
 ## Fixed in tip / 1.0.202
 - **Inter is a fixture.** Not skipped for size. Figtree is wght-only (STAT 8 values, no opsz, no Thin); Inter is opsz+wght fvar plus a STAT-only `ital` axis and format-3 linked Regular/Bold (17 values, Thin 100). One family would bake the wrong STAT shape into tests.
 - **STAT subtables:** parsed in tests (ttf-parser `AxisValueSubtable` Format1/3 on Inter; synthetic Format2 range walker in JS). Production still does **not** call `subtables()` or `subtable_for_axis`. ttf-parser 0.25 Format2 skip-on-match is inverted (`==` continue vs fmt1/3 `!=`); we iterate `subtables()` ourselves. Format 2 `value()` is None — ranges need `nominal_value`. Unknown format **stops** the iterator. Do not chip STAT values (fvar instances already list Regular/Bold).

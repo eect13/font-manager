@@ -85,6 +85,7 @@ const FitSpecimen = memo(function FitSpecimen({
       }
     };
     bump();
+    if (seen) return;
     document.fonts.addEventListener("loadingdone", bump);
     return () => document.fonts.removeEventListener("loadingdone", bump);
   }, [ready, style.fontFamily]);

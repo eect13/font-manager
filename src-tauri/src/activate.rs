@@ -296,10 +296,18 @@ mod winfont {
     #[link(name = "user32")]
     extern "system" {
         fn SendNotifyMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> i32;
+        fn GetGuiResources(h_process: isize, ui_flags: u32) -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> isize;
     }
 
     const HWND_BROADCAST: isize = 0xffff;
     const WM_FONTCHANGE: u32 = 0x001D;
+    const GR_GDIOBJECTS: u32 = 0;
+    const GR_GDIOBJECTS_PEAK: u32 = 2;
     /// Enumerable session font (same as AddFontResourceW). Not FR_PRIVATE — Word/Adobe must see it.
     const FR_ENUMERABLE: u32 = 0;
 
@@ -513,9 +521,25 @@ mod winfont {
         remember_map(&src, &gdi);
     }
 
+    /// System + other per-user fonts we must never Add/Remove.
+    /// Exception: our 1.0.156 stage `%LOCALAPPDATA%\Microsoft\Windows\Fonts\FontManager`
+    /// — those files are session copies, not installed fonts. Treating them as
+    /// sacred left faces in Settings → Fonts after Quit.
     pub(crate) fn is_windows_fonts_path(path: &Path) -> bool {
+        if crate::session_stage::is_legacy_fontmanager_stage_path(path) {
+            return false;
+        }
         let lower = path.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
         lower.contains("\\windows\\fonts")
+    }
+
+    /// This process's GDI object count (HFONT/HDC/HBITMAP…). Not "fonts Added".
+    pub fn process_gdi_objects() -> u32 {
+        unsafe { GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS) }
+    }
+
+    pub fn process_gdi_objects_peak() -> u32 {
+        unsafe { GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS_PEAK) }
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1859,6 +1883,23 @@ pub fn font_cache_held_message(locked: usize) -> String {
     )
 }
 
+/// Windows default `GDIProcessHandleQuota` (per process). Session theoretical max 65_535.
+/// `AddFontResourceEx` puts files in the *font table* — it is not one GDI object per face.
+/// `GetGuiResources(GR_GDIOBJECTS)` counts HFONT/HDC/bitmaps in *this* process (WebView2).
+pub const GDI_OBJECT_DEFAULT_QUOTA: u32 = 10_000;
+/// Soft warn only — never skip Add / never raise the quota.
+pub const GDI_OBJECT_SOFT_WARN: u32 = 8_000;
+
+pub fn gdi_objects_near_quota(count: u32) -> bool {
+    count >= GDI_OBJECT_SOFT_WARN
+}
+
+pub fn gdi_pressure_message(count: u32) -> String {
+    format!(
+        "This window is using {count} GDI objects (Windows quota {GDI_OBJECT_DEFAULT_QUOTA}). Session fonts are the font table, not one object per face — Chromium handles count. Deactivate some families if the UI hitchs. Live marks are unchanged."
+    )
+}
+
 /// Bounded workers for session_begin register_intact_family parallelism.
 pub fn session_register_workers(family_count: usize) -> usize {
     const MAX: usize = 6;
@@ -2209,6 +2250,72 @@ fn emit_font_cache_held_toast(app: &AppHandle, locked: usize, access_denied: boo
     let _ = app.emit("font-cache-held", &notice);
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
+struct GdiPressureNotice {
+    objects: u32,
+    peak: u32,
+    quota: u32,
+    message: String,
+}
+
+/// Soft-warn once per process when GetGuiResources ≥ 8_000. Does not skip Add.
+fn emit_gdi_pressure_if_high(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        let count = winfont::process_gdi_objects();
+        if !gdi_objects_near_quota(count) {
+            return;
+        }
+        if WARNED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let peak = winfont::process_gdi_objects_peak();
+        let message = gdi_pressure_message(count);
+        eprintln!("Font Manager: {message}");
+        let notice = GdiPressureNotice {
+            objects: count,
+            peak,
+            quota: GDI_OBJECT_DEFAULT_QUOTA,
+            message,
+        };
+        let handle = app.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(1600));
+            let _ = handle.emit("gdi-pressure", &notice);
+        });
+    }
+    let _ = app;
+}
+
+/// Drop leftover 1.0.156 session copies from the per-user Fonts tree.
+/// Files there look like installed fonts in Settings after Quit. Owned folder
+/// only (`...\Fonts\FontManager`). Never touch `C:\Windows\Fonts` or other
+/// user fonts. Does not write the registry.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn purge_legacy_fontmanager_user_fonts_stage() {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let dir = PathBuf::from(local)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Fonts")
+        .join("FontManager");
+    if !dir.is_dir() {
+        return;
+    }
+    let mut files = Vec::new();
+    walk_font_files(&dir, &mut files);
+    for path in &files {
+        #[cfg(windows)]
+        winfont::unregister(path);
+        let _ = fs::remove_file(path);
+    }
+    let _ = fs::remove_dir(&dir);
+}
+
 /// Unload Documents library paths still listed in `.session-paths.txt`
 /// (legacy 1.0.156). Must run before `rebuild_session_maps_in` rewrites that
 /// file to stage-only. Never re-Adds Documents.
@@ -2405,6 +2512,9 @@ pub fn session_begin(app: &AppHandle) {
             let _ = rebuild_session_maps_in(&root, &maps_root);
         }
         recover_stale_session(app);
+        // 1.0.156 leftover: session copies under the per-user Fonts tree.
+        // Remove + delete that folder only — never C:\Windows\Fonts.
+        purge_legacy_fontmanager_user_fonts_stage();
         // Do NOT hydrate loaded() from gdi-maps — maps skip copy only; always Add
         // after drain / new process (session-active + maps = toast exemption only).
         // Targeted dirs only — do not walk all of Documents before the UI is up.
@@ -2473,6 +2583,7 @@ pub fn session_begin(app: &AppHandle) {
             save_session_families(app, &ready);
         }
         session_boot_finish(&ready);
+        emit_gdi_pressure_if_high(app);
         let handle = app.clone();
         thread::spawn(move || {
             let _ = index_disk(&handle, true);
@@ -7171,6 +7282,7 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         #[cfg(windows)]
         persist_activation_sidecars(&app);
     }
+    emit_gdi_pressure_if_high(&app);
 
     // Defer VF backfill off Activate critical path (idle after live marks).
     // Repair / ensure remain the sync smoke path for missing catalog vars.
@@ -10551,6 +10663,21 @@ mod session_sidecar_tests {
         let msg = font_cache_held_message(7);
         assert!(msg.contains("Font Cache still holding 7 files"));
         assert!(msg.contains("retry as admin or reboot"));
+    }
+
+    #[test]
+    fn gdi_object_quota_soft_warn_does_not_skip_add() {
+        assert_eq!(GDI_OBJECT_DEFAULT_QUOTA, 10_000);
+        assert_eq!(GDI_OBJECT_SOFT_WARN, 8_000);
+        assert!(!gdi_objects_near_quota(0));
+        assert!(!gdi_objects_near_quota(7_999));
+        assert!(gdi_objects_near_quota(8_000));
+        assert!(gdi_objects_near_quota(10_000));
+        let msg = gdi_pressure_message(8_500);
+        assert!(msg.contains("8500") || msg.contains("8,500") || msg.contains("8500 GDI") || msg.contains("8500"));
+        assert!(msg.contains("10_000") || msg.contains("10000") || msg.contains("10,000"));
+        assert!(msg.contains("unchanged"));
+        assert!(!msg.to_lowercase().contains("skip add"));
     }
 
     #[test]

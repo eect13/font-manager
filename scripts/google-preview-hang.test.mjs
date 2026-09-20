@@ -50,3 +50,33 @@ test("latin on-disk preview is allowed; CJK/Unifont/color is not", () => {
   assert.match(fn, /scriptSubset\(font\.family\) === "latin"/);
   assert.doesNotMatch(fn, /!font\.variable/);
 });
+
+test("Fontsource exclusive preview does not hit fonts.googleapis.com first", () => {
+  const start = loader.indexOf("function catalogCssHrefs");
+  const fn = loader.slice(start, loader.indexOf("function fontsourceCssHref"));
+  assert.match(fn, /if \(font\.catalog === "other"\) return fontsource/);
+  const otherIdx = fn.indexOf('catalog === "other"');
+  const googleIdx = fn.indexOf("googlePreviewCssHref");
+  assert.ok(otherIdx >= 0 && otherIdx < googleIdx, "exclusive must return before Google CSS2");
+});
+
+test("prime exclusive uses Fontsource CSS, not Google CSS2", () => {
+  const start = loader.indexOf("export function primeGooglePreview(");
+  const fn = loader.slice(start, start + 700);
+  assert.match(fn, /catalog === "other"/);
+  assert.match(fn, /fontsourceCssHrefs/);
+});
+
+test("GDI-live preview skips FontFace disk load", () => {
+  assert.match(loader, /familyLoaded\(font\.family, probe\)/);
+  const local = loader.slice(
+    loader.indexOf("async function loadGooglePreviewFromLocal"),
+    loader.indexOf("function ensureCatalogCss"),
+  );
+  assert.match(local, /familyLoaded\(font\.family/);
+});
+
+test("FitSpecimen does not subscribe after the face is already live", () => {
+  assert.match(card, /if \(seen\) return/);
+  assert.match(card, /loadingdone/);
+});
