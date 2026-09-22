@@ -1119,6 +1119,62 @@ let workers = 0;
 const MAX_WORKERS = 2;
 const installQueue: { font: FontRecord; lean: boolean }[] = [];
 const removeQueue: FontRecord[] = [];
+/** Bulk Deactivate batch — Off only after unload prefix (1.0.206j). Not all at spawn. */
+let removeBatchIds: string[] = [];
+let removeBatchFamilies: string[] = [];
+const removeBatchConfirmed = new Set<string>();
+
+function beginRemoveBatch(fonts: FontRecord[]) {
+  removeBatchIds = fonts.map((f) => f.id);
+  removeBatchFamilies = fonts.map((f) => f.family);
+  removeBatchConfirmed.clear();
+}
+
+function clearRemoveBatch() {
+  removeBatchIds = [];
+  removeBatchFamilies = [];
+  removeBatchConfirmed.clear();
+}
+
+/** Confirm Off for unloaded family names (ready_names / done prefix). */
+async function confirmRemoveUnloaded(names: string[]) {
+  if (!names.length || !removeBatchIds.length) return;
+  const want = new Set(names.map((n) => n.trim().toLowerCase()).filter(Boolean));
+  const ids: string[] = [];
+  for (let i = 0; i < removeBatchFamilies.length; i += 1) {
+    const fam = removeBatchFamilies[i]!;
+    const id = removeBatchIds[i]!;
+    if (!want.has(fam.trim().toLowerCase())) continue;
+    if (removeBatchConfirmed.has(id)) continue;
+    removeBatchConfirmed.add(id);
+    ids.push(id);
+    installedCache.delete(fam.toLowerCase());
+  }
+  if (!ids.length) return;
+  const { useFontStore } = await import("./store");
+  useFontStore.getState().confirmDeactivated(ids);
+}
+
+/** Index fallback when ready_names empty (older path): first `done` families. */
+async function confirmRemovePrefixByDone(done: number) {
+  if (!removeBatchIds.length || done <= 0) return;
+  const n = Math.min(done, removeBatchFamilies.length);
+  await confirmRemoveUnloaded(removeBatchFamilies.slice(0, n));
+}
+
+/** Never-unloaded: clear pending-off so chrome stays Live (matches Cancel toast). */
+async function restoreRemoveRemainderLive(extraIds: string[] = []) {
+  const { useFontStore } = await import("./store");
+  const remainder = [
+    ...removeBatchIds.filter((id) => !removeBatchConfirmed.has(id)),
+    ...extraIds,
+  ];
+  const uniq = Array.from(new Set(remainder));
+  if (uniq.length) useFontStore.getState().clearPendingDeactivate(uniq);
+  clearRemoveBatch();
+  return uniq;
+}
+
 let lastPaint = 0;
 let pollTimer = 0;
 let rustSeenRunning = false;
@@ -1259,6 +1315,11 @@ function applyPayload(p: {
     lastReadyCount = readyLen;
     queueReadyFamilies(p.ready_names ?? []);
   }
+  // 1.0.206j: remove ready_names = unloaded prefix — confirm Off progressively (not all at spawn).
+  if (kind === "remove" && removeBatchIds.length) {
+    if (readyLen) void confirmRemoveUnloaded(p.ready_names ?? []);
+    else if (p.done > 0) void confirmRemovePrefixByDone(p.done);
+  }
   if (p.running || p.paused) rustSeenRunning = true;
   if (
     rustIdle &&
@@ -1273,13 +1334,27 @@ function applyPayload(p: {
     if (kind !== "remove" && p.ready_names?.length) readyCumulative = p.ready_names;
     emitProgress(true);
     if (kind === "remove") {
-      const n = Math.max(p.done, p.total, job.total);
-      if (n > 0) {
-        toast.success(`Deactivated ${n.toLocaleString()} — files kept in Documents`, {
-          description: n > 8 ? "Windows is catching up in the background." : undefined,
-        });
-      }
-      finishOwnedJob("remove");
+      const cancelled =
+        (p.total > 0 && p.done < p.total) || /cancel/i.test(String(p.current ?? ""));
+      const unloaded = (p.ready_names?.length ? p.ready_names : removeBatchFamilies.slice(0, p.done)).slice();
+      void (async () => {
+        await confirmRemoveUnloaded(unloaded);
+        if (cancelled) {
+          await restoreRemoveRemainderLive();
+          // Cancel toast owned by cancelDownloadQueue when user clicked Cancel.
+        } else {
+          // Full finish — confirm any stragglers in batch, then clear.
+          if (removeBatchFamilies.length) await confirmRemoveUnloaded(removeBatchFamilies);
+          const n = Math.max(unloaded.length, p.done, removeBatchConfirmed.size);
+          clearRemoveBatch();
+          if (n > 0) {
+            toast.success(`Deactivated ${n.toLocaleString()} — files kept in Documents`, {
+              description: n > 8 ? "Windows is catching up in the background." : undefined,
+            });
+          }
+        }
+        finishOwnedJob("remove");
+      })();
       return;
     }
     notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? [], p.settled_names ?? []);
@@ -1522,9 +1597,11 @@ async function pumpRemove(myBatch: number) {
 export function cancelDownloadQueue() {
   batchId += 1;
   installQueue.length = 0;
-  removeQueue.length = 0;
+  const queuedRemove = removeQueue.splice(0, removeQueue.length);
   workers = 0;
-  const wasRemove = job.mode === "remove" || job.owner === "remove";
+  const wasRemove =
+    job.mode === "remove" || job.owner === "remove" || removeBatchIds.length > 0 || queuedRemove.length > 0;
+  const doneSnap = wasRemove ? Math.max(0, job.done) : 0;
   const keepFailed = (lastFailedNames.length ? lastFailedNames : job.failedNames).slice();
   const keepDetails = job.failedDetails.slice();
   ignoreProgress = true;
@@ -1549,16 +1626,37 @@ export function cancelDownloadQueue() {
   window.setTimeout(() => {
     ignoreProgress = false;
   }, 600);
-  toast.message(wasRemove ? "Deactivate cancelled" : "Download cancelled", {
-    description: keepFailed.length
-      ? `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`
-      : wasRemove
-        ? "Already-unloaded stay Off; Cancel stops further Removes — remaining stay Live."
-        : "Fonts already saved stay in Documents → Font Manager.",
-    action: { label: "Open folder", onClick: () => void openActivatedFolder() },
-  });
   // Flush+mark any queued ready families before clearPending; reset timer/cumulative with that.
   void finalizeReadyAndClearPending();
+  // 1.0.206j: Cancel Deactivate — confirm Off only for unloaded prefix; restore Live for remainder.
+  // Toast must match store (no "stay Live" if already confirmDeactivated-all at spawn).
+  void (async () => {
+    let description: string;
+    if (keepFailed.length) {
+      description = `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`;
+    } else if (wasRemove) {
+      const { useFontStore } = await import("./store");
+      await confirmRemovePrefixByDone(doneSnap);
+      const extra = queuedRemove.map((f) => f.id);
+      const unloadedN = Math.max(doneSnap, removeBatchConfirmed.size);
+      const remainder = await restoreRemoveRemainderLive(extra);
+      const liveRemain = remainder.filter((id) => useFontStore.getState().activatedSet.has(id)).length;
+      if (liveRemain > 0) {
+        description =
+          "Already-unloaded stay Off; Cancel stops further Removes — remaining stay Live.";
+      } else if (unloadedN > 0) {
+        description = `Unloaded ${unloadedN.toLocaleString()} Off; nothing left pending.`;
+      } else {
+        description = "No Removes finished — Live unchanged.";
+      }
+    } else {
+      description = "Fonts already saved stay in Documents → Font Manager.";
+    }
+    toast.message(wasRemove ? "Deactivate cancelled" : "Download cancelled", {
+      description,
+      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+    });
+  })();
 }
 
 export function pauseDownloadQueue() {
@@ -1807,17 +1905,22 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     await dropDownloadFamilies(names);
     // Never steal download/register bar — split progress owners.
     const canOwn = beginOwnedJob("remove", { total: names.length, current: names[0] ?? "" });
+    // 1.0.206j: when another owner holds the bar, per-family pumpRemove confirms each Remove
+    // complete (never confirmDeactivated(all) at spawn).
+    if (!canOwn) {
+      for (const font of fonts) removeQueue.push(font);
+      void pumpRemove(batchId);
+      unlockUi();
+      return;
+    }
+    beginRemoveBatch(fonts);
     try {
+      // unload_font_families returns at spawn — GDI runs on a worker. Do NOT confirm all Off here.
       await tauriInvoke<number>("unload_font_families", { families: names });
-      for (const font of fonts) installedCache.delete(font.family.toLowerCase());
-      const { useFontStore } = await import("./store");
-      useFontStore.getState().confirmDeactivated(fonts.map((f) => f.id));
-      if (canOwn) {
-        startGooglePoll("remove");
-        // Bulk unload often finishes before poll sees running — clear remove owner now.
-        finishOwnedJob("remove");
-      }
+      startGooglePoll("remove");
+      // Poll / ready_names drive prefix confirmDeactivated; Cancel restores remainder Live.
     } catch {
+      clearRemoveBatch();
       for (const font of fonts) removeQueue.push(font);
       void pumpRemove(batchId);
     }

@@ -7668,6 +7668,11 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
                 p.done = (i + 1) as u32;
                 p.total = total_n;
                 p.current = t.to_string();
+                // 1.0.206j: ready_names = unloaded prefix so UI confirms Off only for these
+                // (never confirmDeactivated(all) at unload_font_families spawn).
+                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                    p.ready_names.push(t.to_string());
+                }
             }
             let last = i + 1 == families.len();
             if i == 0 || last || (i + 1) % 4 == 0 || last_emit.elapsed() >= Duration::from_millis(150) {
