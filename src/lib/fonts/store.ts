@@ -582,30 +582,22 @@ export const useFontStore = create<FontState>()(
                 return; // one Retry Add per process
               }
               softSettledRetryTried.add(famKey);
-              // Drop Settled badge so queue can try Add again.
-              set((s) =>
-                withSettled(s.settledFamilies.filter((n) => n.trim().toLowerCase() !== famKey)),
-              );
+              // 1.0.206g: set pending + drop Settled *synchronously* so a double-click
+              // hits the pending gate and cannot bypass the soft one-try Retry path
+              // while await clearSessionGdiRefused races (Skye P2).
+              set((s) => ({
+                ...withPending([...s.pendingActivate, id]),
+                ...withSettled(s.settledFamilies.filter((n) => n.trim().toLowerCase() !== famKey)),
+              }));
               // 1.0.206f: clear Rust session_gdi_refused BEFORE Activate so soft
               // early-skip does not return AddReturnedZero without Add (Skye P1 HOLD).
               void (async () => {
                 await clearSessionGdiRefused(font.family);
                 const st = get();
-                if (st.activatedSet.has(id) || st.pendingSet.has(id) || st.pendingDeactivateSet.has(id)) {
+                // Abort if user toggled off / became Live / pending cleared while waiting.
+                if (st.activatedSet.has(id) || st.pendingDeactivateSet.has(id) || !st.pendingSet.has(id)) {
                   return;
                 }
-                if (
-                  familyAlreadyLiveOrPending(
-                    font,
-                    st.localFonts,
-                    st.googleFonts,
-                    st.activatedSet,
-                    st.pendingSet,
-                  )
-                ) {
-                  return;
-                }
-                set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
                 notifyIfUnusual(font, "activate");
                 void syncFontOnSystem(font, true);
               })();

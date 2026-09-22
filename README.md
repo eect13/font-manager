@@ -1,5 +1,7 @@
 # Font Manager **1.0.206**
 
+**1.0.206g (Skye P2 race + bar-clear hygiene).** Soft Settled Power Retry sets `pending` + drops Settled *synchronously* around `clearSessionGdiRefused` so double-click cannot bypass the soft one-try gate. GDI tip bar-clear assert updated to idle ternary `active ? (p.current ?? "") : ""`. Provenance / Repair / modal / wave0 / Gidugu-hard / Retry clear kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
 **1.0.206f (Skye P1 HOLD + polish).** Soft Settled Power Retry clears `session_gdi_refused` before Activate so Add runs (206e sticky refuse). Cancel/wave0 label honesty (keep prefer if already queued vs visible/first-page). Soft Power tooltip = Retry once/process; after used + Add=0 again stays Settled not Live. Provenance / Repair / modal / Gidugu-hard kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
 
 **1.0.206e (Skye pre-ship polish).** Soft Settled requires `.settled-add-zero` provenance (wipe bare `.complete` from hard-emoji tips); soft full-face without provenance ≠ Incomplete/Repair; soft session-refuse + Activate All skip; Power hard Settled no-op / soft Retry Add; in-app Activate All modal (OK/Cancel/Abort) + wave0 prefer enqueue; Cancel offers first-page/selection when visible=0. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.

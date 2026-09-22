@@ -1,3 +1,7 @@
+## Fixed in tip / 1.0.206g
+- **Soft Retry double-click race (Skye P2):** 206f awaited `clearSessionGdiRefused` after dropping Settled but *before* setting pending — a second Power click in that window skipped the Settled/one-try path and took normal Activate. Fix: set pending + drop Settled in the same synchronous `set()` before await clear; after clear, sync only if still pending (abort if Live / pending-off / pending cleared).
+- **GDI bar-clear tip hygiene (P2):** `gdi-incapable-no-fs-download-purge` tip assert updated from stale `p.current ?? ""` to idle ternary `active ? (p.current ?? "") : ""` (matches 1.0.204 / settled-idle-bar-clear). ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206f
 - **Soft Power Retry Add (Skye P1 HOLD):** After soft Add=0, `note_session_gdi_refused` stayed set; UI Retry cleared Settled + queued Activate but Rust `family_early_skip_soft_session_refused` returned AddReturnedZero without Add. Fix: soft Retry awaits `clear_session_gdi_refused_family` before Activate so Add runs; refuse can re-note after another Add=0 (Activate All skip intact). Rust unit test asserts clear/bypass.
 - **Cancel/wave0 copy honesty:** When prefer is already wave0-queued, Cancel = keep first N (already queued) — not “visible only”. Prefer-empty Cancel label matches visible vs first-page enqueue.
