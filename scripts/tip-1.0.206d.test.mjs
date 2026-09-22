@@ -35,14 +35,16 @@ test("206d keeps ProductVersion 1.0.206 (amend-style)", () => {
   assert.match(version, /1\.0\.206/);
 });
 
-test("P1 Scan soft settled: soft + .complete reports settled; no soft early-skip", () => {
+test("P1 Scan soft settled: soft + provenance reports settled; no soft early-skip on hard path", () => {
+  // 206e: Settled requires `.settled-add-zero` (not bare `.complete`). Still no soft auto-stamp on Scan.
   const scanStart = activateRs.indexOf("pub fn scan_disk_families");
   assert.ok(scanStart >= 0);
-  const scan = activateRs.slice(scanStart, scanStart + 3500);
+  const scan = activateRs.slice(scanStart, scanStart + 4500);
   assert.match(scan, /family_soft_try_add_then_settle/);
   assert.match(scan, /has_complete/);
   assert.match(scan, /soft_emoji_full_face_ok/);
-  assert.match(scan, /never auto-stamp soft on Scan/i);
+  assert.match(scan, /soft_scan_settled_from_provenance|settled-add-zero|dir_has_settled_add_zero_provenance/);
+  assert.match(scan, /never bare|wipe_soft_complete_lacking_provenance|Add=0 provenance/i);
   // Soft must NOT use hard-only early-skip path for Activate.
   assert.match(activateRs, /fn family_early_skip_known_incapable/);
   const early = activateRs.slice(
@@ -114,11 +116,13 @@ test("Activate All includes emoji ids (not hard-skip); hard Gidugu only", () => 
   assert.doesNotMatch(hard, /Noto Color Emoji|Noto Emoji/);
 });
 
-test("P2 soft confirm Cancel = Activate visible only", () => {
+test("P2 soft confirm Cancel = visible path (in-app modal since 206e)", () => {
+  // 206e: window.confirm → in-app OK/Cancel/Abort; Cancel still prefers visible (or first-page).
   const actStart = activateToggle.indexOf("export function activateSet");
-  const act = activateToggle.slice(actStart, actStart + 2800);
-  assert.match(act, /Cancel = Activate visible only/);
-  assert.match(act, /orderedVis|orderActivateIds\(visibleIds/);
+  const act = activateToggle.slice(actStart, actStart + 3200);
+  assert.doesNotMatch(act, /window\.confirm/);
+  assert.match(act, /requestActivateConfirm|cancelIds/);
+  assert.match(act, /orderActivateIds\(visibleIds|cancelIds/);
   assert.match(act, /\(visible\)/);
   assert.doesNotMatch(act, /Cancel = abort` \+/);
 });

@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
 import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
-import { isKnownGdiSessionIncapable, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
+import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
 import { bytesNearlySame } from "./binary-diff";
 import { idbDelete, idbGet, idbPutMany } from "./idb";
 import { loadFont, unloadLocalFont } from "./loader";
@@ -421,6 +421,9 @@ function pickExclusiveActivate(
   return { chosen: [...catalogIn, ...chosenLocal], evict: [] };
 }
 
+/** Soft Settled Power → Retry Add at most once per process (1.0.206e). */
+const softSettledRetryTried = new Set<string>();
+
 export const useFontStore = create<FontState>()(
   persist(
     (set, get) => ({
@@ -561,6 +564,28 @@ export const useFontStore = create<FontState>()(
         }
         if (pending || pendingOff) {
           return;
+        }
+        // Settled Power: hard Gidugu = no-op; soft emoji = explicit Retry Add (one try/process).
+        if (font && !live) {
+          const famKey = font.family.trim().toLowerCase();
+          if (get().settledFamilySet.has(famKey)) {
+            if (isKnownGdiSessionIncapable(font.family)) {
+              return; // hard Settled → no-op
+            }
+            if (isSoftGdiTryAddFirst(font.family)) {
+              if (softSettledRetryTried.has(famKey)) {
+                return; // one Retry Add per process
+              }
+              softSettledRetryTried.add(famKey);
+              // Drop Settled badge so queue can try Add again.
+              set((s) =>
+                withSettled(s.settledFamilies.filter((n) => n.trim().toLowerCase() !== famKey)),
+              );
+              // fall through to pending Activate (Retry Add)
+            } else {
+              return;
+            }
+          }
         }
         if (live) {
           // Symmetric pending-off: keep Live until unload confirms.
@@ -800,7 +825,7 @@ export const useFontStore = create<FontState>()(
             if (row.settled) settledNames.push(n);
           }
           // Hard allowlist seed across disk honesty replace (Activate All skip).
-          // Soft emoji Settled comes from Scan rows (`settled:true` when `.complete` after Add=0) —
+          // Soft emoji Settled comes from Scan rows (`settled:true` only with `.settled-add-zero` provenance) —
           // never always-seed soft (would skip try-Add / cold-boot "Library complete" lie).
           for (const e of KNOWN_GDI_SESSION_INCAPABLE) settledNames.push(e.family);
           const googleFonts = s.googleFonts.map((font) => {

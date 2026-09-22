@@ -9,6 +9,7 @@ import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
 import { useFontStore } from "@/lib/fonts/store";
 import type { FontRecord } from "@/lib/fonts/types";
 import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
+import { requestActivateConfirm } from "@/lib/fonts/activate-confirm";
 import { visibleFamilySet } from "@/lib/fonts/visible-families";
 
 function webPreviewNote(label: string) {
@@ -31,6 +32,8 @@ export function activateSet(ids: string[], label: string) {
   const pending = state.pendingSet;
 
   // 1.0.205 P0: skip Settled / known Add=0 — never burn Activate All queue on faces that will not Live.
+  // Soft Settled (session refuse / provenance) is in settledFamilySet after Add=0 — skip via that,
+  // not Scan-trusted bare `.complete`. Hard allowlist still hard-skipped.
   const usable: string[] = [];
   for (const id of ids) {
     if (live.has(id) || pending.has(id)) continue;
@@ -48,38 +51,65 @@ export function activateSet(ids: string[], label: string) {
     return false;
   }
 
-  // Soft confirm when bulk N > ~50 — OK = all; Cancel = Activate visible only (not full abort).
+  const ordered = orderActivateIds(usable, state);
+  const { prefer, remainder } = splitPreferRemainder(ordered, state);
+
+  // Soft confirm when bulk N > ~50 — wave0 (prefer) immediately; remainder after in-app modal.
   if (usable.length > 50) {
     const vis = visibleFamilySet();
     const visibleIds = usable.filter((id) => {
       const font = findFontRecord(id, local, google);
       return font ? vis.has(font.family.trim().toLowerCase()) : false;
     });
-    const minutes = Math.max(1, Math.ceil(usable.length / 40));
-    const ok = window.confirm(
-      `Activate ${usable.length.toLocaleString()} families in ${label}?\n\n` +
-        `This can take ~${minutes}+ minutes. Word/Adobe stay honest (Add>0 only).\n\n` +
-        `OK = Activate all ${usable.length.toLocaleString()}` +
-        (visibleIds.length
-          ? `\nCancel = Activate visible only (${visibleIds.length.toLocaleString()})`
-          : `\nCancel = abort`),
-    );
-    if (!ok) {
-      // Tip promises a visible path — Cancel must not silently abort the whole bulk.
-      if (visibleIds.length) {
-        const orderedVis = orderActivateIds(visibleIds, state);
-        void activateInWaves(orderedVis, `${label} (visible)`);
-        return true;
-      }
-      return false;
+    // Cancel targets: visible, or first-page/selection/recent when visible=0 (P3).
+    const cancelIds =
+      visibleIds.length > 0
+        ? orderActivateIds(visibleIds, state)
+        : prefer.length
+          ? prefer
+          : ordered.slice(0, Math.min(24, ordered.length));
+
+    // Wave0: enqueue visible/selected/recent immediately (progressive Live early).
+    if (prefer.length) {
+      void activateInWaves(prefer, `${label} (first)`);
     }
+
+    void (async () => {
+      const choice = await requestActivateConfirm({
+        label,
+        total: usable.length,
+        preferCount: prefer.length,
+        remainderCount: remainder.length,
+        visibleCount: visibleIds.length,
+        cancelCount: cancelIds.length,
+        // Soften ETA — no hard minute promise.
+        etaHint:
+          "Large Activate All can take a while depending on downloads and Windows load.",
+      });
+      if (choice === "ok") {
+        if (remainder.length) {
+          void activateInWaves(remainder, label);
+        } else if (!prefer.length) {
+          void activateInWaves(ordered, label);
+        }
+        return;
+      }
+      if (choice === "cancel") {
+        // Prefer already wave0. If prefer empty, activate cancel fallback (visible / first-page).
+        if (!prefer.length && cancelIds.length) {
+          void activateInWaves(cancelIds, `${label} (visible)`);
+        }
+        return;
+      }
+      // Abort: leave wave0 if already queued; do not enqueue remainder.
+    })();
+    return true;
   }
 
-  // Visible + selected + recent first; remainder background (progressive Live early).
-  const ordered = orderActivateIds(usable, state);
   void activateInWaves(ordered, label);
   return true;
 }
+
 
 function findFontRecord(
   id: string,
@@ -114,6 +144,34 @@ function orderActivateIds(
     (prefer.has(id) ? head : tail).push(id);
   }
   return [...head, ...tail];
+}
+
+
+/** Visible + selected + recent = wave0 prefer; remainder after confirm. */
+function splitPreferRemainder(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+): { prefer: string[]; remainder: string[] } {
+  const local = state.localFonts;
+  const google = state.googleFonts;
+  const byId = new Map<string, FontRecord>();
+  for (const f of [...local, ...google]) byId.set(f.id, f);
+  const preferSet = new Set<string>();
+  const vis = visibleFamilySet();
+  for (const id of ids) {
+    const font = byId.get(id);
+    if (font && vis.has(font.family.trim().toLowerCase())) preferSet.add(id);
+  }
+  if (state.selectedId && ids.includes(state.selectedId)) preferSet.add(state.selectedId);
+  for (const id of state.recentIds.slice(0, 24)) {
+    if (ids.includes(id)) preferSet.add(id);
+  }
+  const prefer: string[] = [];
+  const remainder: string[] = [];
+  for (const id of ids) {
+    (preferSet.has(id) ? prefer : remainder).push(id);
+  }
+  return { prefer, remainder };
 }
 
 const ACTIVATE_WAVE = 40;

@@ -19,8 +19,9 @@ export const KNOWN_GDI_SESSION_INCAPABLE: readonly KnownGdiIncapableEntry[] = [
 ];
 
 /**
- * Soft: try Add first; Settled + calm toast only after Add=0.
- * Not boot-seeded / not Activate-All-skipped / not early-skipped.
+ * Soft: try Add first; Settled + calm toast only after Add=0 + provenance.
+ * Not boot-seeded. Activate All skips via session refuse / provenanced Settled
+ * (never bare `.complete`). Soft early-skip only after this-session refuse.
  * Keep in sync with Rust `SOFT_GDI_TRY_ADD_FIRST` (same names + order).
  */
 export const SOFT_GDI_TRY_ADD_FIRST: readonly KnownGdiIncapableEntry[] = [

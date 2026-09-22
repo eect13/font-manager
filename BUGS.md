@@ -1,3 +1,8 @@
+## Fixed in tip / 1.0.206e
+- **Soft Settled provenance (P1):** Soft Settled only when `.settled-add-zero` written after real Add=0. Scan one-shot wipes soft bare `.complete` lacking provenance (hard-emoji tip upgrade). Soft + full-face size OK + no provenance ⇒ not Incomplete, excluded from Repair (no huge TTF re-download before try-Add).
+- **Soft session refuse + Power (P2):** `note_session_gdi_refused` covers soft after Add=0; Activate All skips soft via settled/session refuse (not bare `.complete`). Power: hard Settled no-op; soft Settled = Retry Add (one try/process); tooltips aligned.
+- **Activate All modal + wave0 (P2):** Replace `window.confirm` with in-app OK=all / Cancel=visible / Abort. Enqueue visible/selected/recent as wave0 immediately; remainder after confirm. Cancel offers first-page/selection when visible=0. Soften ETA copy. ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206d
 - **Scan soft Settled (P1):** `scan_disk_families` reports `settled:true` for soft emoji with intact + size OK + `.complete` (after Add=0) via soft class / `family_may_settle_add_zero` honesty — same badge path as hard Gidugu. Does **not** auto-stamp soft on Scan / does **not** early-skip Add (Activate still try-Add first). `applyDiskStatusHonesty` picks soft Settled from Scan rows so cold boot is not “Library complete” forever.
 - **Soft allowlist SoT (P1):** Rust `SOFT_GDI_TRY_ADD_FIRST` table mirrors TS; `is_emoji_session_family` lookups the table. Tip test asserts exact family-list parity.

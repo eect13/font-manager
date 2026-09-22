@@ -1178,9 +1178,7 @@ fn register_family_path(family: &str, path: &Path) -> bool {
     }
     // Known-incapable Add=0: settle later — never auto-chase 2015 pin / Fontsource
     // on the Activate critical path (honesty: Activated only when Add>0).
-    if fail == Some(RegisterFailKind::AddReturnedZero)
-        && family_known_gdi_session_incapable(family)
-    {
+    if fail == Some(RegisterFailKind::AddReturnedZero) && family_may_settle_add_zero(family) {
         note_session_gdi_refused(family);
     }
     #[cfg(not(windows))]
@@ -1481,6 +1479,10 @@ fn register_intact_family_detailed(
     if family_early_skip_known_incapable(app, family) {
         return (0, RegisterFailKind::AddReturnedZero);
     }
+    // Soft emoji: after this-session Add=0 refuse, skip re-Add (not bare .complete).
+    if family_early_skip_soft_session_refused(app, family) {
+        return (0, RegisterFailKind::AddReturnedZero);
+    }
     let mut n = 0usize;
     let mut fail = RegisterFailKind::NoneTried;
     for dir in family_locations(app, family) {
@@ -1503,7 +1505,7 @@ fn register_intact_family_detailed(
                 }
                 Some(kind) => {
                     if matches!(kind, RegisterFailKind::AddReturnedZero)
-                        && family_known_gdi_session_incapable(family)
+                        && family_may_settle_add_zero(family)
                     {
                         note_session_gdi_refused(family);
                     }
@@ -1534,9 +1536,11 @@ fn stamp_known_incapable_disk_settled(app: &AppHandle, family: &str) {
 }
 
 /// After a real Add attempt returned 0: Settled honesty for hard allowlist OR soft emoji.
-/// Boot seed / early-skip stay Gidugu-hard only. Scan reports soft Settled when `.complete`
-/// already exists (no auto-stamp on Scan — Activate still try-Add first).
+/// Boot seed / early-skip stay Gidugu-hard only. Soft stamps `.complete` **and**
+/// `.settled-add-zero` provenance (Scan must not trust bare `.complete` from hard-emoji tips).
 fn stamp_settle_after_add_zero(app: &AppHandle, family: &str) {
+    // Session refuse bit so Activate All / soft early-skip do not re-Add this process.
+    note_session_gdi_refused(family);
     if family_known_gdi_session_incapable(family) {
         stamp_known_incapable_disk_settled(app, family);
         return;
@@ -1597,6 +1601,8 @@ fn stamp_soft_settle_dir_after_add_zero(dir: &Path, family: &str) {
         count_intact_faces(dir).max(1)
     };
     mark_family_complete(dir, expected);
+    // Provenance: Soft Settled only after real Add=0 (never bare .complete from hard-emoji tips).
+    stamp_settled_add_zero_provenance(dir);
 }
 
 fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
@@ -3227,7 +3233,8 @@ fn session_gdi_refused() -> &'static Mutex<HashSet<String>> {
 }
 
 fn note_session_gdi_refused(family: &str) {
-    if !family_known_gdi_session_incapable(family) {
+    // Hard Gidugu OR soft emoji after Add=0 — Activate All / early-skip via session refuse.
+    if !family_may_settle_add_zero(family) {
         return;
     }
     if let Ok(mut g) = session_gdi_refused().lock() {
@@ -3274,6 +3281,29 @@ fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
         return true;
     }
     family_session_gdi_refused(family)
+}
+
+/// Soft emoji: skip re-Add only after this-session refuse (never trust bare `.complete`).
+fn family_early_skip_soft_session_refused(app: &AppHandle, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return false;
+    }
+    if !family_session_gdi_refused(family) {
+        return false;
+    }
+    let intact = family_has_intact(app, family);
+    if !intact {
+        return false;
+    }
+    let undersized = family_locations(app, family)
+        .iter()
+        .any(|d| dir_has_undersized_google_static(d, family));
+    if undersized {
+        return false;
+    }
+    family_locations(app, family)
+        .iter()
+        .any(|d| soft_emoji_full_face_ok(d, family))
 }
 
 /// Settled (disk OK, Add=0) must never equal Activated.
@@ -6354,6 +6384,90 @@ fn count_intact_faces(dir: &Path) -> usize {
 
 fn clear_complete_marker(dir: &Path) {
     let _ = fs::remove_file(family_complete_marker(dir));
+    clear_settled_add_zero_provenance(dir);
+}
+
+/// Soft Settled provenance — written only after real Add=0 (`stamp_soft_settle_dir_after_add_zero`).
+fn family_settled_add_zero_marker(dir: &Path) -> PathBuf {
+    dir.join(".settled-add-zero")
+}
+
+fn dir_has_settled_add_zero_provenance(dir: &Path) -> bool {
+    family_settled_add_zero_marker(dir).is_file()
+}
+
+fn stamp_settled_add_zero_provenance(dir: &Path) {
+    let _ = fs::write(family_settled_add_zero_marker(dir), b"1");
+}
+
+fn clear_settled_add_zero_provenance(dir: &Path) {
+    let _ = fs::remove_file(family_settled_add_zero_marker(dir));
+}
+
+/// One-shot upgrade: soft `.complete` from hard-emoji tips lacks provenance — wipe so Scan
+/// does not treat bare `.complete` as Settled. Full-face soft stays not-Incomplete (try-Add).
+fn wipe_soft_complete_lacking_provenance(dir: &Path, family: &str) {
+    if !family_soft_try_add_then_settle(family) {
+        return;
+    }
+    if dir_is_complete(dir) && !dir_has_settled_add_zero_provenance(dir) {
+        clear_complete_marker(dir);
+    }
+}
+
+/// Soft + full-face size OK + no provenance ⇒ not Incomplete / not Repair (try-Add first).
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_full_face_exclude_repair(dir: &Path, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return false;
+    }
+    if dir_has_settled_add_zero_provenance(dir) {
+        // Provenanced Settled uses .complete path — not a Repair exclude special-case.
+        return false;
+    }
+    dir_has_intact(dir)
+        && soft_emoji_full_face_ok(dir, family)
+        && !dir_has_undersized_google_static(dir, family)
+}
+
+/// Scan/Repair classification for soft emoji (unit-tested).
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_scan_settled_from_provenance(
+    has_provenance: bool,
+    full_face_ok: bool,
+    intact: bool,
+    undersized: bool,
+) -> bool {
+    has_provenance && full_face_ok && intact && !undersized
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_scan_incomplete(
+    settled: bool,
+    soft: bool,
+    full_face_ok: bool,
+    intact: bool,
+    has_complete: bool,
+    missing_variable: bool,
+    undersized: bool,
+) -> bool {
+    if settled {
+        return false;
+    }
+    // Soft full-face without provenance: not Incomplete (Activate try-Add; no huge Repair).
+    if soft && full_face_ok && intact && !undersized {
+        return false;
+    }
+    (intact && !has_complete) || missing_variable || undersized
+}
+
+fn family_soft_full_face_exclude_repair(app: &AppHandle, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return false;
+    }
+    family_locations(app, family)
+        .iter()
+        .any(|d| soft_full_face_exclude_repair(d, family))
 }
 
 /// Stamp `.complete` only for a full face set. Body + `.expected` store the count.
@@ -6489,6 +6603,10 @@ fn family_is_ready(app: &AppHandle, family: &str) -> bool {
 }
 
 fn family_is_incomplete(app: &AppHandle, family: &str) -> bool {
+    // Soft full-face without provenance: not Incomplete / not Repair target.
+    if family_soft_full_face_exclude_repair(app, family) {
+        return false;
+    }
     !family_is_ready(app, family) && family_has_intact(app, family)
 }
 
@@ -8167,9 +8285,7 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
                 honesty.intact > 0,
                 honesty.undersized,
             ) {
-                if family_known_gdi_session_incapable(family) {
-                    note_session_gdi_refused(family);
-                }
+                note_session_gdi_refused(family);
                 stamp_settle_after_add_zero(&app, family);
                 note_settled_quiet(family);
                 continue;
@@ -8415,7 +8531,12 @@ pub fn repair_incomplete_families(
             }
             if dir_has_intact(dir) && !dir_is_complete(dir) {
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
-                    targets.push(name.to_string());
+                    // Soft full-face without provenance: exclude Repair (try-Add first).
+                    if soft_full_face_exclude_repair(dir, name) {
+                        // skip
+                    } else {
+                        targets.push(name.to_string());
+                    }
                 }
             } else if dir_is_complete(dir) {
                 // Complete Google folders: name-heal + pull missing catalog vars (no bust).
@@ -8443,7 +8564,9 @@ pub fn repair_incomplete_families(
                 }
                 stamp_known_incapable_disk_settled(&app, &family);
             }
-            if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
+            if family_soft_full_face_exclude_repair(&app, &family) {
+                // Soft full-face without provenance: try-Add first, never Repair re-download.
+            } else if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
                 targets.push(family);
             } else {
                 if let Some(ref c) = client {
@@ -8566,29 +8689,36 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
         verify_complete_marker(dir);
         // Known GDI-incapable + intact full-size ⇒ disk settled (no Repair-1 churn).
         stamp_known_incapable_dir_settled(dir, &name);
+        // Soft: wipe bare `.complete` lacking `.settled-add-zero` (hard-emoji tip upgrade).
+        wipe_soft_complete_lacking_provenance(dir, &name);
         let has_complete = dir_is_complete(dir);
         let has_variable = dir_has_intact_variable(dir);
         let missing_variable =
             catalog_variable_expects_public_vf(&name) && !has_variable && intact > 0;
         let undersized = dir_has_undersized_google_static(dir, &name);
+        let soft = family_soft_try_add_then_settle(&name);
+        let full_face_ok = soft_emoji_full_face_ok(dir, &name);
+        let has_prov = dir_has_settled_add_zero_provenance(dir);
         // Hard Gidugu: intact full-size ⇒ Settled (may stamp `.complete` above).
-        // Soft emoji: Settled only when prior Add=0 left `.complete` + intact + size OK —
-        // never auto-stamp soft on Scan (Activate still try-Add first).
+        // Soft emoji: Settled only with Add=0 provenance (never bare `.complete`).
         let settled = if family_known_gdi_session_incapable(&name) {
             family_disk_settled_known_gdi_incapable(true, intact > 0, undersized)
-        } else if family_soft_try_add_then_settle(&name) {
-            has_complete
-                && soft_emoji_full_face_ok(dir, &name)
-                && family_disk_settled_known_gdi_incapable(true, intact > 0, undersized)
+        } else if soft {
+            soft_scan_settled_from_provenance(has_prov, full_face_ok, intact > 0, undersized)
         } else {
             false
         };
-        // Settled known-incapable: never Incomplete / Repair-1 (calm disk OK).
-        let incomplete = if settled {
-            false
-        } else {
-            (intact > 0 && !has_complete) || missing_variable || undersized
-        };
+        // Settled: never Incomplete. Soft full-face without provenance: also not Incomplete
+        // (Activate try-Add first — no huge TTF Repair churn).
+        let incomplete = soft_scan_incomplete(
+            settled,
+            soft,
+            full_face_ok,
+            intact > 0,
+            has_complete,
+            missing_variable,
+            undersized,
+        );
         out.push(DiskFamily {
             name,
             bytes,
@@ -10497,6 +10627,44 @@ mod install_path_tests {
             .any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
         let dest = fontsource_face_filename(&fontsource_gdi_offer_slug("Gidugu"), "latin", 400, "normal");
         assert_eq!(dest, "gidugu-400-normal.ttf");
+    }
+
+    #[test]
+    fn soft_settled_requires_provenance_not_bare_complete() {
+        // P1 206e: bare .complete (hard-emoji tip upgrade) ≠ Settled; provenance after Add=0 does.
+        assert!(!soft_scan_settled_from_provenance(false, true, true, false));
+        assert!(soft_scan_settled_from_provenance(true, true, true, false));
+        assert!(!soft_scan_settled_from_provenance(true, false, true, false));
+        assert!(!soft_scan_settled_from_provenance(true, true, true, true));
+        // Soft full-face without provenance: not Incomplete / not Repair.
+        assert!(!soft_scan_incomplete(false, true, true, true, false, false, false));
+        // Soft Settled with provenance: not Incomplete.
+        assert!(!soft_scan_incomplete(true, true, true, true, true, false, false));
+        // Soft undersized: Incomplete.
+        assert!(soft_scan_incomplete(false, true, false, true, false, false, true));
+        // Non-soft missing .complete: Incomplete.
+        assert!(soft_scan_incomplete(false, false, true, true, false, false, false));
+
+        let parent = temp_family_dir("soft-prov-206e");
+        let dir = parent.join("Noto Color Emoji");
+        fs::create_dir_all(&dir).unwrap();
+        let mut full = b"\x00\x01\x00\x00".to_vec();
+        full.resize(300 * 1024, 0);
+        fs::write(dir.join("NotoColorEmoji.ttf"), &full).unwrap();
+        // Bare .complete without provenance — wipe + exclude repair.
+        mark_family_complete(&dir, 1);
+        assert!(dir_is_complete(&dir));
+        assert!(!dir_has_settled_add_zero_provenance(&dir));
+        wipe_soft_complete_lacking_provenance(&dir, "Noto Color Emoji");
+        assert!(!dir_is_complete(&dir), "upgrade wipe bare soft .complete");
+        assert!(soft_full_face_exclude_repair(&dir, "Noto Color Emoji"));
+        // After real Add=0 stamp: provenance + Settled.
+        stamp_soft_settle_dir_after_add_zero(&dir, "Noto Color Emoji");
+        assert!(dir_is_complete(&dir));
+        assert!(dir_has_settled_add_zero_provenance(&dir));
+        assert!(!soft_full_face_exclude_repair(&dir, "Noto Color Emoji"));
+        assert!(soft_scan_settled_from_provenance(true, true, true, false));
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]

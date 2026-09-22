@@ -8,6 +8,7 @@ import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, ita
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
 import { noteFamilyVisible } from "@/lib/fonts/visible-families";
+import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst } from "@/lib/fonts/gdi-incapable";
 import { useFontStore } from "@/lib/fonts/store";
 import { useLiveAxes } from "@/lib/fonts/live-axes";
 import type { FontRecord, PreviewSettings } from "@/lib/fonts/types";
@@ -152,6 +153,16 @@ export const FontCard = memo(function FontCard({
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
   const settledDisk = useFontStore((s) => s.settledFamilySet.has(font.family.trim().toLowerCase()));
   const settled = settledDisk && !activated;
+  const softSettled = settled && isSoftGdiTryAddFirst(font.family);
+  const hardSettled = settled && isKnownGdiSessionIncapable(font.family);
+  const settledBadgeTitle = softSettled
+    ? "Settled after Add=0 — Power = Retry Add (one try)"
+    : "On disk · Windows won’t load (not Activated)";
+  const settledPowerTitle = softSettled
+    ? "Settled — Retry Add (one try this process)"
+    : hardSettled
+      ? "Settled — Windows won’t load (not Activated)"
+      : "Settled — on disk · Windows won’t load (not Activated)";
   const pending = useFontStore((s) => s.pendingSet.has(font.id));
   const pendingOff = useFontStore((s) => s.pendingDeactivateSet.has(font.id));
   const unloadStuck = useFontStore((s) => s.unloadStuckSet.has(font.id));
@@ -428,7 +439,7 @@ export const FontCard = memo(function FontCard({
               <Badge
                 variant="outline"
                 className="ml-auto border-muted-foreground/40 text-muted-foreground"
-                title="On disk · Windows won’t load (not Activated)"
+                title={settledBadgeTitle}
               >
                 Settled
               </Badge>
@@ -454,7 +465,7 @@ export const FontCard = memo(function FontCard({
                 <Badge
                   variant="outline"
                   className="border-muted-foreground/40 text-muted-foreground"
-                  title="On disk · Windows won’t load (not Activated)"
+                  title={settledBadgeTitle}
                 >
                   Settled
                 </Badge>
@@ -501,7 +512,7 @@ export const FontCard = memo(function FontCard({
               : activated
                 ? "Deactivate — hide from other apps, keep files"
                 : settled
-                  ? "Settled — on disk · Windows won’t load (not Activated)"
+                  ? settledPowerTitle
                   : pending
                     ? "Queued"
                     : isDesktopShellSync()

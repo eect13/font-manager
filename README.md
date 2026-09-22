@@ -1,5 +1,7 @@
 # Font Manager **1.0.206**
 
+**1.0.206e (Skye pre-ship polish).** Soft Settled requires `.settled-add-zero` provenance (wipe bare `.complete` from hard-emoji tips); soft full-face without provenance ≠ Incomplete/Repair; soft session-refuse + Activate All skip; Power hard Settled no-op / soft Retry Add; in-app Activate All modal (OK/Cancel/Abort) + wave0 prefer enqueue; Cancel offers first-page/selection when visible=0. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
 **1.0.206d (Skye pre-ship).** Soft emoji Scan Settled when `.complete` after Add=0 (cold-boot badge honesty); shared `SOFT_GDI_TRY_ADD_FIRST` TS↔Rust table parity; bulk confirm Cancel = Activate visible only; Noto Emoji ≥256KB stub reject parity with color; `firstSettledAllowlistedFamily` soft-aware + toast preview. Hard allowlist stays Gidugu only. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
 
 **1.0.206c (emoji regression).** Hard `KNOWN_GDI_SESSION_INCAPABLE` is **Gidugu only** (seed Settled + Activate All skip + early-skip). Noto Color Emoji / Noto Emoji are soft try-Add-first — Activate / Activate All **queue** them; Settled + calm toast only after Add=0. Completeness P0 kept (full upstream color TTF, ≥256KB stub reject, never fake Live). ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.

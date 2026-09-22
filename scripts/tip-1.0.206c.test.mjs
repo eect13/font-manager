@@ -49,8 +49,16 @@ test("UI still seeds/skips hard allowlist only (Gidugu) — Activate All queues 
   assert.doesNotMatch(hydrate, /SOFT_GDI_TRY_ADD_FIRST/);
   assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
   assert.match(store, /isKnownGdiSessionIncapable\(font\.family\)/);
+  // Activate All path must not hard-skip soft (206e: soft helper may appear for Power Retry Add).
   assert.doesNotMatch(activateToggle, /isSoftGdiTryAddFirst/);
-  assert.doesNotMatch(store, /isSoftGdiTryAddFirst/);
+  const setMany = store.slice(store.indexOf("setActivatedMany:"), store.indexOf("setActivatedMany:") + 1200);
+  assert.doesNotMatch(setMany, /isSoftGdiTryAddFirst/);
+  // applyDiskStatusHonesty still never always-seeds soft.
+  const honesty = store.slice(
+    store.indexOf("applyDiskStatusHonesty:"),
+    store.indexOf("applyDiskStatusHonesty:") + 1200,
+  );
+  assert.doesNotMatch(honesty, /SOFT_GDI_TRY_ADD_FIRST/);
 });
 
 test("completeness emoji P0 still present (upstream TTF + stub reject)", () => {
