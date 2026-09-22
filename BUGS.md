@@ -1,3 +1,8 @@
+## Fixed in tip / 1.0.206k
+- **Cancel/Deactivate keepFailed soft-lie (Skye P0 HOLD):** `cancelDownloadQueue` ran `if (keepFailed.length)` first — stale Activate `lastFailedNames` skipped `confirmRemovePrefixByDone` + `restoreRemoveRemainderLive`, leaving Cancel mid-Deactivate remainder pending-off with download-failure toast. Fix: when `wasRemove`, always prefix-confirm + restore Live **independent of** `keepFailed` toast; `beginOwnedJob("remove")` clears `lastFailedNames`. Tip assert `wasRemove && keepFailed.length` still restores Live.
+- **Kept:** wired Pause/Cancel (206i); beginRemoveBatch; prefix Off; Cancel restore (206j); `activateQueueIds`; Live=Add>0; Gidugu-hard; soft/provenance/Retry/no-infer/modal/wave0/Google↔FS; finish `activated.length`.
+- **Deferred (still):** session restore prefer visible/favorites/first-page; compact density. ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206j
 - **Cancel/Deactivate Live soft-lie (Skye P1 HOLD):** `syncFontsOnSystem(off)` called `confirmDeactivated(all)` at `unload_font_families` invoke-accept (spawn) while GDI only unloads a prefix and Cancel `session_remove`s prefix — UI went all-Off; Cancel toast still claimed “remaining stay Live”. Fix: track remove batch; confirm Off only for unloaded `ready_names` / done prefix (Rust pushes names on each Remove); Cancel → `clearPendingDeactivate` for never-unloaded (stay Live); toast matches store (`liveRemain`). No all-Off early confirm. Tip assert Cancel path.
 - **Kept:** wired Pause/Cancel gate (206i); shared `activateQueueIds`; Live=Add>0; Gidugu-hard; soft/provenance/Retry/no-infer/modal/wave0/Google↔FS; finish toast `activated.length`.

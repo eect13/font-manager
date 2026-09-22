@@ -52,6 +52,8 @@ function beginOwnedJob(
     // Another owner is active — do not overwrite their bar (split owners).
     return false;
   }
+  // 1.0.206k: download failures must not gate Deactivate Cancel (stale lastFailedNames).
+  if (owner === "remove") lastFailedNames = [];
   job = {
     running: true,
     paused: false,
@@ -1630,11 +1632,11 @@ export function cancelDownloadQueue() {
   void finalizeReadyAndClearPending();
   // 1.0.206j: Cancel Deactivate — confirm Off only for unloaded prefix; restore Live for remainder.
   // Toast must match store (no "stay Live" if already confirmDeactivated-all at spawn).
+  // 1.0.206k: wasRemove always runs prefix confirm + restoreRemoveRemainderLive — independent of
+  // keepFailed (stale Activate lastFailedNames must not skip Live restore or steal toast).
   void (async () => {
     let description: string;
-    if (keepFailed.length) {
-      description = `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`;
-    } else if (wasRemove) {
+    if (wasRemove) {
       const { useFontStore } = await import("./store");
       await confirmRemovePrefixByDone(doneSnap);
       const extra = queuedRemove.map((f) => f.id);
@@ -1649,6 +1651,8 @@ export function cancelDownloadQueue() {
       } else {
         description = "No Removes finished — Live unchanged.";
       }
+    } else if (keepFailed.length) {
+      description = `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`;
     } else {
       description = "Fonts already saved stay in Documents → Font Manager.";
     }
