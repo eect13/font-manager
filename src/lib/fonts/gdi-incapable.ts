@@ -14,6 +14,8 @@ export type KnownGdiIncapableEntry = {
 /** Source of truth for UI: keep in sync with `family_known_gdi_session_incapable` allowlist. */
 export const KNOWN_GDI_SESSION_INCAPABLE: readonly KnownGdiIncapableEntry[] = [
   { family: "Gidugu", fsSlug: "gidugu", subsets: ["telugu", "latin"] },
+  { family: "Noto Color Emoji", fsSlug: "noto-color-emoji", subsets: ["emoji"] },
+  { family: "Noto Emoji", fsSlug: "noto-emoji", subsets: ["emoji"] },
 ];
 
 export function isKnownGdiSessionIncapable(family: string): boolean {

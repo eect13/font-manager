@@ -67,12 +67,12 @@ export function DownloadBar() {
     return () => window.clearTimeout(t);
   }, [settledIdle]);
 
-  if ((!job.running && !job.paused && job.mode === "idle" && !job.failedNames.length && !settledIdle) || empty) {
+  if ((!job.running && !job.paused && job.mode === "idle" && (job.owner === "idle" || !job.owner) && !job.failedNames.length && !settledIdle) || empty) {
     holdPct.current = 0;
     return null;
   }
   const scanning = /scanning/i.test(job.current);
-  const registering = /registering/i.test(job.current);
+  const registering = job.mode === "register" || job.owner === "register" || /registering/i.test(job.current);
   // 1.0.190: calm Restoring N/T — not download hang chrome.
   const restoring = /restoring/i.test(job.current);
   const pct = job.total > 0 || job.done > 0 ? clampPct((100 * processed) / total) : job.paused ? holdPct.current : 0;
