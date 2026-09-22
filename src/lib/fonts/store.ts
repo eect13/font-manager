@@ -1,13 +1,15 @@
+import { toast } from "sonner";
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
 import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
+import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
 import { bytesNearlySame } from "./binary-diff";
 import { idbDelete, idbGet, idbPutMany } from "./idb";
 import { loadFont, unloadLocalFont } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { bindAxesPersist, setLiveAxis } from "./live-axes";
-import { removeUploadFromDisk, saveUploadToDisk, syncFontOnSystem, syncFontsOnSystem, uninstallFontOnSystem } from "./os-activate";
+import { clearSessionGdiRefused, removeUploadFromDisk, saveUploadToDisk, syncFontOnSystem, syncFontsOnSystem, uninstallFontOnSystem } from "./os-activate";
 import { scheduleSaveLocalFontsMeta } from "./persist-local";
 import type {
   Collection,
@@ -70,6 +72,8 @@ interface PersistedSlice {
   favorites: string[];
   activated: string[];
   pendingActivate: string[];
+  /** Deactivate queued — stay Live in chrome until unload confirms (symmetric with pendingActivate). */
+  pendingDeactivate: string[];
   collections: Collection[];
   customTags: Record<string, string[]>;
   localFonts: FontRecord[];
@@ -103,6 +107,11 @@ interface FontState extends PersistedSlice {
   activatedSet: Set<string>;
   pendingActivate: string[];
   pendingSet: Set<string>;
+  pendingDeactivate: string[];
+  pendingDeactivateSet: Set<string>;
+  /** Pending-off exceeded N seconds (Word-locked) — Live stays; UI shows retry. */
+  unloadStuckIds: string[];
+  unloadStuckSet: Set<string>;
   setHydrated: (value: boolean) => void;
   setGoogleFonts: (fonts: FontRecord[]) => void;
   patchFontAxes: (id: string, axes: { tag: string; name: string; min: number; max: number; def: number }[]) => void;
@@ -119,6 +128,10 @@ interface FontState extends PersistedSlice {
   markLiveActivated: (ids: string[]) => void;
   queuePendingActivate: (ids: string[]) => void;
   clearPendingActivate: (ids?: string[]) => void;
+  queuePendingDeactivate: (ids: string[]) => void;
+  clearPendingDeactivate: (ids?: string[]) => void;
+  /** Unload confirmed — drop Live + pending-off for these ids. */
+  confirmDeactivated: (ids: string[]) => void;
   pruneActivatedToFamilies: (families: string[]) => number;
   restoreActivation: (liveIds: string[], pendingIds: string[]) => void;
   selectFont: (id: string | null) => void;
@@ -239,6 +252,50 @@ function withPending(pendingActivate: string[]) {
   return { pendingActivate, pendingSet: new Set(pendingActivate) };
 }
 
+function withPendingDeactivate(pendingDeactivate: string[]) {
+  return { pendingDeactivate, pendingDeactivateSet: new Set(pendingDeactivate) };
+}
+
+function withUnloadStuck(unloadStuckIds: string[]) {
+  return { unloadStuckIds, unloadStuckSet: new Set(unloadStuckIds) };
+}
+
+/** Pending-off honesty timeout (Word may lock Remove). Keep Live; never fake Off. */
+const PENDING_OFF_TIMEOUT_MS = 8_000;
+const pendingOffTimers = new Map<string, number>();
+
+function armPendingOffTimeout(ids: string[], get: () => any, set: (fn: any) => void) {
+  for (const id of ids) {
+    const prev = pendingOffTimers.get(id);
+    if (prev) window.clearTimeout(prev);
+    const handle = window.setTimeout(() => {
+      pendingOffTimers.delete(id);
+      const s = get();
+      if (!s.pendingDeactivateSet.has(id)) return;
+      // Still pending-off — surface stuck; keep Live honest.
+      set((st: any) => ({
+        ...withUnloadStuck(Array.from(new Set([...st.unloadStuckIds, id]))),
+      }));
+      toast.message("Still unloading", {
+        id: `unload-stuck-${id}`,
+        description:
+          "Windows has not confirmed Remove yet (Word/Adobe may be locking the face). Live stays on — retry Deactivate when the app releases the font.",
+        duration: 12_000,
+      });
+    }, PENDING_OFF_TIMEOUT_MS);
+    pendingOffTimers.set(id, handle);
+  }
+}
+
+function clearPendingOffTimeout(ids: string[]) {
+  for (const id of ids) {
+    const prev = pendingOffTimers.get(id);
+    if (prev) window.clearTimeout(prev);
+    pendingOffTimers.delete(id);
+  }
+}
+
+
 function withDisk(names: string[]) {
   const diskFamilies: string[] = [];
   const diskFamilySet = new Set<string>();
@@ -301,16 +358,34 @@ function liveRivalFonts(
 ): FontRecord[] {
   const key = familyKey(font.family);
   if (!key) return [];
-  const pool = font.source === "google" ? localFonts : googleFonts;
+  // Any other card id with the same family name (Google ↔ Fontsource ↔ local).
+  // Never allow dual Live badges for one family name.
   const out: FontRecord[] = [];
-  for (const other of pool) {
+  for (const other of [...localFonts, ...googleFonts]) {
+    if (other.id === font.id) continue;
     if (familyKey(other.family) !== key) continue;
     if (activated.has(other.id) || pending.has(other.id)) out.push(other);
   }
   return out;
 }
 
-/** Catalog wins in a mixed batch. Skip locals whose family is already live as catalog. */
+/** True when this family name is already Live or pending under any card id. */
+function familyAlreadyLiveOrPending(
+  font: FontRecord,
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[],
+  live: Set<string>,
+  pending: Set<string>,
+): boolean {
+  if (live.has(font.id) || pending.has(font.id)) return true;
+  return liveRivalFonts(font, localFonts, googleFonts, live, pending).length > 0;
+}
+
+/**
+ * Catalog wins in a mixed batch (CSS / badge preference).
+ * 1.0.204: never return GDI evict — exclusive Activate must not Remove→Add thrash.
+ * If the family name is already Live/pending from any source, skip (Activate = no-op).
+ */
 function pickExclusiveActivate(
   incoming: FontRecord[],
   localFonts: FontRecord[],
@@ -322,6 +397,8 @@ function pickExclusiveActivate(
   const catalogFam = new Set<string>();
   const localIn: FontRecord[] = [];
   for (const font of incoming) {
+    // Already Live/pending under this id or a same-name rival → no-op (no Remove+Add).
+    if (familyAlreadyLiveOrPending(font, localFonts, googleFonts, live, pending)) continue;
     if (font.source === "google") {
       catalogIn.push(font);
       catalogFam.add(familyKey(font.family));
@@ -329,7 +406,6 @@ function pickExclusiveActivate(
       localIn.push(font);
     }
   }
-  const localIdx = indexByFamily(localFonts);
   const catalogIdx = indexByFamily(googleFonts);
   const chosenLocal: FontRecord[] = [];
   const seenLocal = new Set<string>();
@@ -341,24 +417,16 @@ function pickExclusiveActivate(
     seenLocal.add(key);
     chosenLocal.push(font);
   }
-  const evict: FontRecord[] = [];
-  const evictIds = new Set<string>();
-  const take = (font: FontRecord) => {
-    if (evictIds.has(font.id)) return;
-    evictIds.add(font.id);
-    evict.push(font);
-  };
-  for (const font of catalogIn) {
-    for (const loc of localIdx.get(familyKey(font.family)) ?? []) {
-      if (live.has(loc.id) || pending.has(loc.id)) take(loc);
-    }
-  }
-  for (const font of chosenLocal) {
-    for (const g of catalogIdx.get(familyKey(font.family)) ?? []) {
-      if (live.has(g.id) || pending.has(g.id)) take(g);
-    }
-  }
-  return { chosen: [...catalogIn, ...chosenLocal], evict };
+  // Exclusive CSS/badge can stay catalog-preferred; GDI never Remove→Add for rivals.
+  return { chosen: [...catalogIn, ...chosenLocal], evict: [] };
+}
+
+/** Soft Settled Power → Retry Add at most once per process (1.0.206e/f). */
+const softSettledRetryTried = new Set<string>();
+
+/** True after soft Settled Power Retry was used this process (tooltip honesty). */
+export function softSettledRetryAlreadyTried(family: string): boolean {
+  return softSettledRetryTried.has(family.trim().toLowerCase());
 }
 
 export const useFontStore = create<FontState>()(
@@ -370,6 +438,8 @@ export const useFontStore = create<FontState>()(
       favorites: [],
       ...withActivated(DEFAULT_ACTIVATED.slice()),
       ...withPending([]),
+      ...withPendingDeactivate([]),
+      ...withUnloadStuck([]),
       collections: [],
       customTags: {},
       localFonts: [],
@@ -492,41 +562,73 @@ export const useFontStore = create<FontState>()(
       toggleActivated: (id) => {
         const live = get().activatedSet.has(id);
         const pending = get().pendingSet.has(id);
+        const pendingOff = get().pendingDeactivateSet.has(id);
         const font = findFont(id, get().localFonts, get().googleFonts);
         if (font?.source === "system") {
           return;
         }
-        if (pending) {
+        if (pending || pendingOff) {
           return;
         }
+        // Settled Power: hard Gidugu = no-op; soft emoji = explicit Retry Add (one try/process).
+        if (font && !live) {
+          const famKey = font.family.trim().toLowerCase();
+          if (get().settledFamilySet.has(famKey)) {
+            if (isKnownGdiSessionIncapable(font.family)) {
+              return; // hard Settled → no-op
+            }
+            if (isSoftGdiTryAddFirst(font.family)) {
+              if (softSettledRetryTried.has(famKey)) {
+                return; // one Retry Add per process
+              }
+              softSettledRetryTried.add(famKey);
+              // 1.0.206g: set pending + drop Settled *synchronously* so a double-click
+              // hits the pending gate and cannot bypass the soft one-try Retry path
+              // while await clearSessionGdiRefused races (Skye P2).
+              set((s) => ({
+                ...withPending([...s.pendingActivate, id]),
+                ...withSettled(s.settledFamilies.filter((n) => n.trim().toLowerCase() !== famKey)),
+              }));
+              // 1.0.206f: clear Rust session_gdi_refused BEFORE Activate so soft
+              // early-skip does not return AddReturnedZero without Add (Skye P1 HOLD).
+              void (async () => {
+                await clearSessionGdiRefused(font.family);
+                const st = get();
+                // Abort if user toggled off / became Live / pending cleared while waiting.
+                if (st.activatedSet.has(id) || st.pendingDeactivateSet.has(id) || !st.pendingSet.has(id)) {
+                  return;
+                }
+                notifyIfUnusual(font, "activate");
+                void syncFontOnSystem(font, true);
+              })();
+              return;
+            } else {
+              return;
+            }
+          }
+        }
         if (live) {
+          // Symmetric pending-off: keep Live until unload confirms.
           set((s) => ({
-            ...withActivated(s.activated.filter((x) => x !== id)),
+            ...withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, id]))),
             ...withPending(s.pendingActivate.filter((x) => x !== id)),
+            ...withUnloadStuck(s.unloadStuckIds.filter((x) => x !== id)),
           }));
+          armPendingOffTimeout([id], get, set);
           if (font) void syncFontOnSystem(font, false);
           return;
         }
         if (font) {
-          const rivals = liveRivalFonts(
-            font,
-            get().localFonts,
-            get().googleFonts,
-            get().activatedSet,
-            get().pendingSet,
-          );
-          if (rivals.length) {
-            const drop = new Set(rivals.map((f) => f.id));
-            set((s) => ({
-              ...withActivated(s.activated.filter((x) => !drop.has(x))),
-              ...withPending(s.pendingActivate.filter((x) => !drop.has(x))),
-            }));
-            // Queue only — Activated badge stays on live activated[] until GDI marks ready.
-            set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
-            notifyIfUnusual(font, "activate");
-            void syncFontsOnSystem(rivals, false).then(() => {
-              void syncFontOnSystem(font, true);
-            });
+          // Family already Live from any source → Activate = no-op (no Remove→Add thrash).
+          if (
+            familyAlreadyLiveOrPending(
+              font,
+              get().localFonts,
+              get().googleFonts,
+              get().activatedSet,
+              get().pendingSet,
+            )
+          ) {
             return;
           }
         }
@@ -542,17 +644,26 @@ export const useFontStore = create<FontState>()(
         const local = get().localFonts;
         const google = get().googleFonts;
         if (!on) {
-          const drop = new Set(ids);
-          set((s) => ({
-            ...withActivated(s.activated.filter((id) => !drop.has(id))),
-            ...withPending(s.pendingActivate.filter((id) => !drop.has(id))),
-          }));
+          const live = get().activatedSet;
+          const pendingOff = get().pendingDeactivateSet;
           const pack: FontRecord[] = [];
+          const offIds: string[] = [];
           for (const id of ids) {
+            if (!live.has(id) && !get().pendingSet.has(id)) continue;
+            if (pendingOff.has(id)) continue;
             const font = findFont(id, local, google);
             if (!font || font.source === "system") continue;
             pack.push(font);
+            offIds.push(id);
           }
+          if (!offIds.length) return;
+          // Keep Live until unload confirms (pending-off honesty).
+          set((s) => ({
+            ...withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, ...offIds]))),
+            ...withPending(s.pendingActivate.filter((id) => !new Set(offIds).has(id))),
+            ...withUnloadStuck(s.unloadStuckIds.filter((id) => !new Set(offIds).has(id))),
+          }));
+          armPendingOffTimeout(offIds, get, set);
           if (pack.length) void syncFontsOnSystem(pack, false);
           return;
         }
@@ -563,22 +674,20 @@ export const useFontStore = create<FontState>()(
             ? new Set(get().duplicateHideIds)
             : null;
         const incoming: FontRecord[] = [];
+        const settled = get().settledFamilySet;
         for (const id of ids) {
           if (live.has(id) || pending.has(id)) continue;
           if (hide?.has(id)) continue;
           const font = findFont(id, local, google);
           if (!font || font.source === "system") continue;
+          // 1.0.205 P0: Activate All must not queue Settled / known Add=0.
+          if (settled.has(font.family.trim().toLowerCase())) continue;
+          // 1.0.206b: skip allowlist even when settled set not hydrated yet.
+          if (isKnownGdiSessionIncapable(font.family)) continue;
           incoming.push(font);
         }
-        const { chosen, evict } = pickExclusiveActivate(incoming, local, google, live, pending);
-        if (evict.length) {
-          const drop = new Set(evict.map((f) => f.id));
-          set((s) => ({
-            ...withActivated(s.activated.filter((id) => !drop.has(id))),
-            ...withPending(s.pendingActivate.filter((id) => !drop.has(id))),
-          }));
-          void syncFontsOnSystem(evict, false);
-        }
+        // evict always [] in 1.0.204 — no chained Remove→Add.
+        const { chosen } = pickExclusiveActivate(incoming, local, google, live, pending);
         const queuedIds: string[] = [];
         const pack: FontRecord[] = [];
         for (const font of chosen) {
@@ -592,12 +701,6 @@ export const useFontStore = create<FontState>()(
         if (pack.length) {
           const unusual = pack.find((f) => f.colorKind && f.colorKind !== "none");
           if (unusual) notifyIfUnusual(unusual, "activate");
-        }
-        if (evict.length) {
-          void syncFontsOnSystem(evict, false).then(() => {
-            if (pack.length) void syncFontsOnSystem(pack, true);
-          });
-        } else if (pack.length) {
           void syncFontsOnSystem(pack, true);
         }
       },
@@ -621,6 +724,7 @@ export const useFontStore = create<FontState>()(
         set((s) => ({
           ...withActivated(Array.from(new Set([...s.activated, ...add]))),
           ...withPending(s.pendingActivate.filter((id) => !add.includes(id))),
+          ...withPendingDeactivate(s.pendingDeactivate.filter((id) => !add.includes(id))),
         }));
         const locals = get().localFonts;
         const goog = get().googleFonts;
@@ -656,6 +760,31 @@ export const useFontStore = create<FontState>()(
         const drop = new Set(ids);
         set((s) => withPending(s.pendingActivate.filter((id) => !drop.has(id))));
       },
+      queuePendingDeactivate: (ids) => {
+        if (!ids.length) return;
+        set((s) =>
+          withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, ...ids]))),
+        );
+      },
+      clearPendingDeactivate: (ids) => {
+        if (!ids) {
+          set(withPendingDeactivate([]));
+          return;
+        }
+        const drop = new Set(ids);
+        set((s) => withPendingDeactivate(s.pendingDeactivate.filter((id) => !drop.has(id))));
+      },
+      confirmDeactivated: (ids) => {
+        if (!ids.length) return;
+        const drop = new Set(ids);
+        clearPendingOffTimeout(ids);
+        set((s) => ({
+          ...withActivated(s.activated.filter((id) => !drop.has(id))),
+          ...withPending(s.pendingActivate.filter((id) => !drop.has(id))),
+          ...withPendingDeactivate(s.pendingDeactivate.filter((id) => !drop.has(id))),
+          ...withUnloadStuck(s.unloadStuckIds.filter((id) => !drop.has(id))),
+        }));
+      },
       pruneActivatedToFamilies: (families) => {
         const allow = new Set(families.map((n) => n.trim().toLowerCase()));
         const local = get().localFonts;
@@ -673,7 +802,8 @@ export const useFontStore = create<FontState>()(
       restoreActivation: (liveIds, pendingIds) => {
         const live = Array.from(new Set(liveIds));
         const pending = Array.from(new Set(pendingIds.filter((id) => !live.includes(id))));
-        set({ ...withActivated(live), ...withPending(pending) });
+        // Fresh session restore — no stale pending-off from last Quit.
+        set({ ...withActivated(live), ...withPending(pending), ...withPendingDeactivate([]) });
       },
       selectFont: (id) =>
         set((s) => ({
@@ -714,6 +844,10 @@ export const useFontStore = create<FontState>()(
             }
             if (row.settled) settledNames.push(n);
           }
+          // Hard allowlist seed across disk honesty replace (Activate All skip).
+          // Soft emoji Settled comes from Scan rows (`settled:true` only with `.settled-add-zero` provenance) —
+          // never always-seed soft (would skip try-Add / cold-boot "Library complete" lie).
+          for (const e of KNOWN_GDI_SESSION_INCAPABLE) settledNames.push(e.family);
           const googleFonts = s.googleFonts.map((font) => {
             const onDiskVf = vf.has(font.family.trim().toLowerCase());
             if (onDiskVf) {
@@ -1274,6 +1408,7 @@ export const useFontStore = create<FontState>()(
           favorites: Array.isArray(p.favorites) ? p.favorites : [],
           activated: Array.isArray(p.activated) ? p.activated : [],
           pendingActivate: Array.isArray(p.pendingActivate) ? p.pendingActivate : [],
+          pendingDeactivate: [],
           collections: withoutBuiltinFolders(Array.isArray(p.collections) ? p.collections : []),
           customTags: p.customTags && typeof p.customTags === "object" ? p.customTags : {},
           localFonts: Array.isArray(p.localFonts) ? p.localFonts : [],
@@ -1310,6 +1445,7 @@ export const useFontStore = create<FontState>()(
           ...p,
           ...withActivated(activated),
           ...withPending(pendingActivate),
+          ...withPendingDeactivate([]),
           collections: withoutBuiltinFolders(p.collections ?? current.collections),
           localFonts: (p.localFonts ?? current.localFonts).map((f) => {
             if (f.licenseUserSet) {
@@ -1364,6 +1500,7 @@ export const useFontStore = create<FontState>()(
         favorites: s.favorites,
         activated: s.activated,
         pendingActivate: [],
+        pendingDeactivate: [],
         collections: s.collections,
         customTags: s.customTags,
         // v5: upload catalog lives in IndexedDB (20k × JSON blows localStorage 5MB).
