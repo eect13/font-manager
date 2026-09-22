@@ -1,11 +1,14 @@
+## Fixed in tip / 1.0.206c
+- **Emoji Activate regression (Skye/Eric):** Noto Color Emoji / Noto Emoji were on hard `KNOWN_GDI_SESSION_INCAPABLE` → boot Settled seed + Activate All skip + `family_early_skip_known_incapable` never tried Add. Fix: hard allowlist = **Gidugu only**. Soft emoji try Add first; Settled + toast only after Add=0 (`family_may_settle_add_zero` / `stamp_settle_after_add_zero`). Activate All queues catalog (~2099) minus hard allowlist only. Completeness P0 kept (upstream color TTF, ≥256KB reject stubs, no fake Live). ProductVersion stays 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206b
 - **Completeness P0 (standing rule):** Noto Color Emoji Activate skips Google CSS latin/unicode-range stubs — planned = full upstream `NotoColorEmoji.ttf` only (reject <256KB). `pick_subsets` prefers emoji like CJK. TS `fontsourceTtfFiles` mirror matches. Live still Add>0 only; Settled honesty unchanged for Gidugu + emoji.
-- **UI Activate All pack-blocker:** hydrate seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet`; `activateSet` / `setActivatedMany` / Activate visible also skip `isKnownGdiSessionIncapable` so Gidugu + emoji never queue pending if settled set is not hydrated yet. `applyDiskStatusHonesty` re-merges allowlist after disk replace. ProductVersion stays 1.0.206; Rust boot seed from 206 kept.
+- **UI Activate All pack-blocker:** hydrate seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet`; `activateSet` / `setActivatedMany` / Activate visible also skip `isKnownGdiSessionIncapable` so Gidugu (hard) never queues pending if settled set is not hydrated yet. Soft emoji queue (206c). `applyDiskStatusHonesty` re-merges allowlist after disk replace. ProductVersion stays 1.0.206; Rust boot seed from 206 kept.
 
 ## Fixed in tip / 1.0.206
-- **Seed allowlist Settled on boot:** `seed_known_gdi_incapable_settled` + early-skip stamps `.complete` / session-refused for intact Gidugu-class (and emoji allowlist) before first settle scan so Activate All never queues them.
+- **Seed allowlist Settled on boot:** `seed_known_gdi_incapable_settled` + early-skip stamps `.complete` / session-refused for intact Gidugu-class (hard allowlist) before first settle scan so Activate All never queues Gidugu. Soft emoji since 206c.
 - **Resume intent when store row missing:** never default `"google"`. Catalog lookup + `resolve_family_fetch_intent` (stamp → planned → official Google); ambiguous families skipped — never wrong-pipe Fontsource vs Google.
-- **Emoji P0:** Noto Color Emoji / Noto Emoji on GDI-incapable allowlist; `pull_emoji_upstream_color_ttf` prefers noto-emoji upstream full color TTF (reject latin stubs / no WOFF2 install path). Live only if Add>0; else honest Settled.
+- **Emoji P0:** `pull_emoji_upstream_color_ttf` prefers noto-emoji upstream full color TTF (reject latin stubs / no WOFF2). Soft try-Add (206c) — Live only if Add>0; else honest Settled. Not hard-allowlisted.
 - **CJK:** existing chinese-*/japanese/korean subset preference + tiny latin remnant purge / replace policy kept (incomplete ≠ Done).
 
 ## Fixed in tip / 1.0.205

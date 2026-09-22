@@ -49,14 +49,20 @@ test("resume never blind-defaults to google when store missing", () => {
   assert.match(perm, /resolve_family_fetch_intent/);
 });
 
-test("emoji P0: full upstream TTF + allowlist Settled honesty", () => {
+test("emoji P0: full upstream TTF + soft settle after Add=0 (not hard allowlist)", () => {
   assert.match(activateRs, /fn pull_emoji_upstream_color_ttf/);
   assert.match(activateRs, /fn is_emoji_session_family/);
   assert.match(activateRs, /NotoColorEmoji\.ttf/);
-  assert.match(activateRs, /family: "Noto Color Emoji"/);
-  assert.match(activateRs, /family: "Noto Emoji"/);
+  assert.match(activateRs, /fn family_soft_try_add_then_settle/);
+  assert.match(activateRs, /fn family_may_settle_add_zero/);
+  assert.match(gdiMirror, /SOFT_GDI_TRY_ADD_FIRST/);
   assert.match(gdiMirror, /Noto Color Emoji/);
   assert.match(gdiMirror, /Noto Emoji/);
+  const hard = gdiMirror.slice(
+    gdiMirror.indexOf("KNOWN_GDI_SESSION_INCAPABLE"),
+    gdiMirror.indexOf("SOFT_GDI_TRY_ADD_FIRST"),
+  );
+  assert.doesNotMatch(hard, /Noto Color Emoji|Noto Emoji/);
   assert.match(activateRs, /emoji_allowlist_and_upstream_urls_for_settled_honesty/);
 });
 

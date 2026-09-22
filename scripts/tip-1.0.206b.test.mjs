@@ -47,10 +47,16 @@ test("applyDiskStatusHonesty re-merges allowlist seed", () => {
   assert.match(body, /settledNames\.push\(e\.family\)/);
 });
 
-test("mirror still includes Gidugu + emoji; Rust boot seed kept", () => {
+test("mirror hard allowlist Gidugu; soft emoji separate; Rust boot seed kept", () => {
   assert.match(gdiMirror, /Gidugu/);
+  assert.match(gdiMirror, /SOFT_GDI_TRY_ADD_FIRST/);
   assert.match(gdiMirror, /Noto Color Emoji/);
   assert.match(gdiMirror, /Noto Emoji/);
+  const hard = gdiMirror.slice(
+    gdiMirror.indexOf("KNOWN_GDI_SESSION_INCAPABLE"),
+    gdiMirror.indexOf("SOFT_GDI_TRY_ADD_FIRST"),
+  );
+  assert.doesNotMatch(hard, /Noto Color Emoji|Noto Emoji/);
   assert.match(activateRs, /fn seed_known_gdi_incapable_settled/);
   assert.match(activateRs, /seed_known_gdi_incapable_settled\(app\)/);
 });

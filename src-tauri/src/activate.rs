@@ -1454,7 +1454,7 @@ fn family_may_claim_session_activated(_known_incapable: bool, gdi_faces_added: u
 
 fn suppress_fail_toast_known_incapable(app: &AppHandle, family: &str) -> bool {
     family_toast_exempt_known_gdi_incapable(
-        family_known_gdi_session_incapable(family),
+        family_may_settle_add_zero(family),
         family_has_intact(app, family),
     )
 }
@@ -1533,6 +1533,68 @@ fn stamp_known_incapable_disk_settled(app: &AppHandle, family: &str) {
     }
 }
 
+/// After a real Add attempt returned 0: Settled honesty for hard allowlist OR soft emoji.
+/// Never used for boot seed / early-skip / Scan auto-settle (those stay Gidugu-hard only).
+fn stamp_settle_after_add_zero(app: &AppHandle, family: &str) {
+    if family_known_gdi_session_incapable(family) {
+        stamp_known_incapable_disk_settled(app, family);
+        return;
+    }
+    if !family_soft_try_add_then_settle(family) {
+        return;
+    }
+    for dir in family_locations(app, family) {
+        stamp_soft_settle_dir_after_add_zero(&dir, family);
+    }
+}
+
+fn stamp_soft_settle_dir_after_add_zero(dir: &Path, family: &str) {
+    if !family_soft_try_add_then_settle(family) {
+        return;
+    }
+    if !dir_has_intact(dir) {
+        return;
+    }
+    // Color emoji: never settle a latin/CSS stub as "works".
+    if is_noto_color_emoji_family(family, &slug_family(family)) {
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        let ok = files.iter().any(|p| {
+            ttf_intact(p)
+                && fs::metadata(p).map(|m| m.len() >= 256 * 1024).unwrap_or(false)
+        });
+        if !ok {
+            return;
+        }
+    }
+    if read_google_planned_keys(dir).is_none() {
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        let keys: Vec<String> = files
+            .iter()
+            .filter(|p| ttf_intact(p))
+            .filter_map(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        if !keys.is_empty() {
+            write_google_planned(dir, &keys);
+        }
+    }
+    let expected = if let Some(keys) = read_google_planned_keys(dir) {
+        let intact = count_intact_planned_keys(dir, &keys);
+        if intact == 0 || intact < keys.len() {
+            return;
+        }
+        keys.len()
+    } else {
+        count_intact_faces(dir).max(1)
+    };
+    mark_family_complete(dir, expected);
+}
+
 fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
     if !family_known_gdi_session_incapable(family) {
         return;
@@ -1575,9 +1637,9 @@ fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
 }
 
 
-/// 1.0.206: on boot, seed allowlisted GDI-incapable families that are already on
+/// 1.0.206c: on boot, seed hard-allowlist GDI-incapable (Gidugu-class) already on
 /// disk into Settled (`.complete` + session refused) so Activate All / restore
-/// never queues them before the first settle scan.
+/// never queues them. Soft emoji are not seeded — they must queue and try Add.
 fn seed_known_gdi_incapable_settled(app: &AppHandle) {
     for entry in KNOWN_GDI_SESSION_INCAPABLE {
         let family = entry.family;
@@ -2612,7 +2674,7 @@ pub fn session_begin(app: &AppHandle) {
             save_session_families(app, &ready);
         }
         // Restore may have cleared settled_names; re-seed allowlist on disk
-        // (Gidugu/emoji not in last-session list still skip Activate All).
+        // (Gidugu hard-allowlist not in last-session list still skip Activate All).
         seed_known_gdi_incapable_settled(app);
         session_boot_finish(&ready);
         emit_gdi_pressure_if_high(app);
@@ -3063,9 +3125,10 @@ fn os2_fstype_restricted(path: &Path) -> bool {
     }
 }
 
-/// Shared allowlist of families known to refuse session GDI Add (Add=0) despite intact TTF.
-/// Settled / early-skip / disk `.complete` / toast-exempt / Fontsource offer — all keyed here.
-/// Append a row (+ optional FS slug override + subset plan) to extend UX without new hardcodes.
+/// Hard allowlist of families known to refuse session GDI Add (Add=0) despite intact TTF.
+/// Seed Settled / early-skip / disk `.complete` / toast-exempt / Fontsource offer — keyed here.
+/// Soft emoji are NOT listed: try Add first; settle only after Add=0 (`family_may_settle_add_zero`).
+/// Append a row (+ optional FS slug override + subset plan) for the next true Add=0 class.
 #[derive(Clone, Copy)]
 struct KnownGdiIncapableEntry {
     family: &'static str,
@@ -3075,22 +3138,13 @@ struct KnownGdiIncapableEntry {
     subsets: &'static [&'static str],
 }
 
+/// Hard allowlist only: true Add=0 class (Gidugu). Seed Settled + early-skip + Activate All skip.
+/// Soft emoji (`is_emoji_session_family`) try Add first; Settled only after Add=0 — never hard-skip.
 const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[
     KnownGdiIncapableEntry {
         family: "Gidugu",
         fs_slug: Some("gidugu"),
         subsets: &["telugu", "latin"],
-    },
-    // COLR/CBDT color emoji often Add=0 on Windows GDI — Settled honesty, never fake Live.
-    KnownGdiIncapableEntry {
-        family: "Noto Color Emoji",
-        fs_slug: Some("noto-color-emoji"),
-        subsets: &["emoji"],
-    },
-    KnownGdiIncapableEntry {
-        family: "Noto Emoji",
-        fs_slug: Some("noto-emoji"),
-        subsets: &["emoji"],
     },
 ];
 
@@ -3106,6 +3160,16 @@ fn known_gdi_incapable_entry(family: &str) -> Option<&'static KnownGdiIncapableE
 
 fn family_known_gdi_session_incapable(family: &str) -> bool {
     known_gdi_incapable_entry(family).is_some()
+}
+
+/// Soft (emoji): try Add first; Settled honesty only after Add=0 — never boot-seed / early-skip.
+fn family_soft_try_add_then_settle(family: &str) -> bool {
+    is_emoji_session_family(family)
+}
+
+/// Hard allowlist OR soft emoji after an Add attempt — Settled / toast-exempt, never fake Live.
+fn family_may_settle_add_zero(family: &str) -> bool {
+    family_known_gdi_session_incapable(family) || family_soft_try_add_then_settle(family)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -3173,8 +3237,8 @@ fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
     if undersized {
         return false;
     }
-    // 1.0.206: stamp Settled before first settle scan so Activate All never queues
-    // Gidugu-class / emoji allowlist faces that are already intact on disk.
+    // 1.0.206c: stamp Settled before first settle scan so Activate All never queues
+    // hard-allowlist (Gidugu-class) faces already intact on disk — not soft emoji.
     stamp_known_incapable_disk_settled(app, family);
     if family_has_complete_settled(app, family) {
         note_session_gdi_refused(family);
@@ -6310,10 +6374,10 @@ fn official_google_complete_is_lie(dir: &Path) -> bool {
     if family.is_empty() || !is_official_google_family(family) {
         return false;
     }
-    // Gidugu-class disk settled: intact full-size official TTF — Add=0 does not
+    // Hard Gidugu or soft-settled emoji: intact full-size — Add=0 does not
     // make `.complete` a lie; Scan must not churn Repair.
     if family_disk_settled_known_gdi_incapable(
-        family_known_gdi_session_incapable(family),
+        family_may_settle_add_zero(family),
         dir_has_intact(dir),
         dir_has_undersized_google_static(dir, family),
     ) {
@@ -6838,13 +6902,13 @@ fn download_family(
     if total == 0 {
         let intact_now = count_intact_faces(&root);
         if family_disk_settled_known_gdi_incapable(
-            family_known_gdi_session_incapable(family),
+            family_may_settle_add_zero(family),
             intact_now > 0,
             dir_has_undersized_google_static(&root, family),
         ) {
-            // Disk settled: stamp `.complete` so Scan does not Repair-churn.
+            // Disk settled after Add=0 (hard Gidugu or soft emoji): stamp `.complete`.
             // Err so caller quiet-settles — never Activated / ready_names.
-            stamp_known_incapable_dir_settled(&root, family);
+            stamp_settle_after_add_zero(app, family);
             return Err(format_register_zero_detail_with(app, family, reg_cause));
         }
         clear_complete_marker(&root);
@@ -6985,11 +7049,11 @@ fn drain_download_queue(
             heal_acc.add(heal);
             let (n, cause) = register_intact_family_detailed(&app, &family);
             if n == 0 {
-                if family_known_gdi_session_incapable(&family)
+                if family_may_settle_add_zero(&family)
                     && family_has_intact(&app, &family)
                 {
-                    // Keep / stamp disk settled — do not clear `.complete` (Scan honesty).
-                    stamp_known_incapable_disk_settled(&app, &family);
+                    // Keep / stamp disk settled after Add=0 — never fake Live.
+                    stamp_settle_after_add_zero(&app, &family);
                     Err(format_register_zero_detail_with(&app, &family, cause))
                 } else {
                     Err(note_register_zero(&app, &family, cause))
@@ -7901,9 +7965,9 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                         // Toast only: session-active + maps — suppress failed_names,
                         // do not claim activated / ready_names.
                     } else if suppress_fail_toast_known_incapable(&app, &family) {
-                        // Gidugu-class: intact + known GDI-incapable — disk settled + quiet.
+                        // Hard Gidugu OR soft emoji after Add=0 — disk settled + quiet.
                         // Push settled while holding progress (avoid note_settled_quiet deadlock).
-                        stamp_known_incapable_disk_settled(&app, &family);
+                        stamp_settle_after_add_zero(&app, &family);
                         if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.settled_names.push(family.clone());
                         }
@@ -8067,12 +8131,14 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
             let honesty = family_disk_honesty(&app, family);
             if retry_gidugu_settle_without_refetch(
                 n,
-                family_known_gdi_session_incapable(family),
+                family_may_settle_add_zero(family),
                 honesty.intact > 0,
                 honesty.undersized,
             ) {
-                note_session_gdi_refused(family);
-                stamp_known_incapable_disk_settled(&app, family);
+                if family_known_gdi_session_incapable(family) {
+                    note_session_gdi_refused(family);
+                }
+                stamp_settle_after_add_zero(&app, family);
                 note_settled_quiet(family);
                 continue;
             }
@@ -10396,10 +10462,14 @@ mod install_path_tests {
 
     #[test]
     fn emoji_allowlist_and_upstream_urls_for_settled_honesty() {
-        // 1.0.206: Noto Color Emoji / Noto Emoji on GDI-incapable allowlist;
+        // 1.0.206c: emoji soft try-Add-first — NOT hard allowlist (Gidugu-only).
         // full color TTF URLs prefer noto-emoji upstream (not latin stub).
-        assert!(family_known_gdi_session_incapable("Noto Color Emoji"));
-        assert!(family_known_gdi_session_incapable("Noto Emoji"));
+        assert!(!family_known_gdi_session_incapable("Noto Color Emoji"));
+        assert!(!family_known_gdi_session_incapable("Noto Emoji"));
+        assert!(family_soft_try_add_then_settle("Noto Color Emoji"));
+        assert!(family_may_settle_add_zero("Noto Color Emoji"));
+        assert!(family_may_settle_add_zero("Noto Emoji"));
+        assert!(family_known_gdi_session_incapable("Gidugu"));
         assert!(is_emoji_session_family("Noto Color Emoji"));
         assert!(is_emoji_session_family("noto emoji"));
         assert!(!is_emoji_session_family("Nunito"));

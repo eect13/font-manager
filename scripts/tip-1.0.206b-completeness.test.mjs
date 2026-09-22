@@ -52,12 +52,19 @@ test("Completeness P0: VF families keep vars + statics (Google path)", () => {
   assert.match(activateRs, /never var-only/);
 });
 
-test("Honesty P0: Live = Add>0 only for Gidugu + emoji allowlist", () => {
+test("Honesty P0: Live = Add>0; Gidugu hard; emoji soft try-Add then Settled", () => {
   assert.match(gdiMirror, /Gidugu/);
+  assert.match(gdiMirror, /SOFT_GDI_TRY_ADD_FIRST/);
   assert.match(gdiMirror, /Noto Color Emoji/);
   assert.match(gdiMirror, /Noto Emoji/);
+  const hard = gdiMirror.slice(
+    gdiMirror.indexOf("KNOWN_GDI_SESSION_INCAPABLE"),
+    gdiMirror.indexOf("SOFT_GDI_TRY_ADD_FIRST"),
+  );
+  assert.doesNotMatch(hard, /Noto Color Emoji|Noto Emoji/);
   assert.match(activateRs, /settled_implies_not_activated/);
   assert.match(activateRs, /Never claims Activated/);
   assert.match(activateRs, /family_disk_settled_known_gdi_incapable/);
+  assert.match(activateRs, /stamp_settle_after_add_zero/);
   assert.match(activateRs, /stamp_known_incapable_dir_settled/);
 });
