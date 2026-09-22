@@ -472,7 +472,21 @@ export async function resumeGoogleFamilies(families: string[]): Promise<void> {
     if (ready?.length) applyReadyFamilies(ready);
   }
   if (!missing.length) return;
-  const added = await tauriInvoke<number>("start_google_downloads", { families: missing }).catch(() => 0);
+  // 1.0.205 P0: parallel intents (same as Activate) — never infer-only on mixed resume.
+  const { useFontStore } = await import("./store");
+  const { googleFonts, localFonts } = useFontStore.getState();
+  const byFamily = new Map<string, FontRecord>();
+  for (const font of [...googleFonts, ...localFonts]) {
+    byFamily.set(font.family.trim().toLowerCase(), font);
+  }
+  const intents = missing.map((name) => {
+    const font = byFamily.get(name.trim().toLowerCase());
+    return font ? fetchIntentFor(font) : "google";
+  });
+  const added = await tauriInvoke<number>("start_google_downloads", {
+    families: missing,
+    intents,
+  }).catch(() => 0);
   if (added) startGooglePoll("download");
 }
 

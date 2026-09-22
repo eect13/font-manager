@@ -7,6 +7,7 @@ import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, previewWghtAxis, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
+import { noteFamilyVisible } from "@/lib/fonts/visible-families";
 import { useFontStore } from "@/lib/fonts/store";
 import { useLiveAxes } from "@/lib/fonts/live-axes";
 import type { FontRecord, PreviewSettings } from "@/lib/fonts/types";
@@ -153,6 +154,7 @@ export const FontCard = memo(function FontCard({
   const settled = settledDisk && !activated;
   const pending = useFontStore((s) => s.pendingSet.has(font.id));
   const pendingOff = useFontStore((s) => s.pendingDeactivateSet.has(font.id));
+  const unloadStuck = useFontStore((s) => s.unloadStuckSet.has(font.id));
   const favorite = useFontStore((s) => s.favorites.includes(font.id));
   const hasCollections = useFontStore((s) => s.collections.length > 0);
   const toggleActivated = useFontStore((s) => s.toggleActivated);
@@ -169,6 +171,8 @@ export const FontCard = memo(function FontCard({
     const root = el.closest("[data-library-scroll]") as HTMLElement | null;
     const io = new IntersectionObserver(
       ([entry]) => {
+        noteFamilyVisible(font.family, Boolean(entry?.isIntersecting));
+
         if (!entry?.isIntersecting) {
           unpinCss(cssKey);
           return;
@@ -185,6 +189,7 @@ export const FontCard = memo(function FontCard({
     );
     io.observe(el);
     return () => {
+      noteFamilyVisible(font.family, false);
       unpinCss(cssKey);
       io.disconnect();
     };
@@ -490,7 +495,9 @@ export const FontCard = memo(function FontCard({
           type="button"
           title={
             pendingOff
-              ? "Deactivating — waiting for Windows unload"
+              ? unloadStuck
+              ? "Still unloading — Word may be locking; retry Deactivate"
+              : "Deactivating — waiting for Windows unload"
               : activated
                 ? "Deactivate — hide from other apps, keep files"
                 : settled
@@ -502,7 +509,7 @@ export const FontCard = memo(function FontCard({
                       : "Mark on. Word and Adobe only see session fonts in the desktop app."
           }
           aria-label={
-            pendingOff ? "Deactivating" : activated ? "Deactivate" : pending ? "Queued" : "Activate"
+            pendingOff ? (unloadStuck ? "Still unloading" : "Deactivating") : activated ? "Deactivate" : pending ? "Queued" : "Activate"
           }
           disabled={pending || pendingOff}
           onPointerDown={isolate}

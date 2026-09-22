@@ -75,3 +75,10 @@ test("1.0.204 feel work still present (not reverted)", () => {
   assert.match(osActivate, /beginOwnedJob/);
   assert.match(activateRs, /fn drop_google_download_families/);
 });
+
+test("1.0.205 resume+migration do not regress hard separation", () => {
+  assert.match(osActivate, /resumeGoogleFamilies/);
+  assert.match(osActivate, /intents/);
+  assert.match(activateRs, /migrate_download_source_stamp/);
+  assert.match(activateRs, /face_allowed_for_register/);
+});

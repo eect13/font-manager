@@ -7,6 +7,7 @@ import { refineLicense } from "./license";
 import { findFont, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
+import { visibleFamilyNames } from "./visible-families";
 import {
   restoreSessionFromDisk,
   rememberSessionFamilies,
@@ -202,7 +203,7 @@ export function useHydrateFonts() {
         const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
         // already-Live this session (boot.ready / loaded) → skip re-walk.
         let needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
-        // Visible-first: selected + recent families register before the long tail.
+        // Visible-first: selected + recent24 + viewport-visible families register before the long tail.
         if (needRegister.length > 1) {
           const prefer = new Set<string>();
           const sel = useFontStore.getState().selectedId;
@@ -215,6 +216,8 @@ export function useHydrateFonts() {
           };
           addPrefer(sel);
           for (const id of recent.slice(0, 24)) addPrefer(id);
+          // 1.0.205: also prefer cards currently in the viewport when UI has reported them.
+          for (const name of visibleFamilyNames()) prefer.add(name.trim().toLowerCase());
           if (prefer.size) {
             const head: string[] = [];
             const tail: string[] = [];

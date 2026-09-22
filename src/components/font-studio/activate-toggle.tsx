@@ -8,6 +8,7 @@ import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
 import { useFontStore } from "@/lib/fonts/store";
 import type { FontRecord } from "@/lib/fonts/types";
+import { visibleFamilySet } from "@/lib/fonts/visible-families";
 
 function webPreviewNote(label: string) {
   if (label === "Fontsource") {
@@ -21,35 +22,127 @@ function webPreviewNote(label: string) {
 
 export function activateSet(ids: string[], label: string) {
   if (!ids.length) return false;
-  useFontStore.getState().setActivatedMany(ids, true);
-  void (async () => {
-    const desktop = await inDesktopShell();
-    const live = useFontStore.getState().activated.length;
-    const pending = useFontStore.getState().pendingActivate.length;
-    if (!desktop) {
-      toast.success(`${label} on — ${live.toLocaleString()} live`, {
-        description: webPreviewNote(label),
-      });
-      return;
-    }
-    const persisted = await requestPersistentStorage();
-    const { quota, usage } = await storageEstimate();
-    const room = quota ? quota - usage : Number.POSITIVE_INFINITY;
-    toast.success(
-      pending
-        ? `Queuing ${pending.toLocaleString()} in ${label} — live ${live.toLocaleString()}`
-        : `${live.toLocaleString()} in ${label} on`,
-      {
-        description: persisted
-          ? room < 20 * 1024 * 1024
-            ? "Persistent storage on, disk space is low — large families may fail."
-            : "Persistent storage on. Files stay in Documents even if this origin is cleared."
-          : "Files go to Documents. Browser cache is best-effort only.",
-      },
+  const state = useFontStore.getState();
+  const local = state.localFonts;
+  const google = state.googleFonts;
+  const settled = state.settledFamilySet;
+  const live = state.activatedSet;
+  const pending = state.pendingSet;
+
+  // 1.0.205 P0: skip Settled / known Add=0 — never burn Activate All queue on faces that will not Live.
+  const usable: string[] = [];
+  for (const id of ids) {
+    if (live.has(id) || pending.has(id)) continue;
+    const font = findFontRecord(id, local, google);
+    if (!font || font.source === "system") continue;
+    if (settled.has(font.family.trim().toLowerCase())) continue;
+    usable.push(id);
+  }
+  if (!usable.length) {
+    toast.message(`Nothing to activate in ${label}`, {
+      description: "Already Live, pending, or Settled (known Add=0).",
+    });
+    return false;
+  }
+
+  // Soft confirm when bulk N > ~50 — warn minutes / offer Activate visible.
+  if (usable.length > 50) {
+    const vis = visibleFamilySet();
+    const visibleIds = usable.filter((id) => {
+      const font = findFontRecord(id, local, google);
+      return font ? vis.has(font.family.trim().toLowerCase()) : false;
+    });
+    const minutes = Math.max(1, Math.ceil(usable.length / 40));
+    const ok = window.confirm(
+      `Activate ${usable.length.toLocaleString()} families in ${label}?\n\n` +
+        `This can take ~${minutes}+ minutes. Word/Adobe stay honest (Add>0 only).\n\n` +
+        `OK = Activate all ${usable.length.toLocaleString()}\n` +
+        `Cancel = abort` +
+        (visibleIds.length
+          ? `\n\nTip: ${visibleIds.length.toLocaleString()} are visible now — use “Activate visible” from the menu for a faster pass.`
+          : ""),
     );
-  })();
+    if (!ok) return false;
+  }
+
+  // Visible + selected + recent first; remainder background (progressive Live early).
+  const ordered = orderActivateIds(usable, state);
+  void activateInWaves(ordered, label);
   return true;
 }
+
+function findFontRecord(
+  id: string,
+  local: FontRecord[],
+  google: FontRecord[],
+): FontRecord | undefined {
+  return local.find((f) => f.id === id) ?? google.find((f) => f.id === id);
+}
+
+/** Prefer viewport + selected + recent24, then the long tail. */
+function orderActivateIds(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+): string[] {
+  const local = state.localFonts;
+  const google = state.googleFonts;
+  const byId = new Map<string, FontRecord>();
+  for (const f of [...local, ...google]) byId.set(f.id, f);
+  const prefer = new Set<string>();
+  const vis = visibleFamilySet();
+  for (const id of ids) {
+    const font = byId.get(id);
+    if (font && vis.has(font.family.trim().toLowerCase())) prefer.add(id);
+  }
+  if (state.selectedId && ids.includes(state.selectedId)) prefer.add(state.selectedId);
+  for (const id of state.recentIds.slice(0, 24)) {
+    if (ids.includes(id)) prefer.add(id);
+  }
+  const head: string[] = [];
+  const tail: string[] = [];
+  for (const id of ids) {
+    (prefer.has(id) ? head : tail).push(id);
+  }
+  return [...head, ...tail];
+}
+
+const ACTIVATE_WAVE = 40;
+
+async function activateInWaves(ids: string[], label: string) {
+  if (!ids.length) return;
+  const desktop = await inDesktopShell();
+  // Queue pending in waves so the UI stays responsive; each wave uses setActivatedMany.
+  for (let i = 0; i < ids.length; i += ACTIVATE_WAVE) {
+    const wave = ids.slice(i, i + ACTIVATE_WAVE);
+    useFontStore.getState().setActivatedMany(wave, true);
+    // Yield to paint progressive Live / progress owners between waves.
+    await new Promise<void>((r) => window.setTimeout(r, 0));
+  }
+  const live = useFontStore.getState().activated.length;
+  const pending = useFontStore.getState().pendingActivate.length;
+  if (!desktop) {
+    toast.success(`${label} on — ${live.toLocaleString()} live`, {
+      description: webPreviewNote(label),
+    });
+    return;
+  }
+  const persisted = await requestPersistentStorage();
+  const { quota, usage } = await storageEstimate();
+  const room = quota ? quota - usage : Number.POSITIVE_INFINITY;
+  toast.success(
+    pending
+      ? `Queuing ${pending.toLocaleString()} in ${label} — live ${live.toLocaleString()}`
+      : `${live.toLocaleString()} in ${label} on`,
+    {
+      description: persisted
+        ? room < 20 * 1024 * 1024
+          ? "Persistent storage on, disk space is low — large families may fail."
+          : "Persistent storage on. Visible/recent first; Settled skipped. Files stay in Documents."
+        : "Visible/recent first; Settled skipped. Files go to Documents.",
+    },
+  );
+}
+
 
 export function deactivateSet(ids: string[], label: string) {
   if (!ids.length) return;
@@ -84,6 +177,32 @@ export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string 
       {remaining && remaining < total
         ? `Activate remaining (${remaining.toLocaleString()})`
         : "Activate all"}
+    </DropdownMenuItem>
+  );
+}
+
+
+export function ActivateVisibleMenuItem({ ids, label }: { ids: string[]; label: string }) {
+  const vis = visibleFamilySet();
+  const visibleIds = useFontStore((s) => {
+    const out: string[] = [];
+    for (const id of ids) {
+      if (s.activatedSet.has(id) || s.pendingSet.has(id)) continue;
+      const font =
+        s.localFonts.find((f) => f.id === id) ?? s.googleFonts.find((f) => f.id === id);
+      if (!font || font.source === "system") continue;
+      if (s.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
+      if (vis.has(font.family.trim().toLowerCase())) out.push(id);
+    }
+    return out;
+  });
+  return (
+    <DropdownMenuItem
+      disabled={!visibleIds.length}
+      onSelect={() => activateSet(visibleIds, `${label} (visible)`)}
+    >
+      <Power className="size-3.5" />
+      Activate visible ({visibleIds.length.toLocaleString()})
     </DropdownMenuItem>
   );
 }
@@ -282,6 +401,7 @@ function CatalogActivateMenuItem({
           ? `Activate remaining (${remaining.toLocaleString()})`
           : "Activate all"}
       </DropdownMenuItem>
+      <ActivateVisibleMenuItem ids={ids()} label={label} />
       <DropdownMenuItem disabled={!anyOn} onSelect={() => deactivateSet(ids(), label)}>
         <Power className="size-3.5" />
         Deactivate all
@@ -331,6 +451,13 @@ export function LibraryActivateMenuItem() {
           ? `Activate remaining (${remaining.toLocaleString()})`
           : "Activate all"}
       </DropdownMenuItem>
+      <ActivateVisibleMenuItem
+        ids={[
+          ...useFontStore.getState().googleFonts.map((f) => f.id),
+          ...useFontStore.getState().localFonts.map((f) => f.id),
+        ]}
+        label="Library"
+      />
       <DropdownMenuItem
         disabled={!anyOn}
         onSelect={() => {

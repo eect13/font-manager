@@ -3775,6 +3775,52 @@ fn read_download_source(dir: &Path) -> Option<FetchIntent> {
     parse_fetch_intent(s.trim())
 }
 
+/// Boot/scan migration: stamp `.download-source` when evidence is strong.
+/// google if usable `.google-planned` key list; else fontsource if
+/// `.fontsource-planned` / latin-subset names dominate; else leave unset
+/// (never guess wrong). Register still uses `face_allowed_for_register`.
+fn migrate_download_source_stamp(dir: &Path) {
+    if read_download_source(dir).is_some() {
+        return;
+    }
+    if read_google_planned_keys(dir).is_some() {
+        write_download_source(dir, FetchIntent::Google);
+        return;
+    }
+    if read_fontsource_planned_keys(dir).is_some() {
+        write_download_source(dir, FetchIntent::Fontsource);
+        return;
+    }
+    let slug = dir_slug_hint(dir);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    if files.is_empty() {
+        return;
+    }
+    let mut latin = 0usize;
+    let mut other = 0usize;
+    for path in &files {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        if filename_has_latin_subset(name, &slug) {
+            latin = latin.saturating_add(1);
+        } else {
+            other = other.saturating_add(1);
+        }
+    }
+    // Only stamp fontsource when latin-subset names clearly dominate.
+    if latin > 0 && latin > other {
+        write_download_source(dir, FetchIntent::Fontsource);
+    }
+    // else leave unset — do not guess google vs local.
+}
+
+
 fn family_fontsource_planned_marker(dir: &Path) -> PathBuf {
     dir.join(".fontsource-planned")
 }
@@ -7326,7 +7372,8 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
         if let Ok(mut p) = state.progress.lock() {
             p.running = true;
             p.paused = false;
-            p.kind = "download".into();
+            // 1.0.205: on-disk Activate All is register, not download (split owners).
+            p.kind = "register".into();
             p.done = 0;
             p.total = families.len() as u32;
             p.failed = 0;
@@ -7369,6 +7416,9 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         let t = family.trim();
         if t.is_empty() {
             continue;
+        }
+        for dir in family_locations(&app, t) {
+            migrate_download_source_stamp(&dir);
         }
         if family_skip_register_this_process(&app, t).is_some() {
             already.push(t.to_string());
@@ -7414,7 +7464,8 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     }
 
     if let Ok(mut p) = state.progress.lock() {
-        p.kind = "download".into();
+        // 1.0.205: on-disk Activate All is register, not download (split owners).
+        p.kind = "register".into();
         p.running = true;
         p.done = already.len() as u32;
         p.total = (already.len() + ready.len()) as u32;
@@ -8192,6 +8243,8 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             .and_then(|s| s.to_str())
             .unwrap_or("font")
             .to_string();
+        // 1.0.205: migrate legacy folders missing `.download-source`.
+        migrate_download_source_stamp(dir);
         // 1.0.188: purge FS remnants before Scan honesty / undersized flag.
         if family_known_gdi_session_incapable(&name) {
             let _ = purge_known_incapable_fontsource_remnants(dir, &name);
@@ -9732,6 +9785,63 @@ mod install_path_tests {
     }
 
     #[test]
+
+    #[test]
+    fn migrate_download_source_stamp_google_planned() {
+        let dir = temp_family_dir("mig-google");
+        write_google_planned(
+            &dir,
+            &["nunito-400-normal.ttf".into(), "nunito-700-normal.ttf".into()],
+        );
+        assert!(read_download_source(&dir).is_none());
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Google));
+        // Idempotent — do not overwrite an existing stamp.
+        write_download_source(&dir, FetchIntent::Fontsource);
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_fontsource_planned() {
+        let dir = temp_family_dir("mig-fs");
+        write_fontsource_planned(&dir, &["clear-sans-400-normal.ttf".into()]);
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_latin_dominates() {
+        // temp_family_dir prefixes the label — nest a real family leaf so
+        // dir_slug_hint == "rubik" and `-latin-` subset detection works.
+        let root = temp_family_dir("mig-latin-root");
+        let dir = root.join("Rubik");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("rubik-latin-400-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-latin-700-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-latin-900-normal.ttf"), b"x").unwrap();
+        // One non-latin google-shaped name — latin still dominates.
+        fs::write(dir.join("rubik-400-normal.ttf"), b"x").unwrap();
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_leaves_ambiguous_unset() {
+        let dir = temp_family_dir("mig-amb");
+        fs::write(dir.join("rubik-400-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-700-normal.ttf"), b"x").unwrap();
+        migrate_download_source_stamp(&dir);
+        assert!(
+            read_download_source(&dir).is_none(),
+            "ambiguous folder must stay unset — never guess google"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     fn face_allowed_for_register_google_stamp_skips_fontsource() {
         let dir = temp_family_dir("src-stamp-google");
         fs::write(dir.join(".download-source"), b"google").unwrap();

@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
 import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
@@ -107,6 +108,9 @@ interface FontState extends PersistedSlice {
   pendingSet: Set<string>;
   pendingDeactivate: string[];
   pendingDeactivateSet: Set<string>;
+  /** Pending-off exceeded N seconds (Word-locked) — Live stays; UI shows retry. */
+  unloadStuckIds: string[];
+  unloadStuckSet: Set<string>;
   setHydrated: (value: boolean) => void;
   setGoogleFonts: (fonts: FontRecord[]) => void;
   patchFontAxes: (id: string, axes: { tag: string; name: string; min: number; max: number; def: number }[]) => void;
@@ -251,6 +255,46 @@ function withPendingDeactivate(pendingDeactivate: string[]) {
   return { pendingDeactivate, pendingDeactivateSet: new Set(pendingDeactivate) };
 }
 
+function withUnloadStuck(unloadStuckIds: string[]) {
+  return { unloadStuckIds, unloadStuckSet: new Set(unloadStuckIds) };
+}
+
+/** Pending-off honesty timeout (Word may lock Remove). Keep Live; never fake Off. */
+const PENDING_OFF_TIMEOUT_MS = 8_000;
+const pendingOffTimers = new Map<string, number>();
+
+function armPendingOffTimeout(ids: string[], get: () => any, set: (fn: any) => void) {
+  for (const id of ids) {
+    const prev = pendingOffTimers.get(id);
+    if (prev) window.clearTimeout(prev);
+    const handle = window.setTimeout(() => {
+      pendingOffTimers.delete(id);
+      const s = get();
+      if (!s.pendingDeactivateSet.has(id)) return;
+      // Still pending-off — surface stuck; keep Live honest.
+      set((st: any) => ({
+        ...withUnloadStuck(Array.from(new Set([...st.unloadStuckIds, id]))),
+      }));
+      toast.message("Still unloading", {
+        id: `unload-stuck-${id}`,
+        description:
+          "Windows has not confirmed Remove yet (Word/Adobe may be locking the face). Live stays on — retry Deactivate when the app releases the font.",
+        duration: 12_000,
+      });
+    }, PENDING_OFF_TIMEOUT_MS);
+    pendingOffTimers.set(id, handle);
+  }
+}
+
+function clearPendingOffTimeout(ids: string[]) {
+  for (const id of ids) {
+    const prev = pendingOffTimers.get(id);
+    if (prev) window.clearTimeout(prev);
+    pendingOffTimers.delete(id);
+  }
+}
+
+
 function withDisk(names: string[]) {
   const diskFamilies: string[] = [];
   const diskFamilySet = new Set<string>();
@@ -386,6 +430,7 @@ export const useFontStore = create<FontState>()(
       ...withActivated(DEFAULT_ACTIVATED.slice()),
       ...withPending([]),
       ...withPendingDeactivate([]),
+      ...withUnloadStuck([]),
       collections: [],
       customTags: {},
       localFonts: [],
@@ -521,7 +566,9 @@ export const useFontStore = create<FontState>()(
           set((s) => ({
             ...withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, id]))),
             ...withPending(s.pendingActivate.filter((x) => x !== id)),
+            ...withUnloadStuck(s.unloadStuckIds.filter((x) => x !== id)),
           }));
+          armPendingOffTimeout([id], get, set);
           if (font) void syncFontOnSystem(font, false);
           return;
         }
@@ -568,7 +615,9 @@ export const useFontStore = create<FontState>()(
           set((s) => ({
             ...withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, ...offIds]))),
             ...withPending(s.pendingActivate.filter((id) => !new Set(offIds).has(id))),
+            ...withUnloadStuck(s.unloadStuckIds.filter((id) => !new Set(offIds).has(id))),
           }));
+          armPendingOffTimeout(offIds, get, set);
           if (pack.length) void syncFontsOnSystem(pack, false);
           return;
         }
@@ -579,11 +628,14 @@ export const useFontStore = create<FontState>()(
             ? new Set(get().duplicateHideIds)
             : null;
         const incoming: FontRecord[] = [];
+        const settled = get().settledFamilySet;
         for (const id of ids) {
           if (live.has(id) || pending.has(id)) continue;
           if (hide?.has(id)) continue;
           const font = findFont(id, local, google);
           if (!font || font.source === "system") continue;
+          // 1.0.205 P0: Activate All must not queue Settled / known Add=0.
+          if (settled.has(font.family.trim().toLowerCase())) continue;
           incoming.push(font);
         }
         // evict always [] in 1.0.204 — no chained Remove→Add.
@@ -677,10 +729,12 @@ export const useFontStore = create<FontState>()(
       confirmDeactivated: (ids) => {
         if (!ids.length) return;
         const drop = new Set(ids);
+        clearPendingOffTimeout(ids);
         set((s) => ({
           ...withActivated(s.activated.filter((id) => !drop.has(id))),
           ...withPending(s.pendingActivate.filter((id) => !drop.has(id))),
           ...withPendingDeactivate(s.pendingDeactivate.filter((id) => !drop.has(id))),
+          ...withUnloadStuck(s.unloadStuckIds.filter((id) => !drop.has(id))),
         }));
       },
       pruneActivatedToFamilies: (families) => {
