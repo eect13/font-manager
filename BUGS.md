@@ -1,3 +1,6 @@
+## Fixed in tip / 1.0.206b
+- **UI Activate All pack-blocker:** hydrate seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet`; `activateSet` / `setActivatedMany` / Activate visible also skip `isKnownGdiSessionIncapable` so Gidugu + emoji never queue pending if settled set is not hydrated yet. `applyDiskStatusHonesty` re-merges allowlist after disk replace. ProductVersion stays 1.0.206; Rust boot seed from 206 kept.
+
 ## Fixed in tip / 1.0.206
 - **Seed allowlist Settled on boot:** `seed_known_gdi_incapable_settled` + early-skip stamps `.complete` / session-refused for intact Gidugu-class (and emoji allowlist) before first settle scan so Activate All never queues them.
 - **Resume intent when store row missing:** never default `"google"`. Catalog lookup + `resolve_family_fetch_intent` (stamp → planned → official Google); ambiguous families skipped — never wrong-pipe Fontsource vs Google.

@@ -4,6 +4,7 @@ import { GOOGLE_FONTS } from "./catalog";
 import { loadCachedCatalog, scheduleCatalogSync } from "./google-api";
 import { idbGet, persistStorageOnGesture, requestPersistentStorage } from "./idb";
 import { refineLicense } from "./license";
+import { KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
 import { findFont, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
@@ -140,6 +141,10 @@ export function useHydrateFonts() {
         useFontStore.getState().setScope("all");
       }
       setHydrated(true);
+      // 1.0.206b: seed GDI-incapable allowlist into settled on UI boot (mirror Rust seed).
+      useFontStore.getState().addSettledFamilies(
+        KNOWN_GDI_SESSION_INCAPABLE.map((e) => e.family),
+      );
       useFontStore.getState().clearPendingActivate();
       void requestPersistentStorage();
       persistStorageOnGesture();

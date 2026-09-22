@@ -8,6 +8,7 @@ import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
 import { useFontStore } from "@/lib/fonts/store";
 import type { FontRecord } from "@/lib/fonts/types";
+import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
 import { visibleFamilySet } from "@/lib/fonts/visible-families";
 
 function webPreviewNote(label: string) {
@@ -36,6 +37,8 @@ export function activateSet(ids: string[], label: string) {
     const font = findFontRecord(id, local, google);
     if (!font || font.source === "system") continue;
     if (settled.has(font.family.trim().toLowerCase())) continue;
+    // 1.0.206b: allowlist skip even if settledFamilySet not hydrated yet.
+    if (isKnownGdiSessionIncapable(font.family)) continue;
     usable.push(id);
   }
   if (!usable.length) {
@@ -192,6 +195,7 @@ export function ActivateVisibleMenuItem({ ids, label }: { ids: string[]; label: 
         s.localFonts.find((f) => f.id === id) ?? s.googleFonts.find((f) => f.id === id);
       if (!font || font.source === "system") continue;
       if (s.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
+      if (isKnownGdiSessionIncapable(font.family)) continue;
       if (vis.has(font.family.trim().toLowerCase())) out.push(id);
     }
     return out;

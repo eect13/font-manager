@@ -1,5 +1,7 @@
 # Font Manager **1.0.206**
 
+**1.0.206b (pack-blocker nit).** UI Activate All also seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet` on hydrate and skips `isKnownGdiSessionIncapable` in `activateSet` / `setActivatedMany` so Gidugu/emoji never queue as pending before Rust settle scan hydrates UI. ProductVersion stays **1.0.206**. Rust boot seed from 206 kept. Pack HOLD — nits before pack. No tip-install/pack this tip.
+
 **1.0.206.** Seed GDI-incapable allowlist into Settled on boot (Activate All never queues Gidugu/emoji pre-scan); resume missing-store intent from stamp/planned/catalog — never blind google; emoji full upstream color TTF + Settled honesty if Add=0; CJK chinese-*/japanese/korean honesty kept. Pack HOLD — tip-install after Skye. No tip-install/pack this tip.
 
 **1.0.204.** FontBase activate/deactivate feel + Google↔Fontsource hard separation.

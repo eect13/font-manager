@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
 import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
+import { isKnownGdiSessionIncapable, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
 import { bytesNearlySame } from "./binary-diff";
 import { idbDelete, idbGet, idbPutMany } from "./idb";
 import { loadFont, unloadLocalFont } from "./loader";
@@ -636,6 +637,8 @@ export const useFontStore = create<FontState>()(
           if (!font || font.source === "system") continue;
           // 1.0.205 P0: Activate All must not queue Settled / known Add=0.
           if (settled.has(font.family.trim().toLowerCase())) continue;
+          // 1.0.206b: skip allowlist even when settled set not hydrated yet.
+          if (isKnownGdiSessionIncapable(font.family)) continue;
           incoming.push(font);
         }
         // evict always [] in 1.0.204 — no chained Remove→Add.
@@ -796,6 +799,8 @@ export const useFontStore = create<FontState>()(
             }
             if (row.settled) settledNames.push(n);
           }
+          // Keep UI allowlist seed across disk honesty replace (Activate All skip).
+          for (const e of KNOWN_GDI_SESSION_INCAPABLE) settledNames.push(e.family);
           const googleFonts = s.googleFonts.map((font) => {
             const onDiskVf = vf.has(font.family.trim().toLowerCase());
             if (onDiskVf) {
