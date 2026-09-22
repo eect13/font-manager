@@ -911,7 +911,7 @@ function isCjkSubset(name: string) {
   return s.startsWith("chinese") || s === "japanese" || s === "korean" || s === "japanese-latin";
 }
 
-/** Prefer CJK script subsets when present; never treat latin-only as enough for CJK families. */
+/** Prefer CJK / emoji script subsets when present; never treat latin-only as enough. */
 async function fontsourceSubsets(slug: string): Promise<string[]> {
   try {
     const res = await fetch(`https://api.fontsource.org/v1/fonts/${slug}`);
@@ -920,6 +920,7 @@ async function fontsourceSubsets(slug: string): Promise<string[]> {
     const subsets = Array.isArray(data.subsets) ? data.subsets.filter((s) => typeof s === "string") : [];
     const cjk = subsets.filter(isCjkSubset);
     if (cjk.length) return cjk;
+    if (subsets.includes("emoji")) return ["emoji"];
     if (subsets.includes("latin")) return ["latin"];
     return subsets.slice(0, 4);
   } catch {
@@ -1008,11 +1009,13 @@ async function googleCssTtfFiles(family: string, slug: string) {
 
 async function fontsourceTtfFiles(font: FontRecord, slug: string) {
   const emoji = /emoji/i.test(font.family);
+  const colorEmoji = slug === "noto-color-emoji" || /noto color emoji/i.test(font.family);
   const weights = emoji
     ? [400]
     : Array.from(new Set(font.weights.length ? font.weights : [400])).sort((a, b) => a - b);
   const styles: Array<"normal" | "italic"> = emoji ? ["normal"] : font.italic ? ["normal", "italic"] : ["normal"];
-  const subsets = emoji ? ["latin"] : await fontsourceSubsets(slug);
+  // Completeness P0: emoji = script subset / upstream color TTF — never force latin.
+  const subsets = emoji ? (colorEmoji ? ["emoji"] : await fontsourceSubsets(slug)) : await fontsourceSubsets(slug);
   const files: { fileName: string; data: Uint8Array }[] = [];
   for (const subset of subsets) {
     for (const weight of weights) {
@@ -1022,8 +1025,10 @@ async function fontsourceTtfFiles(font: FontRecord, slug: string) {
           "https://cdn.jsdelivr.net/npm/@fontsource/" + slug + "/files/" + slug + "-" + subset + "-" + weight + "-" + style + ".ttf",
           "https://unpkg.com/@fontsource/" + slug + "/files/" + slug + "-" + subset + "-" + weight + "-" + style + ".ttf",
         ];
-        if (slug === "noto-color-emoji" && weight === 400 && style === "normal") {
-          urls.unshift(
+        if (colorEmoji && weight === 400 && style === "normal") {
+          // Full upstream only — do not fall through to latin CDN stubs.
+          urls.length = 0;
+          urls.push(
             "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf",
             "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoColorEmoji.ttf",
           );
@@ -1031,13 +1036,23 @@ async function fontsourceTtfFiles(font: FontRecord, slug: string) {
         let data: Uint8Array | null = null;
         for (const url of urls) {
           data = await fetchBytes(url);
+          // Color emoji TTF is multi-MB; reject obvious latin stubs (<256KB).
+          if (data && colorEmoji && data.byteLength < 256 * 1024) {
+            data = null;
+            continue;
+          }
           if (data) break;
         }
         // First-face 404 on non-400 must not abort the whole family (variable-only still aborts on 400).
         if (!data && subset === subsets[0] && weight === 400 && style === "normal") {
           return files;
         }
-        if (data) files.push({ fileName: slug + "-" + subset + "-" + weight + "-" + style + ".ttf", data });
+        if (data) {
+          const fileName = colorEmoji
+            ? `${slug}.ttf`
+            : slug + "-" + subset + "-" + weight + "-" + style + ".ttf";
+          files.push({ fileName, data });
+        }
       }
     }
   }

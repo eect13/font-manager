@@ -1,4 +1,5 @@
 ## Fixed in tip / 1.0.206b
+- **Completeness P0 (standing rule):** Noto Color Emoji Activate skips Google CSS latin/unicode-range stubs — planned = full upstream `NotoColorEmoji.ttf` only (reject <256KB). `pick_subsets` prefers emoji like CJK. TS `fontsourceTtfFiles` mirror matches. Live still Add>0 only; Settled honesty unchanged for Gidugu + emoji.
 - **UI Activate All pack-blocker:** hydrate seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet`; `activateSet` / `setActivatedMany` / Activate visible also skip `isKnownGdiSessionIncapable` so Gidugu + emoji never queue pending if settled set is not hydrated yet. `applyDiskStatusHonesty` re-merges allowlist after disk replace. ProductVersion stays 1.0.206; Rust boot seed from 206 kept.
 
 ## Fixed in tip / 1.0.206

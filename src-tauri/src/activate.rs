@@ -3385,12 +3385,20 @@ fn is_cjk_subset(name: &str) -> bool {
     s.starts_with("chinese") || s == "japanese" || s == "korean" || s == "japanese-latin"
 }
 
-/// Prefer CJK / script subsets when metadata lists them. Latin-only is wrong for
-/// Chiron / Noto CJK and must not be stamped `.complete`.
+/// Prefer CJK / emoji / script subsets when metadata lists them. Latin-only is
+/// wrong for Chiron / Noto CJK / emoji packs and must not be stamped `.complete`.
 fn pick_subsets(all: &[String]) -> Vec<String> {
     let cjk: Vec<String> = all.iter().filter(|s| is_cjk_subset(s)).cloned().collect();
     if !cjk.is_empty() {
         return cjk;
+    }
+    let emoji: Vec<String> = all
+        .iter()
+        .filter(|s| s.eq_ignore_ascii_case("emoji"))
+        .cloned()
+        .collect();
+    if !emoji.is_empty() {
+        return emoji;
     }
     if all.iter().any(|s| s == "latin") {
         vec!["latin".into()]
@@ -5429,6 +5437,11 @@ fn is_emoji_session_family(family: &str) -> bool {
     t == "noto color emoji" || t == "noto emoji"
 }
 
+/// Noto Color Emoji only — multi-MB upstream color TTF; never Google CSS latin stubs.
+fn is_noto_color_emoji_family(family: &str, slug: &str) -> bool {
+    slug == "noto-color-emoji" || family.eq_ignore_ascii_case("Noto Color Emoji")
+}
+
 /// Full color-capable TTF from noto-emoji upstream (not CSS unicode-range WOFF2,
 /// not latin-only stubs). Returns bytes written/intact count for the primary face.
 fn pull_emoji_upstream_color_ttf(
@@ -6622,8 +6635,10 @@ fn download_family(
 
     // Hard separation: Google Activate = Google faces only (no Fontsource fill).
     // Fontsource Activate = Fontsource only (no Google CSS2 / desktop fetch).
+    // Completeness P0: Noto Color Emoji = full upstream color TTF only — never
+    // Google CSS unicode-range / latin stubs in the planned set.
     let (mut google_wrote, mut google_listed, mut google_var_files, mut heal) =
-        if matches!(intent, FetchIntent::Google) {
+        if matches!(intent, FetchIntent::Google) && !is_noto_color_emoji_family(family, &slug) {
             fetch_google_family_faces_to_dir(client, family, &slug, &root)
         } else {
             (0, Vec::new(), Vec::new(), HealStats::default())
@@ -6634,11 +6649,18 @@ fn download_family(
         let emoji_n = pull_emoji_upstream_color_ttf(client, family, &slug, &root);
         google_wrote = google_wrote.saturating_add(emoji_n);
         if emoji_n > 0 {
-            let key = if slug == "noto-color-emoji" {
+            let key = if is_noto_color_emoji_family(family, &slug) {
                 format!("{slug}.ttf")
             } else {
                 format!("{slug}-400-normal.ttf")
             };
+            // Color emoji: planned = upstream face only (drop any CSS instance keys).
+            if is_noto_color_emoji_family(family, &slug) {
+                google_listed.clear();
+                google_var_files.clear();
+                // Drop latin/CSS stubs that may pre-exist from older installs.
+                let _ = purge_known_incapable_fontsource_remnants(&root, family);
+            }
             // Track via var_files so planned keys match on-disk name (not CSS face matrix).
             if !google_var_files.iter().any(|k| k == &key) {
                 google_var_files.push(key);
@@ -6792,7 +6814,18 @@ fn download_family(
     }
     // Fontsource emoji path: ensure full upstream color TTF landed (ttf_urls special-case).
     if matches!(intent, FetchIntent::Fontsource) && is_emoji_session_family(family) {
-        wrote = wrote.saturating_add(pull_emoji_upstream_color_ttf(client, family, &slug, &root));
+        let emoji_n = pull_emoji_upstream_color_ttf(client, family, &slug, &root);
+        wrote = wrote.saturating_add(emoji_n);
+        if emoji_n > 0 && is_noto_color_emoji_family(family, &slug) {
+            // Completeness: purge latin/FS stubs; planned = upstream color face only.
+            let _ = purge_known_incapable_fontsource_remnants(&root, family);
+            let key = format!("{slug}.ttf");
+            fontsource_keys.clear();
+            fontsource_keys.push(key);
+            planned = 1;
+            write_fontsource_planned(&root, &fontsource_keys);
+            write_expected_faces(&root, planned);
+        }
     }
     if needs_compat_pack(&slug) && (wrote > 0 || existing > 0) {
         install_compat_pack(client, &root, family, &slug);
@@ -10729,6 +10762,25 @@ filename: "Nunito[wght].ttf"
         ];
         let got = pick_subsets(&all);
         assert_eq!(got, vec!["chinese-hongkong".to_string()]);
+    }
+
+    #[test]
+    fn pick_subsets_prefers_emoji_over_latin() {
+        // Completeness P0: emoji script subset, never latin-only as enough.
+        let all = vec!["latin".into(), "emoji".into()];
+        let got = pick_subsets(&all);
+        assert_eq!(got, vec!["emoji".to_string()]);
+    }
+
+    #[test]
+    fn noto_color_emoji_skips_css_latin_plan() {
+        assert!(is_noto_color_emoji_family("Noto Color Emoji", "noto-color-emoji"));
+        assert!(is_noto_color_emoji_family("noto color emoji", "other-slug"));
+        assert!(!is_noto_color_emoji_family("Noto Emoji", "noto-emoji"));
+        // Upstream URLs only — never Fontsource latin stub list for color emoji.
+        let urls = ttf_urls("noto-color-emoji", "", 400, false, "emoji", 0);
+        assert!(urls.iter().all(|u| u.contains("NotoColorEmoji.ttf")));
+        assert!(urls.iter().all(|u| !u.contains("-latin-")));
     }
 
     #[test]

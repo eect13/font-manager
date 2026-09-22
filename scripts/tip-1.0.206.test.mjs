@@ -67,7 +67,7 @@ test("CJK honesty policy still present (chinese/japanese/korean + tiny purge)", 
   assert.match(activateRs, /fn replace_tiny_cjk_static_faces/);
   assert.match(activateRs, /purge_latin_named_files/);
   assert.match(activateRs, /noto sans sc/i);
-  assert.match(activateRs, /Prefer CJK \/ script subsets/);
+  assert.match(activateRs, /Prefer CJK \/ emoji \/ script subsets/);
 });
 
 test("product honesty: Live = Add>0; Settled never fake Live for emoji/CJK", () => {
