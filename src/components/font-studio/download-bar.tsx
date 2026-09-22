@@ -160,25 +160,21 @@ export function DownloadBar() {
         ) : null}
         {job.running || job.paused ? (
           <>
-            {job.mode !== "remove" ? (
-              job.paused ? (
-                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => resumeDownloadQueue()}>
-                  <Play />
-                  Resume
-                </Button>
-              ) : (
-                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => pauseDownloadQueue()}>
-                  <Pause />
-                  Pause
-                </Button>
-              )
-            ) : null}
-            {job.mode !== "remove" ? (
-              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
-                <X />
-                Cancel
+            {job.paused ? (
+              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => resumeDownloadQueue()}>
+                <Play />
+                Resume
               </Button>
-            ) : null}
+            ) : (
+              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => pauseDownloadQueue()}>
+                <Pause />
+                Pause
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
+              <X />
+              Cancel
+            </Button>
           </>
         ) : null}
         {!job.running && !job.paused && job.failedNames.length ? (

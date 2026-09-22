@@ -75,9 +75,10 @@ test("P1 keep soft early-skip + hard no-op; Live=Add>0 only after Retry", () => 
 });
 
 test("P4 Cancel/wave0 copy honesty: keep prefer if queued else visible/first-page", () => {
-  assert.match(confirmDlg, /Cancel = keep first .*already queued/);
-  assert.match(confirmDlg, /Cancel = visible/);
-  assert.match(confirmDlg, /Cancel = first page \/ selection/);
+  // 1.0.206h shortened Cancel labels; semantics unchanged (keep first / visible / first page).
+  assert.match(confirmDlg, /Cancel [·=].*keep first|Cancel · keep first/);
+  assert.match(confirmDlg, /Cancel [·=].*visible|Cancel · visible/);
+  assert.match(confirmDlg, /Cancel [·=].*first page|Cancel · first page/);
   assert.match(confirmDlg, /preferCount > 0/);
   assert.match(confirmTs, /keep prefer if wave0 queued/);
   const actStart = activateToggle.indexOf("export function activateSet");

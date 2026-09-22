@@ -30,9 +30,13 @@ test("hydrate seeds KNOWN_GDI_SESSION_INCAPABLE into settled", () => {
 test("activateSet + setActivatedMany skip isKnownGdiSessionIncapable", () => {
   assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
   assert.match(store, /isKnownGdiSessionIncapable\(font\.family\)/);
-  const actStart = activateToggle.indexOf("export function activateSet");
-  const act = activateToggle.slice(actStart, actStart + 1800);
-  assert.match(act, /isKnownGdiSessionIncapable/);
+  // 1.0.206h: activateSet delegates filter to activateQueueIds (same hard-skip).
+  const queueStart = activateToggle.indexOf("export function activateQueueIds");
+  const queue = queueStart >= 0
+    ? activateToggle.slice(queueStart, queueStart + 900)
+    : activateToggle.slice(activateToggle.indexOf("export function activateSet"), activateToggle.indexOf("export function activateSet") + 1800);
+  assert.match(queue, /isKnownGdiSessionIncapable/);
+  assert.match(activateToggle, /activateQueueIds\(ids, state\)/);
   const manyStart = store.indexOf("setActivatedMany: (ids, on) =>");
   const many = store.slice(manyStart, manyStart + 2200);
   assert.match(many, /isKnownGdiSessionIncapable/);

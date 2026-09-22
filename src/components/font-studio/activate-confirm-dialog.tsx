@@ -46,11 +46,12 @@ export function ActivateConfirmDialog() {
             disabled={!req || (req.preferCount < 1 && req.cancelCount < 1)}
             onClick={() => resolveActivateConfirm("cancel")}
           >
+            {/* 1.0.206h: short labels; same OK/Cancel/Abort semantics as 206e/f. */}
             {req && req.preferCount > 0
-              ? `Cancel = keep first ${req.preferCount.toLocaleString()} (already queued)`
+              ? `Cancel · keep first ${req.preferCount.toLocaleString()}`
               : req && req.visibleCount > 0
-                ? `Cancel = visible (${req.cancelCount.toLocaleString()})`
-                : `Cancel = first page / selection (${req?.cancelCount.toLocaleString() ?? 0})`}
+                ? `Cancel · visible ${req.cancelCount.toLocaleString()}`
+                : `Cancel · first page ${req?.cancelCount.toLocaleString() ?? 0}`}
           </Button>
           <Button type="button" onClick={() => resolveActivateConfirm("ok")}>
             OK = all {req?.total.toLocaleString() ?? ""}

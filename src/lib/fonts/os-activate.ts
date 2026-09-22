@@ -150,14 +150,13 @@ function notifyDownloadResult(
     return;
   }
   if (done > 0 || settledNames.length) {
-    const skipped = job.skipped;
     const settled = settledNames.length;
-    const live = Math.max(0, skipped, done - failed - settled);
     void import("./store").then(({ useFontStore }) => {
       const { googleFonts, activated, diskFamilies, settledFamilies } = useFontStore.getState();
       const gN = googleFonts.filter((f) => f.catalog !== "other").length;
       const fsN = googleFonts.filter((f) => f.catalog === "other").length;
-      const liveCount = activated.length || live;
+      // 1.0.206h: Live = store activated.length only (never mushy Math.max(skipped, done-failed-settled)).
+      const liveCount = activated.length;
       const settledN = Math.max(settled, settledFamilies.length);
       const title = `Live ${liveCount.toLocaleString()} · Settled ${settledN.toLocaleString()} · Google ${gN.toLocaleString()} · Fontsource ${fsN.toLocaleString()} · Disk ${diskFamilies.length.toLocaleString()}`;
       // Prefer hard/soft settle-capable name so toast preview cannot hard-only-lie.
@@ -1525,6 +1524,7 @@ export function cancelDownloadQueue() {
   installQueue.length = 0;
   removeQueue.length = 0;
   workers = 0;
+  const wasRemove = job.mode === "remove" || job.owner === "remove";
   const keepFailed = (lastFailedNames.length ? lastFailedNames : job.failedNames).slice();
   const keepDetails = job.failedDetails.slice();
   ignoreProgress = true;
@@ -1549,10 +1549,12 @@ export function cancelDownloadQueue() {
   window.setTimeout(() => {
     ignoreProgress = false;
   }, 600);
-  toast.message("Download cancelled", {
+  toast.message(wasRemove ? "Deactivate cancelled" : "Download cancelled", {
     description: keepFailed.length
       ? `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`
-      : "Fonts already saved stay in Documents → Font Manager.",
+      : wasRemove
+        ? "Still-Live faces stay until unload finishes; Cancelled queue will not unload further."
+        : "Fonts already saved stay in Documents → Font Manager.",
     action: { label: "Open folder", onClick: () => void openActivatedFolder() },
   });
   // Flush+mark any queued ready families before clearPending; reset timer/cumulative with that.

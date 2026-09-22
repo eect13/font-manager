@@ -8826,15 +8826,21 @@ pub fn start_google_downloads(
         return Ok(0);
     }
     let intent_list = intents.unwrap_or_default();
+    // 1.0.206h: explicit intent OR disk/catalog resolve — never infer_fetch_intent after resolve None.
+    let mut resolved: Vec<String> = Vec::with_capacity(families.len());
     for (i, family) in families.iter().enumerate() {
-        let intent = intent_list
-            .get(i)
-            .and_then(|s| parse_fetch_intent(s))
-            .or_else(|| resolve_fetch_intent_from_disk(&app, family))
-            .unwrap_or_else(|| infer_fetch_intent(family));
+        let explicit = intent_list.get(i).and_then(|s| parse_fetch_intent(s));
+        let intent = match explicit {
+            Some(i) => i,
+            None => match resolve_fetch_intent_from_disk(&app, family) {
+                Some(i) => i,
+                None => continue, // skip ambiguous — never blind-infer Google/Fontsource
+            },
+        };
         remember_fetch_intent(family, intent);
+        resolved.push(family.clone());
     }
-    let fresh = accept_new_families(families);
+    let fresh = accept_new_families(resolved);
     if fresh.is_empty() {
         return Ok(0);
     }
@@ -10355,6 +10361,7 @@ mod install_path_tests {
         assert_eq!(infer_fetch_intent("Nunito"), FetchIntent::Google);
         assert_eq!(infer_fetch_intent("Clear Sans"), FetchIntent::Fontsource);
     }
+
 
     #[test]
     fn filename_has_latin_subset_slug_aware() {

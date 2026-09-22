@@ -22,28 +22,38 @@ function webPreviewNote(label: string) {
   return "This website previews in the browser. Use the desktop app to download files into Documents.";
 }
 
+
+/** Same filter as activateSet queue — Settled + hard Gidugu allowlist skipped. */
+export function activateQueueIds(
+  ids: string[],
+  state: {
+    activatedSet: Set<string>;
+    pendingSet: Set<string>;
+    settledFamilySet: Set<string>;
+    localFonts: FontRecord[];
+    googleFonts: FontRecord[];
+  },
+): string[] {
+  const usable: string[] = [];
+  for (const id of ids) {
+    if (state.activatedSet.has(id) || state.pendingSet.has(id)) continue;
+    const font = findFontRecord(id, state.localFonts, state.googleFonts);
+    if (!font || font.source === "system") continue;
+    if (state.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
+    if (isKnownGdiSessionIncapable(font.family)) continue;
+    usable.push(id);
+  }
+  return usable;
+}
+
 export function activateSet(ids: string[], label: string) {
   if (!ids.length) return false;
   const state = useFontStore.getState();
   const local = state.localFonts;
   const google = state.googleFonts;
-  const settled = state.settledFamilySet;
-  const live = state.activatedSet;
-  const pending = state.pendingSet;
 
-  // 1.0.205 P0: skip Settled / known Add=0 — never burn Activate All queue on faces that will not Live.
-  // Soft Settled (session refuse / provenance) is in settledFamilySet after Add=0 — skip via that,
-  // not Scan-trusted bare `.complete`. Hard allowlist still hard-skipped.
-  const usable: string[] = [];
-  for (const id of ids) {
-    if (live.has(id) || pending.has(id)) continue;
-    const font = findFontRecord(id, local, google);
-    if (!font || font.source === "system") continue;
-    if (settled.has(font.family.trim().toLowerCase())) continue;
-    // 1.0.206b: allowlist skip even if settledFamilySet not hydrated yet.
-    if (isKnownGdiSessionIncapable(font.family)) continue;
-    usable.push(id);
-  }
+  // 1.0.205 P0 / 1.0.206h: skip Settled / hard Gidugu — menu remaining count uses same filter.
+  const usable = activateQueueIds(ids, state);
   if (!usable.length) {
     toast.message(`Nothing to activate in ${label}`, {
       description: "Already Live, pending, or Settled (known Add=0).",
@@ -229,18 +239,21 @@ export function deactivateSet(ids: string[], label: string) {
   void inDesktopShell().then((desktop) => {
     if (!desktop) {
       toast.success(`${label} off — preview only`);
+      return;
     }
+    // 1.0.206h: one calm queue toast (parity with Activate); remove bar still tracks unload.
+    const pendingOff = useFontStore.getState().pendingDeactivate.length;
+    toast.success(
+      pendingOff
+        ? `Queuing ${pendingOff.toLocaleString()} off in ${label}`
+        : `${label} off`,
+      { description: "Remove bar tracks unload. Files stay in Documents." },
+    );
   });
 }
 
 export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string }) {
-  const remaining = useFontStore((s) => {
-    let n = 0;
-    for (const id of ids) {
-      if (!s.activatedSet.has(id) && !s.pendingSet.has(id)) n += 1;
-    }
-    return n;
-  });
+  const remaining = useFontStore((s) => activateQueueIds(ids, s).length);
   const total = ids.length;
   return (
     <DropdownMenuItem disabled={!total} onSelect={() => activateSet(ids, label)}>
@@ -280,7 +293,11 @@ export function ActivateVisibleMenuItem({ ids, label }: { ids: string[]; label: 
 }
 
 export function DeactivateMenuItem({ ids, label }: { ids: string[]; label: string }) {
-  const anyOn = useFontStore((s) => ids.some((id) => s.activatedSet.has(id) || s.pendingSet.has(id)));
+  const anyOn = useFontStore((s) =>
+    ids.some(
+      (id) => s.activatedSet.has(id) || s.pendingSet.has(id) || s.pendingDeactivateSet.has(id),
+    ),
+  );
   return (
     <DropdownMenuItem disabled={!anyOn} onSelect={() => deactivateSet(ids, label)}>
       <Power className="size-3.5" />
@@ -430,6 +447,7 @@ function catalogMenuStats(
   activatedSet: Set<string>,
   pendingSet: Set<string>,
   pendingDeactivateSet: Set<string>,
+  settledFamilySet: Set<string>,
   filter?: (font: FontRecord) => boolean,
 ) {
   let count = 0;
@@ -442,9 +460,15 @@ function catalogMenuStats(
       activatedSet.has(font.id) ||
       pendingSet.has(font.id) ||
       pendingDeactivateSet.has(font.id)
-    )
+    ) {
       anyOn = true;
-    else remaining += 1;
+      continue;
+    }
+    // Same as activateSet / activateQueueIds — Settled + hard Gidugu not "remaining".
+    if (font.source === "system") continue;
+    if (settledFamilySet.has(font.family.trim().toLowerCase())) continue;
+    if (isKnownGdiSessionIncapable(font.family)) continue;
+    remaining += 1;
   }
   return { count, remaining, anyOn };
 }
@@ -458,7 +482,14 @@ function CatalogActivateMenuItem({
 }) {
   const { count, remaining, anyOn } = useFontStore(
     useShallow((s) =>
-      catalogMenuStats(s.googleFonts, s.activatedSet, s.pendingSet, s.pendingDeactivateSet, filter),
+      catalogMenuStats(
+        s.googleFonts,
+        s.activatedSet,
+        s.pendingSet,
+        s.pendingDeactivateSet,
+        s.settledFamilySet,
+        filter,
+      ),
     ),
   );
   function ids() {
@@ -487,22 +518,28 @@ export function LibraryActivateMenuItem() {
   const count = useFontStore((s) => s.googleFonts.length + s.localFonts.length);
   const remaining = useFontStore((s) => {
     const hide = s.autoHideDuplicates ? new Set(s.duplicateHideIds) : null;
-    let n = 0;
-    for (const font of s.googleFonts) {
-      if (!s.activatedSet.has(font.id) && !s.pendingSet.has(font.id)) n += 1;
-    }
-    for (const font of s.localFonts) {
-      if (hide?.has(font.id)) continue;
-      if (!s.activatedSet.has(font.id) && !s.pendingSet.has(font.id)) n += 1;
-    }
-    return n;
+    const ids = [
+      ...s.googleFonts.map((f) => f.id),
+      ...s.localFonts.filter((f) => !hide?.has(f.id)).map((f) => f.id),
+    ];
+    return activateQueueIds(ids, s).length;
   });
   const anyOn = useFontStore((s) => {
     for (const font of s.googleFonts) {
-      if (s.activatedSet.has(font.id) || s.pendingSet.has(font.id)) return true;
+      if (
+        s.activatedSet.has(font.id) ||
+        s.pendingSet.has(font.id) ||
+        s.pendingDeactivateSet.has(font.id)
+      )
+        return true;
     }
     for (const font of s.localFonts) {
-      if (s.activatedSet.has(font.id) || s.pendingSet.has(font.id)) return true;
+      if (
+        s.activatedSet.has(font.id) ||
+        s.pendingSet.has(font.id) ||
+        s.pendingDeactivateSet.has(font.id)
+      )
+        return true;
     }
     return false;
   });
