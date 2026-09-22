@@ -1,6 +1,6 @@
 /**
  * In-app Activate All confirm (1.0.206e) — replaces window.confirm.
- * OK = all remainder / Cancel = visible (or first-page/selection) / Abort = stop.
+ * OK = all remainder / Cancel = keep prefer if wave0 queued, else visible/first-page / Abort = stop.
  */
 export type ActivateConfirmChoice = "ok" | "cancel" | "abort";
 

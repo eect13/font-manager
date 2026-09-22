@@ -1,3 +1,8 @@
+## Fixed in tip / 1.0.206f
+- **Soft Power Retry Add (Skye P1 HOLD):** After soft Add=0, `note_session_gdi_refused` stayed set; UI Retry cleared Settled + queued Activate but Rust `family_early_skip_soft_session_refused` returned AddReturnedZero without Add. Fix: soft Retry awaits `clear_session_gdi_refused_family` before Activate so Add runs; refuse can re-note after another Add=0 (Activate All skip intact). Rust unit test asserts clear/bypass.
+- **Cancel/wave0 copy honesty:** When prefer is already wave0-queued, Cancel = keep first N (already queued) — not “visible only”. Prefer-empty Cancel label matches visible vs first-page enqueue.
+- **Soft Settled Power tooltip:** Retry Add once/process; after Retry used + Add=0 again, tooltip says Retry already used (not Live). ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206e
 - **Soft Settled provenance (P1):** Soft Settled only when `.settled-add-zero` written after real Add=0. Scan one-shot wipes soft bare `.complete` lacking provenance (hard-emoji tip upgrade). Soft + full-face size OK + no provenance ⇒ not Incomplete, excluded from Repair (no huge TTF re-download before try-Add).
 - **Soft session refuse + Power (P2):** `note_session_gdi_refused` covers soft after Add=0; Activate All skips soft via settled/session refuse (not bare `.complete`). Power: hard Settled no-op; soft Settled = Retry Add (one try/process); tooltips aligned.

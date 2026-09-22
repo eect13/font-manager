@@ -17,6 +17,7 @@ commands.allow = [
   "resolve_family_fetch_intent",
   "start_google_downloads",
   "retry_google_downloads",
+  "clear_session_gdi_refused_family",
   "try_fontsource_gdi_offer",
   "repair_incomplete_families",
   "skip_google_failures",

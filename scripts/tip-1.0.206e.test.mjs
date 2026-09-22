@@ -91,7 +91,7 @@ test("P2 in-app modal OK/Cancel/Abort; no window.confirm; wave0 prefer", () => {
   assert.match(confirmTs, /"ok" \| "cancel" \| "abort"/);
   assert.match(confirmDlg, /OK = all/);
   assert.match(confirmDlg, /Abort/);
-  assert.match(confirmDlg, /Cancel = visible|Cancel = first page/);
+  assert.match(confirmDlg, /Cancel = visible|Cancel = first page|Cancel = keep first|already queued/);
   assert.match(appShell, /ActivateConfirmDialog/);
 });
 

@@ -787,6 +787,17 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
   return invoke<T>(cmd, args);
 }
 
+/** Soft Settled Power Retry: clear Rust this-session Add=0 refuse so Add runs again (1.0.206f). */
+export async function clearSessionGdiRefused(family: string): Promise<void> {
+  const name = family.trim();
+  if (!name) return;
+  try {
+    await tauriInvoke("clear_session_gdi_refused_family", { family: name });
+  } catch {
+    /* web preview / no Tauri */
+  }
+}
+
 type OnDiskProgressSnap = {
   running: boolean;
   paused?: boolean;

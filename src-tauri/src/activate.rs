@@ -3249,6 +3249,26 @@ fn family_session_gdi_refused(family: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Soft Power Retry: drop this-session Add=0 refuse so Add runs again.
+/// Activate All leaves refuse set (soft early-skip still holds). Hard disk-settle skip unchanged.
+fn clear_session_gdi_refused(family: &str) {
+    if let Ok(mut g) = session_gdi_refused().lock() {
+        g.remove(&family.trim().to_ascii_lowercase());
+    }
+}
+
+/// Soft early-skip gate (no AppHandle): soft + this-session refuse + intact full-face.
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_early_skip_from_session_refuse(soft: bool, refused: bool, intact_full: bool) -> bool {
+    soft && refused && intact_full
+}
+
+/// Soft Retry clears refuse ⇒ Add may run (early-skip soft no longer blocks).
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_retry_allows_add_after_clear(refused_before: bool, cleared_by_retry: bool) -> bool {
+    !(refused_before && !cleared_by_retry)
+}
+
 fn family_has_complete_settled(app: &AppHandle, family: &str) -> bool {
     family_locations(app, family).iter().any(|dir| dir_is_complete(dir) && dir_has_intact(dir))
 }
@@ -8482,6 +8502,17 @@ fn fontsource_offer_activated_only_if_add(added: usize) -> bool {
     added > 0
 }
 
+/// Soft Settled Power Retry: clear this-session Add=0 refuse so register tries Add again (1.0.206f).
+#[tauri::command]
+pub fn clear_session_gdi_refused_family(family: String) -> Result<(), String> {
+    let family = family.trim();
+    if family.is_empty() {
+        return Err("family required".into());
+    }
+    clear_session_gdi_refused(family);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<FontsourceOfferResult, String> {
     let family = family.trim().to_string();
@@ -10665,6 +10696,39 @@ mod install_path_tests {
         assert!(!soft_full_face_exclude_repair(&dir, "Noto Color Emoji"));
         assert!(soft_scan_settled_from_provenance(true, true, true, false));
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn soft_power_retry_clears_session_gdi_refuse_so_add_can_run() {
+        // P1 206f Skye HOLD: after soft Add=0 refuse, Power Retry must clear refuse
+        // so family_early_skip_soft_session_refused no longer returns AddReturnedZero without Add.
+        let fam = "Noto Color Emoji";
+        clear_session_gdi_refused(fam);
+        assert!(!family_session_gdi_refused(fam));
+        assert!(family_soft_try_add_then_settle(fam));
+
+        note_session_gdi_refused(fam);
+        assert!(family_session_gdi_refused(fam));
+        assert!(soft_early_skip_from_session_refuse(true, true, true));
+        assert!(!soft_retry_allows_add_after_clear(true, false));
+
+        // Soft Retry path (UI / clear_session_gdi_refused_family).
+        clear_session_gdi_refused(fam);
+        assert!(!family_session_gdi_refused(fam), "Retry must clear session refuse");
+        assert!(soft_retry_allows_add_after_clear(true, true));
+        assert!(
+            !soft_early_skip_from_session_refuse(true, family_session_gdi_refused(fam), true),
+            "after clear, soft early-skip must not block Add"
+        );
+
+        // Refuse can be re-noted after another Add=0 (Activate All skip still works).
+        note_session_gdi_refused(fam);
+        assert!(family_session_gdi_refused(fam));
+        clear_session_gdi_refused(fam);
+
+        // Non-settle family: note is a no-op.
+        note_session_gdi_refused("Nunito");
+        assert!(!family_session_gdi_refused("Nunito"));
     }
 
     #[test]

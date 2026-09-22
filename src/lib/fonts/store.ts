@@ -9,7 +9,7 @@ import { idbDelete, idbGet, idbPutMany } from "./idb";
 import { loadFont, unloadLocalFont } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { bindAxesPersist, setLiveAxis } from "./live-axes";
-import { removeUploadFromDisk, saveUploadToDisk, syncFontOnSystem, syncFontsOnSystem, uninstallFontOnSystem } from "./os-activate";
+import { clearSessionGdiRefused, removeUploadFromDisk, saveUploadToDisk, syncFontOnSystem, syncFontsOnSystem, uninstallFontOnSystem } from "./os-activate";
 import { scheduleSaveLocalFontsMeta } from "./persist-local";
 import type {
   Collection,
@@ -421,8 +421,13 @@ function pickExclusiveActivate(
   return { chosen: [...catalogIn, ...chosenLocal], evict: [] };
 }
 
-/** Soft Settled Power → Retry Add at most once per process (1.0.206e). */
+/** Soft Settled Power → Retry Add at most once per process (1.0.206e/f). */
 const softSettledRetryTried = new Set<string>();
+
+/** True after soft Settled Power Retry was used this process (tooltip honesty). */
+export function softSettledRetryAlreadyTried(family: string): boolean {
+  return softSettledRetryTried.has(family.trim().toLowerCase());
+}
 
 export const useFontStore = create<FontState>()(
   persist(
@@ -581,7 +586,30 @@ export const useFontStore = create<FontState>()(
               set((s) =>
                 withSettled(s.settledFamilies.filter((n) => n.trim().toLowerCase() !== famKey)),
               );
-              // fall through to pending Activate (Retry Add)
+              // 1.0.206f: clear Rust session_gdi_refused BEFORE Activate so soft
+              // early-skip does not return AddReturnedZero without Add (Skye P1 HOLD).
+              void (async () => {
+                await clearSessionGdiRefused(font.family);
+                const st = get();
+                if (st.activatedSet.has(id) || st.pendingSet.has(id) || st.pendingDeactivateSet.has(id)) {
+                  return;
+                }
+                if (
+                  familyAlreadyLiveOrPending(
+                    font,
+                    st.localFonts,
+                    st.googleFonts,
+                    st.activatedSet,
+                    st.pendingSet,
+                  )
+                ) {
+                  return;
+                }
+                set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
+                notifyIfUnusual(font, "activate");
+                void syncFontOnSystem(font, true);
+              })();
+              return;
             } else {
               return;
             }

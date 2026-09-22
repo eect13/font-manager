@@ -95,9 +95,12 @@ export function activateSet(ids: string[], label: string) {
         return;
       }
       if (choice === "cancel") {
-        // Prefer already wave0. If prefer empty, activate cancel fallback (visible / first-page).
+        // Prefer already wave0 — Cancel keeps that queue (label: keep first / already queued).
+        // If prefer empty, enqueue cancel fallback; label must match visible vs first-page.
         if (!prefer.length && cancelIds.length) {
-          void activateInWaves(cancelIds, `${label} (visible)`);
+          const cancelLabel =
+            visibleIds.length > 0 ? `${label} (visible)` : `${label} (first page)`;
+          void activateInWaves(cancelIds, cancelLabel);
         }
         return;
       }

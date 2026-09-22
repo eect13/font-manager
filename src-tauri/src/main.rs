@@ -153,6 +153,7 @@ fn main() {
             activate::resolve_family_fetch_intent,
             activate::start_google_downloads,
             activate::retry_google_downloads,
+            activate::clear_session_gdi_refused_family,
             activate::try_fontsource_gdi_offer,
             activate::repair_incomplete_families,
             activate::skip_google_failures,

@@ -13,7 +13,7 @@ import {
   type ActivateConfirmRequest,
 } from "@/lib/fonts/activate-confirm";
 
-/** In-app modal: OK=all / Cancel=visible (or first-page/selection) / Abort. */
+/** In-app modal: OK=all / Cancel=keep prefer if wave0 queued else visible/first-page / Abort. */
 export function ActivateConfirmDialog() {
   const [req, setReq] = useState<ActivateConfirmRequest | null>(null);
   useEffect(() => subscribeActivateConfirm(setReq), []);
@@ -43,12 +43,14 @@ export function ActivateConfirmDialog() {
           <Button
             type="button"
             variant="secondary"
-            disabled={!req || req.cancelCount < 1}
+            disabled={!req || (req.preferCount < 1 && req.cancelCount < 1)}
             onClick={() => resolveActivateConfirm("cancel")}
           >
-            {req && req.visibleCount > 0
-              ? `Cancel = visible (${req.cancelCount.toLocaleString()})`
-              : `Cancel = first page / selection (${req?.cancelCount.toLocaleString() ?? 0})`}
+            {req && req.preferCount > 0
+              ? `Cancel = keep first ${req.preferCount.toLocaleString()} (already queued)`
+              : req && req.visibleCount > 0
+                ? `Cancel = visible (${req.cancelCount.toLocaleString()})`
+                : `Cancel = first page / selection (${req?.cancelCount.toLocaleString() ?? 0})`}
           </Button>
           <Button type="button" onClick={() => resolveActivateConfirm("ok")}>
             OK = all {req?.total.toLocaleString() ?? ""}

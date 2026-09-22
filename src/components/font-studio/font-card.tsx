@@ -9,7 +9,7 @@ import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
 import { noteFamilyVisible } from "@/lib/fonts/visible-families";
 import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst } from "@/lib/fonts/gdi-incapable";
-import { useFontStore } from "@/lib/fonts/store";
+import { softSettledRetryAlreadyTried, useFontStore } from "@/lib/fonts/store";
 import { useLiveAxes } from "@/lib/fonts/live-axes";
 import type { FontRecord, PreviewSettings } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
@@ -155,11 +155,16 @@ export const FontCard = memo(function FontCard({
   const settled = settledDisk && !activated;
   const softSettled = settled && isSoftGdiTryAddFirst(font.family);
   const hardSettled = settled && isKnownGdiSessionIncapable(font.family);
+  const softRetryUsed = softSettled && softSettledRetryAlreadyTried(font.family);
   const settledBadgeTitle = softSettled
-    ? "Settled after Add=0 — Power = Retry Add (one try)"
+    ? softRetryUsed
+      ? "Settled after Add=0 — Retry already used this process (not Live)"
+      : "Settled after Add=0 — Power = Retry Add (one try this process)"
     : "On disk · Windows won’t load (not Activated)";
   const settledPowerTitle = softSettled
-    ? "Settled — Retry Add (one try this process)"
+    ? softRetryUsed
+      ? "Settled — Retry already used this process (not Live)"
+      : "Settled — Retry Add (one try this process)"
     : hardSettled
       ? "Settled — Windows won’t load (not Activated)"
       : "Settled — on disk · Windows won’t load (not Activated)";
