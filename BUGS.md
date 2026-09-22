@@ -1,3 +1,7 @@
+## Fixed in tip / 1.0.204
+- FontBase activate/deactivate feel: no exclusive Remove→Add thrash, pending-off, progress owners, count lanes, one Live per family, drop download on deactivate, visible-first restore.
+- Google↔Fontsource hard separation: Activate intent `google` | `fontsource` | `local`; Google path never Fontsource-fills; Fontsource path never Google CSS2/desktop fetch; `.download-source` + planned-key register filter; preview CSS no dual Google+Fontsource hrefs.
+
 # Font Manager — known issues / follow-ups
 
 ## Fixed in tip / 1.0.203

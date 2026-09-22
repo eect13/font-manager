@@ -200,7 +200,30 @@ export function useHydrateFonts() {
         const sessionNames = bootReady;
         const bootSet = new Set(sessionNames.map((n) => n.trim().toLowerCase()));
         const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
-        const needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
+        // already-Live this session (boot.ready / loaded) → skip re-walk.
+        let needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
+        // Visible-first: selected + recent families register before the long tail.
+        if (needRegister.length > 1) {
+          const prefer = new Set<string>();
+          const sel = useFontStore.getState().selectedId;
+          const recent = useFontStore.getState().recentIds;
+          const addPrefer = (id: string | null | undefined) => {
+            if (!id) return;
+            const font = findFont(id, localFonts, google);
+            if (font) prefer.add(font.family.trim().toLowerCase());
+            else if (id.startsWith("g:")) prefer.add(id.slice(2).trim().toLowerCase());
+          };
+          addPrefer(sel);
+          for (const id of recent.slice(0, 24)) addPrefer(id);
+          if (prefer.size) {
+            const head: string[] = [];
+            const tail: string[] = [];
+            for (const n of needRegister) {
+              (prefer.has(n.trim().toLowerCase()) ? head : tail).push(n);
+            }
+            needRegister = [...head, ...tail];
+          }
+        }
         const restore = needRegister.length
           ? restoreSessionFromDisk(needRegister)
           : Promise.resolve({ ready: [] as string[], missing: [] as string[], onDisk: [] as string[] });

@@ -4,10 +4,15 @@ import { isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { idbGet } from "./idb";
 import type { FontRecord } from "./types";
 
+/** Progress owner — download vs on-disk register vs remove must not share one sticky bar. */
+export type ProgressOwner = "idle" | "download" | "register" | "remove";
+
 export type DownloadJobState = {
   running: boolean;
   paused: boolean;
-  mode: "idle" | "download" | "remove";
+  mode: ProgressOwner;
+  /** Who owns done/total/current — cancel/finish of another owner must not leave Registering… */
+  owner: ProgressOwner;
   done: number;
   total: number;
   failed: number;
@@ -22,6 +27,7 @@ const EMPTY: DownloadJobState = {
   running: false,
   paused: false,
   mode: "idle",
+  owner: "idle",
   done: 0,
   total: 0,
   failed: 0,
@@ -34,6 +40,50 @@ const EMPTY: DownloadJobState = {
 
 let job: DownloadJobState = { ...EMPTY };
 const listeners = new Set<() => void>();
+
+/** Begin a progress-owned job. Never steal another owner's sticky current/totals. */
+function beginOwnedJob(
+  owner: Exclude<ProgressOwner, "idle">,
+  patch: Partial<DownloadJobState> & { total: number; current?: string },
+) {
+  const sameOwnerBusy = (job.running || job.paused) && job.owner === owner;
+  if ((job.running || job.paused) && job.owner !== owner && job.owner !== "idle") {
+    // Another owner is active — do not overwrite their bar (split owners).
+    return false;
+  }
+  job = {
+    running: true,
+    paused: false,
+    mode: owner,
+    owner,
+    done: sameOwnerBusy ? job.done : 0,
+    total: sameOwnerBusy ? Math.max(job.total, patch.total) : patch.total,
+    failed: sameOwnerBusy ? job.failed : 0,
+    skipped: sameOwnerBusy ? job.skipped : 0,
+    current: patch.current ?? "",
+    failedNames: sameOwnerBusy ? job.failedNames : [],
+    failedDetails: sameOwnerBusy ? job.failedDetails : [],
+    settledNames: sameOwnerBusy ? (job.settledNames ?? []) : [],
+  };
+  markJobClock(true, false);
+  emit();
+  return true;
+}
+
+function finishOwnedJob(owner: ProgressOwner, keepSettled = false) {
+  if (job.owner !== owner && job.owner !== "idle" && job.mode !== owner) return;
+  const settled = keepSettled ? (job.settledNames ?? []) : [];
+  job = {
+    ...EMPTY,
+    settledNames: settled,
+    // settled-idle Done chrome when names remain
+    ...(settled.length ? { current: "", mode: "idle" as const, owner: "idle" as const } : {}),
+  };
+  resetJobClock();
+  emit();
+}
+
+
 
 let clockStarted = 0;
 let clockPausedAt = 0;
@@ -103,9 +153,12 @@ function notifyDownloadResult(
     const settled = settledNames.length;
     const live = Math.max(0, skipped, done - failed - settled);
     void import("./store").then(({ useFontStore }) => {
-      const library = useFontStore.getState().googleFonts.length;
-      const liveCount = useFontStore.getState().activated.length || live;
-      const title = `Live ${liveCount.toLocaleString()} · Settled ${settled.toLocaleString()} · Library ${library.toLocaleString() || "—"}`;
+      const { googleFonts, activated, diskFamilies, settledFamilies } = useFontStore.getState();
+      const gN = googleFonts.filter((f) => f.catalog !== "other").length;
+      const fsN = googleFonts.filter((f) => f.catalog === "other").length;
+      const liveCount = activated.length || live;
+      const settledN = Math.max(settled, settledFamilies.length);
+      const title = `Live ${liveCount.toLocaleString()} · Settled ${settledN.toLocaleString()} · Google ${gN.toLocaleString()} · Fontsource ${fsN.toLocaleString()} · Disk ${diskFamilies.length.toLocaleString()}`;
       const settledPreview = settledNames.slice(0, 3).join(", ");
       // 1.0.188: no Try Fontsource download for allowlisted Settled — calm Open folder only.
       const chrome = settled > 0 ? toast.message : toast.success;
@@ -216,21 +269,41 @@ function resetReadyBatching() {
 function commitReadyFamilies(names: string[]): Promise<void> {
   if (!names.length) return Promise.resolve();
   return import("./store").then(({ useFontStore }) => {
-    const { googleFonts, localFonts, markLiveActivated, pendingSet } = useFontStore.getState();
-    const catalogByFamily = new Map<string, string>();
+    const { googleFonts, localFonts, markLiveActivated, pendingSet, activatedSet } =
+      useFontStore.getState();
+    // Lane maps — Google catalog vs Fontsource exclusive vs local must stay separate.
+    const googleByFamily = new Map<string, string>();
+    const fontsourceByFamily = new Map<string, string>();
     const localByFamily = new Map<string, string>();
-    for (const font of googleFonts) catalogByFamily.set(font.family.toLowerCase(), font.id);
+    for (const font of googleFonts) {
+      const key = font.family.toLowerCase();
+      if (font.catalog === "other") fontsourceByFamily.set(key, font.id);
+      else googleByFamily.set(key, font.id);
+    }
     for (const font of localFonts) localByFamily.set(font.family.toLowerCase(), font.id);
     const ids: string[] = [];
+    const seenFamily = new Set<string>();
     for (const name of names) {
       const key = name.trim().toLowerCase();
-      const catalogId = catalogByFamily.get(key);
+      if (!key || seenFamily.has(key)) continue;
+      const gId = googleByFamily.get(key);
+      const fsId = fontsourceByFamily.get(key);
       const localId = localByFamily.get(key);
-      // Prefer the id we queued (pending), then catalog over a local of the same family.
-      if (catalogId && pendingSet.has(catalogId)) ids.push(catalogId);
-      else if (localId && pendingSet.has(localId)) ids.push(localId);
-      else if (catalogId) ids.push(catalogId);
-      else if (localId) ids.push(localId);
+      // Prefer the id we queued (pending), then Google, Fontsource, local — one Live per family.
+      let pick: string | undefined;
+      if (gId && pendingSet.has(gId)) pick = gId;
+      else if (fsId && pendingSet.has(fsId)) pick = fsId;
+      else if (localId && pendingSet.has(localId)) pick = localId;
+      else if (gId && activatedSet.has(gId)) pick = gId;
+      else if (fsId && activatedSet.has(fsId)) pick = fsId;
+      else if (localId && activatedSet.has(localId)) pick = localId;
+      else if (gId) pick = gId;
+      else if (fsId) pick = fsId;
+      else if (localId) pick = localId;
+      if (pick) {
+        seenFamily.add(key);
+        ids.push(pick);
+      }
     }
     if (ids.length) markLiveActivated(ids);
     useFontStore.getState().addDiskFamilies(names);
@@ -738,25 +811,13 @@ async function waitForOnDiskRegisterIdle(timeoutMs = 30 * 60_000): Promise<strin
 /** Start worker + wait for ready_names (restore / single-family / resume). */
 async function activateOnDiskAndWait(families: string[]): Promise<string[]> {
   if (!families.length) return [];
-  if (!(job.running || job.paused)) {
-    job = {
-      running: true,
-      paused: false,
-      mode: "download",
-      done: 0,
-      total: families.length,
-      failed: 0,
-      skipped: 0,
-      current: "Checking disk…",
-      failedNames: [],
-      failedDetails: [],
-    };
-    markJobClock(true, false);
-    emit();
-  }
-  startGooglePoll("download");
+  beginOwnedJob("register", { total: families.length, current: "Checking disk…" });
+  startGooglePoll("register");
   const started = await startActivateOnDisk(families);
-  if (!started) return [];
+  if (!started) {
+    finishOwnedJob("register");
+    return [];
+  }
   return waitForOnDiskRegisterIdle();
 }
 
@@ -950,16 +1011,26 @@ async function fontsourceTtfFiles(font: FontRecord, slug: string) {
   return files;
 }
 
+/** Activate fetch intent: google | fontsource | local — hard separation, no cross-fill. */
+export function fetchIntentFor(font: FontRecord): "google" | "fontsource" | "local" {
+  if (font.source === "local") return "local";
+  if (isFontsourceOnly(font)) return "fontsource";
+  if (isGoogleCatalog(font)) return "google";
+  return "local";
+}
+
 async function googleTtfFiles(font: FontRecord, _lean: boolean) {
   const slug = slugFamily(font.family);
-  // Google CSS2 desktop TTFs first for official families; Fontsource only when Google listed nothing.
-  const google = isGoogleCatalog(font) ? await googleCssTtfFiles(font.family, slug) : [];
-  if (google.length) {
-    // Fontsource `*-{subset}-*` names can never fill Google face keys — skip FS
-    // fill on partial Google (matches Rust need_fontsource = google_expected == 0).
-    return google;
+  const intent = fetchIntentFor(font);
+  // Google Activate = Google faces only (no Fontsource fill).
+  if (intent === "google") {
+    return isGoogleCatalog(font) ? await googleCssTtfFiles(font.family, slug) : [];
   }
-  return fontsourceTtfFiles(font, slug);
+  // Fontsource/other Activate = Fontsource only (no Google CSS2 / desktop fetch).
+  if (intent === "fontsource") {
+    return fontsourceTtfFiles(font, slug);
+  }
+  return [];
 }
 
 async function localFiles(font: FontRecord) {
@@ -979,7 +1050,7 @@ let lastPaint = 0;
 let pollTimer = 0;
 let rustSeenRunning = false;
 let ignoreProgress = false;
-let expectKind: "" | "download" | "remove" = "";
+let expectKind: "" | "download" | "register" | "remove" = "";
 
 function emitProgress(force = false) {
   if (force) {
@@ -1022,10 +1093,28 @@ function applyPayload(p: {
 }) {
   if (ignoreProgress) return;
   const readyLen = p.ready_names?.length ?? 0;
-  const payloadKind = p.kind === "remove" || p.kind === "download" ? p.kind : "";
-  if (expectKind && payloadKind && payloadKind !== expectKind) return;
+  const payloadKind = p.kind === "remove" || p.kind === "download" || p.kind === "register" ? p.kind : "";
+  // Register is on-disk Add — same Rust download progress channel, distinct owner.
+  const registering =
+    payloadKind === "register" ||
+    (payloadKind === "download" && /registering/i.test(p.current ?? "")) ||
+    (expectKind === "register");
+  if (expectKind === "register" && payloadKind === "download") {
+    /* register polls share download channel — allow */
+  } else if (expectKind && payloadKind && payloadKind !== expectKind && !(expectKind === "register" && payloadKind === "download")) {
+    return;
+  }
   if (expectKind && !payloadKind && !p.running && !p.paused) return;
-  const kind = payloadKind || expectKind || (job.mode === "remove" ? "remove" : "download");
+  const kind: ProgressOwner =
+    payloadKind === "remove" || expectKind === "remove" || job.mode === "remove"
+      ? "remove"
+      : registering
+        ? "register"
+        : payloadKind === "download" || expectKind === "download"
+          ? "download"
+          : job.owner !== "idle"
+            ? job.owner
+            : "download";
   const sig = [
     p.running ? 1 : 0,
     p.paused ? 1 : 0,
@@ -1069,16 +1158,19 @@ function applyPayload(p: {
   const skipped = job.paused
     ? Math.max(p.skipped ?? 0, job.skipped)
     : (p.skipped ?? 0);
+  const active = Boolean(p.running || p.paused);
   job = {
     running: p.running,
     paused: Boolean(p.paused),
-    mode: p.running || p.paused ? kind : "idle",
+    mode: active ? kind : "idle",
+    owner: active ? kind : "idle",
     done,
     total: Math.max(p.total, p.done, job.paused || job.running ? job.total : 0),
     failed: p.failed,
     skipped,
     // 1.0.187: never `p.current || job.current` — Rust empty clear must stick (settled-idle hang).
-    current: p.current ?? "",
+    // 1.0.204: idle finish always clears current so Registering… cannot stick after job idle.
+    current: active ? (p.current ?? "") : "",
     failedNames: p.failed_names ?? [],
     failedDetails: p.failed_details ?? [],
     settledNames: p.settled_names ?? [],
@@ -1114,9 +1206,7 @@ function applyPayload(p: {
           description: n > 8 ? "Windows is catching up in the background." : undefined,
         });
       }
-      job = { ...EMPTY };
-      resetJobClock();
-      emit();
+      finishOwnedJob("remove");
       return;
     }
     notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? [], p.settled_names ?? []);
@@ -1205,7 +1295,7 @@ function ensureGooglePoll() {
   void pollRustProgress();
 }
 
-function startGooglePoll(kind?: "download" | "remove") {
+function startGooglePoll(kind?: "download" | "register" | "remove") {
   if (kind) {
     expectKind = kind;
     lastPayloadSig = "";
@@ -1235,8 +1325,8 @@ function paint(force = false) {
 
 function finishIfIdle() {
   if (installQueue.length || removeQueue.length || workers > 0) return;
-  const wasRemove = job.mode === "remove";
-  const snapshot = { ...job, running: false, mode: "idle" as const, current: "" };
+  const wasRemove = job.mode === "remove" || job.owner === "remove";
+  const snapshot = { ...job, running: false, mode: "idle" as const, owner: "idle" as const, current: "" };
   job = snapshot;
   markJobClock(false, false);
   emit();
@@ -1281,7 +1371,7 @@ async function pumpInstall(myBatch: number) {
     if (myBatch !== batchId) break;
     const next = installQueue.shift();
     if (!next) break;
-    job = { ...job, current: next.font.family, running: true, mode: "download" };
+    job = { ...job, current: next.font.family, running: true, mode: "download", owner: job.owner === "idle" ? "download" : job.owner };
     paint();
     try {
       await installOne(next.font, next.lean);
@@ -1328,14 +1418,27 @@ async function pumpRemove(myBatch: number) {
     if (myBatch !== batchId) break;
     const font = removeQueue.shift();
     if (!font) break;
-    job = { ...job, current: font.family, running: true, mode: "remove" };
-    paint();
+    // Only paint remove chrome when remove owns the bar (split owners).
+    if (!(job.running && job.owner !== "remove" && job.owner !== "idle")) {
+      beginOwnedJob("remove", {
+        total: Math.max(1, job.owner === "remove" ? job.total : removeQueue.length + 1),
+        current: font.family,
+      });
+    } else {
+      job = { ...job, current: font.family };
+      paint();
+    }
     try {
       await tauriInvoke("unload_font_family", { family: font.family });
       installedCache.delete(font.family.toLowerCase());
       job = { ...job, done: job.done + 1 };
+      const { useFontStore } = await import("./store");
+      useFontStore.getState().confirmDeactivated([font.id]);
     } catch {
       job = { ...job, failed: job.failed + 1 };
+      const { useFontStore } = await import("./store");
+      // Unload failed — clear pending-off so user can retry; keep Live honest.
+      useFontStore.getState().clearPendingDeactivate([font.id]);
     }
     await yieldUi();
   }
@@ -1476,29 +1579,15 @@ async function markPreviewLive(ids: string[]) {
 }
 
 function bumpDownloadJobForFamily(family: string) {
-  if (job.running && job.mode === "download") {
+  if (job.running && (job.mode === "download" || job.owner === "download")) {
     if (!job.current) {
       job = { ...job, current: family };
       emit();
     }
     return;
   }
-  if (job.paused && job.mode === "download") return;
-  job = {
-    running: true,
-    paused: false,
-    mode: "download",
-    done: 0,
-    total: 1,
-    failed: 0,
-    skipped: 0,
-    current: family,
-    failedNames: [],
-    failedDetails: [],
-    settledNames: job.settledNames ?? [],
-  };
-  markJobClock(true, false);
-  emit();
+  if (job.paused && (job.mode === "download" || job.owner === "download")) return;
+  beginOwnedJob("download", { total: 1, current: family });
 }
 
 /** Single-card Activate must merge into the bulk worker — never wait for a sibling family's idle. */
@@ -1506,10 +1595,16 @@ export function googleCardActivateWaitsForIdle() {
   return false;
 }
 
-async function queueGoogleFamilyDownload(family: string): Promise<void> {
+async function queueGoogleFamilyDownload(
+  family: string,
+  intent: "google" | "fontsource" | "local" = "google",
+): Promise<void> {
   void bindDownloadEvents();
   bumpDownloadJobForFamily(family);
-  const added = await tauriInvoke<number>("start_google_downloads", { families: [family] }).catch(() => 0);
+  const added = await tauriInvoke<number>("start_google_downloads", {
+    families: [family],
+    intents: [intent],
+  }).catch(() => 0);
   startGooglePoll("download");
   if (!added) void startActivateOnDisk([family]);
 }
@@ -1522,7 +1617,7 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     return true;
   }
   if (font.source === "google") {
-    await queueGoogleFamilyDownload(font.family);
+    await queueGoogleFamilyDownload(font.family, fetchIntentFor(font));
     return true;
   }
   bumpDownloadJobForFamily(font.family);
@@ -1532,10 +1627,27 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
   return true;
 }
 
+/** Drop a family's download/register queue slot so Deactivate is not buried behind the job. */
+export async function dropDownloadFamilies(families: string[]): Promise<void> {
+  if (!families.length) return;
+  const keys = new Set(families.map((n) => n.trim().toLowerCase()).filter(Boolean));
+  for (let i = installQueue.length - 1; i >= 0; i -= 1) {
+    if (keys.has(installQueue[i]!.font.family.toLowerCase())) installQueue.splice(i, 1);
+  }
+  if (!(await inDesktopShell())) return;
+  try {
+    await tauriInvoke("drop_google_download_families", { families });
+  } catch {
+    /* older installer — cancel-all is too heavy; Remove still runs */
+  }
+}
+
 export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   if (font.source === "system") return;
   if (!(await inDesktopShell())) return;
-  if (job.running && job.mode === "download") {
+  // P1: Deactivate while download/register running — drop that family's slot, then Remove.
+  if (job.running && (job.mode === "download" || job.mode === "register" || job.owner === "download" || job.owner === "register")) {
+    await dropDownloadFamilies([font.family]);
     removeQueue.push(font);
     void pumpRemove(batchId);
     return;
@@ -1606,33 +1718,29 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     if (on) {
       await markPreviewLive(fonts.map((font) => font.id));
       if (fonts.length === 1) tellWebPreview(fonts[0]);
+    } else {
+      const { useFontStore } = await import("./store");
+      useFontStore.getState().confirmDeactivated(fonts.map((f) => f.id));
     }
     return;
   }
   unlockUi();
   if (!on) {
     const names = fonts.map((font) => font.family);
-    const steal = !(job.running && job.mode === "download");
-    if (steal) {
-      job = {
-        running: true,
-        paused: false,
-        mode: "remove",
-        done: 0,
-        total: names.length,
-        failed: 0,
-        skipped: 0,
-        current: names[0] ?? "",
-        failedNames: [],
-        failedDetails: [],
-      };
-      markJobClock(true, false);
-      emit();
-    }
+    // Drop any in-flight download slots for these families first.
+    await dropDownloadFamilies(names);
+    // Never steal download/register bar — split progress owners.
+    const canOwn = beginOwnedJob("remove", { total: names.length, current: names[0] ?? "" });
     try {
       await tauriInvoke<number>("unload_font_families", { families: names });
       for (const font of fonts) installedCache.delete(font.family.toLowerCase());
-      if (steal) startGooglePoll("remove");
+      const { useFontStore } = await import("./store");
+      useFontStore.getState().confirmDeactivated(fonts.map((f) => f.id));
+      if (canOwn) {
+        startGooglePoll("remove");
+        // Bulk unload often finishes before poll sees running — clear remove owner now.
+        finishOwnedJob("remove");
+      }
     } catch {
       for (const font of fonts) removeQueue.push(font);
       void pumpRemove(batchId);
@@ -1644,21 +1752,9 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   const local = fonts.filter((font) => font.source === "local");
   if (google.length) {
     const names = google.map((font) => font.family);
-    if (!(job.running && job.mode === "download")) {
-      job = {
-        running: true,
-        paused: false,
-        mode: "download",
-        done: 0,
-        total: names.length,
-        failed: 0,
-        skipped: 0,
-        current: "Scanning Documents…",
-        failedNames: [],
-        failedDetails: [],
-      };
-      markJobClock(true, false);
-      emit();
+    const intents = google.map((font) => fetchIntentFor(font));
+    if (!(job.running && (job.mode === "download" || job.owner === "download"))) {
+      beginOwnedJob("download", { total: names.length, current: "Scanning Documents…" });
     }
     toast.message("Scanning Documents first", {
       description: `${names.length.toLocaleString()} families. Intact files register only; missing files download up to three at a time.`,
@@ -1666,7 +1762,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     let added = 0;
     let startFailed = false;
     try {
-      added = await tauriInvoke<number>("start_google_downloads", { families: names });
+      added = await tauriInvoke<number>("start_google_downloads", { families: names, intents });
     } catch {
       // Invoke fail/timeout — fall back to sync on-disk register (no false live).
       startFailed = true;
@@ -1692,22 +1788,9 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
         // Ok([]) = accepted — poll/event drives % + ready_names + finalize.
         // Invoke fail (no worker) → nothing live, clear pending (honesty).
         if (!(job.running || job.paused)) {
-          job = {
-            running: true,
-            paused: false,
-            mode: "download",
-            done: 0,
-            total: names.length,
-            failed: 0,
-            skipped: 0,
-            current: "Checking disk…",
-            failedNames: [],
-            failedDetails: [],
-          };
-          markJobClock(true, false);
-          emit();
+          beginOwnedJob("register", { total: names.length, current: "Checking disk…" });
         }
-        startGooglePoll("download");
+        startGooglePoll("register");
         const started = await startActivateOnDisk(names);
         if (!started) {
           lastFailedNames = names.slice();
@@ -1726,6 +1809,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
             total: Math.max(job.total, names.length),
             current: "",
             mode: "idle",
+            owner: "idle",
           };
           markJobClock(false, false);
           emit();
@@ -1737,21 +1821,24 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     }
   }
   if (local.length) {
-    if (!(job.running && job.mode === "download" && google.length)) {
-      job = {
-        running: true,
-        paused: false,
-        mode: "download",
-        done: job.mode === "download" ? job.done : 0,
-        total: (job.mode === "download" ? job.total : 0) + local.length,
-        failed: job.mode === "download" ? job.failed : 0,
-        skipped: job.mode === "download" ? job.skipped : 0,
+    if (!(job.running && (job.mode === "download" || job.owner === "download") && google.length)) {
+      const merge = job.running && (job.mode === "download" || job.owner === "download");
+      beginOwnedJob("download", {
+        total: (merge ? job.total : 0) + local.length,
         current: local[0]?.family ?? "",
-        failedNames: job.mode === "download" ? job.failedNames : [],
-        failedDetails: job.mode === "download" ? job.failedDetails : [],
-      };
-      markJobClock(true, false);
-      emit();
+      });
+      if (merge) {
+        job = {
+          ...job,
+          done: job.done,
+          failed: job.failed,
+          skipped: job.skipped,
+          failedNames: job.failedNames,
+          failedDetails: job.failedDetails,
+          total: job.total,
+        };
+        emit();
+      }
     }
     for (const font of local) installQueue.push({ font, lean: false });
     kickInstall();

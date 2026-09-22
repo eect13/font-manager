@@ -152,6 +152,7 @@ export const FontCard = memo(function FontCard({
   const settledDisk = useFontStore((s) => s.settledFamilySet.has(font.family.trim().toLowerCase()));
   const settled = settledDisk && !activated;
   const pending = useFontStore((s) => s.pendingSet.has(font.id));
+  const pendingOff = useFontStore((s) => s.pendingDeactivateSet.has(font.id));
   const favorite = useFontStore((s) => s.favorites.includes(font.id));
   const hasCollections = useFontStore((s) => s.collections.length > 0);
   const toggleActivated = useFontStore((s) => s.toggleActivated);
@@ -488,17 +489,22 @@ export const FontCard = memo(function FontCard({
         <button
           type="button"
           title={
-            activated
-              ? "Deactivate — hide from other apps, keep files"
-              : settled
-                ? "Settled — on disk · Windows won’t load (not Activated)"
-              : pending
-                ? "Queued"
-                : isDesktopShellSync()
-                  ? "Activate"
-                  : "Mark on. Word and Adobe only see session fonts in the desktop app."
+            pendingOff
+              ? "Deactivating — waiting for Windows unload"
+              : activated
+                ? "Deactivate — hide from other apps, keep files"
+                : settled
+                  ? "Settled — on disk · Windows won’t load (not Activated)"
+                  : pending
+                    ? "Queued"
+                    : isDesktopShellSync()
+                      ? "Activate"
+                      : "Mark on. Word and Adobe only see session fonts in the desktop app."
           }
-          aria-label={activated ? "Deactivate" : pending ? "Queued" : "Activate"}
+          aria-label={
+            pendingOff ? "Deactivating" : activated ? "Deactivate" : pending ? "Queued" : "Activate"
+          }
+          disabled={pending || pendingOff}
           onPointerDown={isolate}
           onClick={(e) => {
             isolate(e);
@@ -506,8 +512,9 @@ export const FontCard = memo(function FontCard({
           }}
           className={cn(
             "flex size-8 items-center justify-center rounded-full bg-background/80 text-foreground backdrop-blur-sm",
-            activated && "bg-primary text-primary-foreground",
+            activated && !pendingOff && "bg-primary text-primary-foreground",
             pending && !activated && "animate-pulse bg-primary/40 text-primary-foreground",
+            pendingOff && activated && "animate-pulse bg-primary/60 text-primary-foreground",
           )}
         >
           <Power className="size-3.5" />
