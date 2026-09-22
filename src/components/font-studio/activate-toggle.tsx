@@ -9,8 +9,11 @@ import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
 import { useFontStore } from "@/lib/fonts/store";
 import type { FontRecord } from "@/lib/fonts/types";
 import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
+import { activateQueueIds, catalogMenuRemaining } from "@/lib/fonts/activate-queue.mjs";
 import { requestActivateConfirm } from "@/lib/fonts/activate-confirm";
 import { visibleFamilySet } from "@/lib/fonts/visible-families";
+
+export { activateQueueIds, catalogMenuRemaining };
 
 function webPreviewNote(label: string) {
   if (label === "Fontsource") {
@@ -23,28 +26,6 @@ function webPreviewNote(label: string) {
 }
 
 
-/** Same filter as activateSet queue — Settled + hard Gidugu allowlist skipped. */
-export function activateQueueIds(
-  ids: string[],
-  state: {
-    activatedSet: Set<string>;
-    pendingSet: Set<string>;
-    settledFamilySet: Set<string>;
-    localFonts: FontRecord[];
-    googleFonts: FontRecord[];
-  },
-): string[] {
-  const usable: string[] = [];
-  for (const id of ids) {
-    if (state.activatedSet.has(id) || state.pendingSet.has(id)) continue;
-    const font = findFontRecord(id, state.localFonts, state.googleFonts);
-    if (!font || font.source === "system") continue;
-    if (state.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
-    if (isKnownGdiSessionIncapable(font.family)) continue;
-    usable.push(id);
-  }
-  return usable;
-}
 
 export function activateSet(ids: string[], label: string) {
   if (!ids.length) return false;
@@ -52,7 +33,7 @@ export function activateSet(ids: string[], label: string) {
   const local = state.localFonts;
   const google = state.googleFonts;
 
-  // 1.0.205 P0 / 1.0.206h: skip Settled / hard Gidugu — menu remaining count uses same filter.
+  // 1.0.205 P0 / 1.0.206i: skip Settled / hard Gidugu / pending-off — menu remaining uses same filter.
   const usable = activateQueueIds(ids, state);
   if (!usable.length) {
     toast.message(`Nothing to activate in ${label}`, {
@@ -444,32 +425,31 @@ export function GfontsActivateMenuItem() {
 
 function catalogMenuStats(
   fonts: FontRecord[],
-  activatedSet: Set<string>,
-  pendingSet: Set<string>,
-  pendingDeactivateSet: Set<string>,
-  settledFamilySet: Set<string>,
+  state: {
+    activatedSet: Set<string>;
+    pendingSet: Set<string>;
+    pendingDeactivateSet: Set<string>;
+    settledFamilySet: Set<string>;
+    localFonts: FontRecord[];
+    googleFonts: FontRecord[];
+  },
   filter?: (font: FontRecord) => boolean,
 ) {
   let count = 0;
-  let remaining = 0;
   let anyOn = false;
   for (const font of fonts) {
     if (filter && !filter(font)) continue;
     count += 1;
     if (
-      activatedSet.has(font.id) ||
-      pendingSet.has(font.id) ||
-      pendingDeactivateSet.has(font.id)
+      state.activatedSet.has(font.id) ||
+      state.pendingSet.has(font.id) ||
+      state.pendingDeactivateSet.has(font.id)
     ) {
       anyOn = true;
-      continue;
     }
-    // Same as activateSet / activateQueueIds — Settled + hard Gidugu not "remaining".
-    if (font.source === "system") continue;
-    if (settledFamilySet.has(font.family.trim().toLowerCase())) continue;
-    if (isKnownGdiSessionIncapable(font.family)) continue;
-    remaining += 1;
   }
+  // 1.0.206i: remaining MUST call shared activateQueueIds (via catalogMenuRemaining).
+  const remaining = catalogMenuRemaining(fonts, state, filter);
   return { count, remaining, anyOn };
 }
 
@@ -484,10 +464,14 @@ function CatalogActivateMenuItem({
     useShallow((s) =>
       catalogMenuStats(
         s.googleFonts,
-        s.activatedSet,
-        s.pendingSet,
-        s.pendingDeactivateSet,
-        s.settledFamilySet,
+        {
+          activatedSet: s.activatedSet,
+          pendingSet: s.pendingSet,
+          pendingDeactivateSet: s.pendingDeactivateSet,
+          settledFamilySet: s.settledFamilySet,
+          localFonts: s.localFonts,
+          googleFonts: s.googleFonts,
+        },
         filter,
       ),
     ),

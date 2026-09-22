@@ -28,15 +28,14 @@ test("hydrate seeds KNOWN_GDI_SESSION_INCAPABLE into settled", () => {
 });
 
 test("activateSet + setActivatedMany skip isKnownGdiSessionIncapable", () => {
-  assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
   assert.match(store, /isKnownGdiSessionIncapable\(font\.family\)/);
-  // 1.0.206h: activateSet delegates filter to activateQueueIds (same hard-skip).
-  const queueStart = activateToggle.indexOf("export function activateQueueIds");
-  const queue = queueStart >= 0
-    ? activateToggle.slice(queueStart, queueStart + 900)
-    : activateToggle.slice(activateToggle.indexOf("export function activateSet"), activateToggle.indexOf("export function activateSet") + 1800);
-  assert.match(queue, /isKnownGdiSessionIncapable/);
+  // 1.0.206i: shared activate-queue.mjs (hard Gidugu); activateSet calls activateQueueIds.
+  const queueMod = readFileSync(join(root, "src/lib/fonts/activate-queue.mjs"), "utf8");
+  assert.match(queueMod, /gidugu/i);
   assert.match(activateToggle, /activateQueueIds\(ids, state\)/);
+  assert.match(activateToggle, /activate-queue\.mjs/);
+  // Visible menu path still hard-skips in toggle.
+  assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
   const manyStart = store.indexOf("setActivatedMany: (ids, on) =>");
   const many = store.slice(manyStart, manyStart + 2200);
   assert.match(many, /isKnownGdiSessionIncapable/);

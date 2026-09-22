@@ -32,12 +32,19 @@ test("206h keeps ProductVersion 1.0.206 (amend-style)", () => {
 });
 
 test("P1 remaining count uses same filter as activateSet queue", () => {
-  assert.match(activateToggle, /export function activateQueueIds/);
+  // 1.0.206i: activateQueueIds lives in shared activate-queue.mjs; toggle re-exports + uses it.
+  assert.match(activateToggle, /activate-queue\.mjs/);
+  assert.match(activateToggle, /export \{ activateQueueIds/);
   assert.match(activateToggle, /const usable = activateQueueIds\(ids, state\)/);
   assert.match(activateToggle, /activateQueueIds\(ids, s\)\.length/);
   assert.match(activateToggle, /catalogMenuStats\(/);
+  assert.match(activateToggle, /catalogMenuRemaining/);
+  // Visible path / hard-skip still referenced in toggle; Settled filter in shared module.
   assert.match(activateToggle, /settledFamilySet\.has\(font\.family/);
   assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
+  const queueMod = readFileSync(join(root, "src/lib/fonts/activate-queue.mjs"), "utf8");
+  assert.match(queueMod, /settledFamilySet/);
+  assert.match(queueMod, /gidugu/i);
   // Library remaining also goes through activateQueueIds
   const libStart = activateToggle.indexOf("export function LibraryActivateMenuItem");
   const lib = activateToggle.slice(libStart, libStart + 1200);

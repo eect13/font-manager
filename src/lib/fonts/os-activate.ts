@@ -1553,7 +1553,7 @@ export function cancelDownloadQueue() {
     description: keepFailed.length
       ? `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`
       : wasRemove
-        ? "Still-Live faces stay until unload finishes; Cancelled queue will not unload further."
+        ? "Already-unloaded stay Off; Cancel stops further Removes — remaining stay Live."
         : "Fonts already saved stay in Documents → Font Manager.",
     action: { label: "Open folder", onClick: () => void openActivatedFolder() },
   });

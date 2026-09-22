@@ -7527,7 +7527,93 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
     #[cfg(windows)]
     let mut unloaded_paths: Vec<PathBuf> = Vec::new();
     let mut last_emit = Instant::now();
+    let mut cancelled = false;
     for (i, family) in families.iter().enumerate() {
+        // 1.0.206i: bulk Deactivate / unload_now honor Cancel + Pause (same gate as on-disk register).
+        // Cancel → stop further Removes (already-unloaded stay Off). Pause → wait; Resume continues.
+        let state = bulk();
+        match on_disk_register_gate(
+            state.cancel.load(Ordering::SeqCst),
+            state.pause.load(Ordering::SeqCst),
+        ) {
+            OnDiskRegisterGate::StopCancelled => {
+                cancelled = true;
+                if report {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.kind = "remove".into();
+                        p.running = false;
+                        p.paused = false;
+                        p.current = "Cancelled".into();
+                        // Keep done at families already processed — do not jump to total.
+                    }
+                    emit_progress(app);
+                }
+                break;
+            }
+            OnDiskRegisterGate::WaitPaused => {
+                if report {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.paused = true;
+                        p.running = true;
+                        p.kind = "remove".into();
+                    }
+                    emit_progress(app);
+                }
+                thread::sleep(Duration::from_millis(200));
+                // Re-process same index after pause/cancel check.
+                // `continue` would skip without advancing — use a nested wait loop instead.
+                loop {
+                    let st = bulk();
+                    match on_disk_register_gate(
+                        st.cancel.load(Ordering::SeqCst),
+                        st.pause.load(Ordering::SeqCst),
+                    ) {
+                        OnDiskRegisterGate::StopCancelled => {
+                            cancelled = true;
+                            break;
+                        }
+                        OnDiskRegisterGate::WaitPaused => {
+                            if report {
+                                if let Ok(mut p) = st.progress.lock() {
+                                    p.paused = true;
+                                    p.running = true;
+                                    p.kind = "remove".into();
+                                }
+                                emit_progress(app);
+                            }
+                            thread::sleep(Duration::from_millis(200));
+                        }
+                        OnDiskRegisterGate::Run => {
+                            if report {
+                                if let Ok(mut p) = st.progress.lock() {
+                                    p.paused = false;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                if cancelled {
+                    if report {
+                        if let Ok(mut p) = bulk().progress.lock() {
+                            p.kind = "remove".into();
+                            p.running = false;
+                            p.paused = false;
+                            p.current = "Cancelled".into();
+                        }
+                        emit_progress(app);
+                    }
+                    break;
+                }
+            }
+            OnDiskRegisterGate::Run => {
+                if report {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.paused = false;
+                    }
+                }
+            }
+        }
         let t = family.trim();
         if t.is_empty() {
             continue;
@@ -7590,8 +7676,24 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
             }
         }
     }
-    session_remove(app, families);
-    if report {
+    // On cancel, only drop session entries for families actually processed (done count).
+    // Full cancel mid-bulk: still remove session for unloaded prefix via per-family forget_queued;
+    // session_remove of the whole list would mark still-Live faces Off in sidecar — skip when cancelled.
+    if !cancelled {
+        session_remove(app, families);
+    } else {
+        // Persist whatever unregister already did.
+        let done_n = bulk()
+            .progress
+            .lock()
+            .map(|p| p.done as usize)
+            .unwrap_or(0);
+        let prefix: Vec<String> = families.iter().take(done_n).cloned().collect();
+        if !prefix.is_empty() {
+            session_remove(app, &prefix);
+        }
+    }
+    if report && !cancelled {
         if let Ok(mut p) = bulk().progress.lock() {
             p.kind = "remove".into();
             p.running = true;
@@ -7633,9 +7735,13 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
         if let Ok(mut p) = bulk().progress.lock() {
             p.kind = "remove".into();
             p.running = false;
-            p.done = total_n;
-            p.total = total_n;
-            p.current.clear();
+            p.paused = false;
+            if !cancelled {
+                p.done = total_n;
+                p.total = total_n;
+                p.current.clear();
+            }
+            // cancelled: keep done at processed count; current already "Cancelled"
         }
         emit_progress(app);
     }
@@ -7658,6 +7764,12 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
     // snapshot (that used to toast “done” while GDI was still running).
     let downloading = bulk().running.load(Ordering::SeqCst);
     if !downloading {
+        // Fresh remove job — clear leftover cancel/pause from a prior Cancel click (1.0.206i).
+        {
+            let state = bulk();
+            state.cancel.store(false, Ordering::SeqCst);
+            state.pause.store(false, Ordering::SeqCst);
+        }
         if let Ok(mut p) = bulk().progress.lock() {
             p.running = true;
             p.paused = false;
