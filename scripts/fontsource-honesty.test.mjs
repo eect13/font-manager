@@ -71,10 +71,11 @@ test("Rust try_fontsource_gdi_offer is allowlist no-download + remnant purge", (
   assert.match(offer[0], /added:\s*0/);
 });
 
-test("Google-first need_fontsource only when Google listing empty", () => {
-  assert.match(activateRs, /let need_fontsource = google_listed\.is_empty\(\);/);
+test("Fontsource fill only on Fontsource intent (hard separation, no Google fallback)", () => {
+  assert.match(activateRs, /let need_fontsource = matches!\(intent, FetchIntent::Fontsource\)/);
   assert.match(activateRs, /if need_fontsource && slug == "clear-sans"/);
   assert.match(activateRs, /\} else if need_fontsource \{/);
+  assert.doesNotMatch(activateRs, /let need_fontsource = google_listed\.is_empty\(\);/);
 });
 
 test("live catalog fetches use cache no-store", () => {

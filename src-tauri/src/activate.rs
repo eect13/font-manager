@@ -1491,6 +1491,9 @@ fn register_intact_family_detailed(
             if !ttf_intact(&path) {
                 continue;
             }
+            if !face_allowed_for_register(&dir, &path, family) {
+                continue;
+            }
             let _ = sanitize_on_disk_for_gdi(&path);
             match register_path_detailed(&path) {
                 None => {
@@ -3695,6 +3698,200 @@ fn is_official_google_family(family: &str) -> bool {
     by_lower.contains(&key) || by_slug.contains(&slug_family(family))
 }
 
+
+/// Activate fetch pipe: Google card = Google faces only; Fontsource card = FS only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FetchIntent {
+    Google,
+    Fontsource,
+    Local,
+}
+
+fn parse_fetch_intent(s: &str) -> Option<FetchIntent> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "google" => Some(FetchIntent::Google),
+        "fontsource" | "other" => Some(FetchIntent::Fontsource),
+        "local" => Some(FetchIntent::Local),
+        _ => None,
+    }
+}
+
+fn fetch_intent_label(intent: FetchIntent) -> &'static str {
+    match intent {
+        FetchIntent::Google => "google",
+        FetchIntent::Fontsource => "fontsource",
+        FetchIntent::Local => "local",
+    }
+}
+
+fn infer_fetch_intent(family: &str) -> FetchIntent {
+    if is_official_google_family(family) {
+        FetchIntent::Google
+    } else {
+        FetchIntent::Fontsource
+    }
+}
+
+fn remember_fetch_intent(family: &str, intent: FetchIntent) {
+    let key = family.trim().to_lowercase();
+    if key.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = bulk().intents.lock() {
+        map.insert(key, intent);
+    }
+}
+
+fn forget_fetch_intent(family: &str) {
+    let key = family.trim().to_lowercase();
+    if let Ok(mut map) = bulk().intents.lock() {
+        map.remove(&key);
+    }
+}
+
+fn intent_for_family(family: &str) -> FetchIntent {
+    let key = family.trim().to_lowercase();
+    if let Ok(map) = bulk().intents.lock() {
+        if let Some(i) = map.get(&key) {
+            return *i;
+        }
+    }
+    infer_fetch_intent(family)
+}
+
+fn family_download_source_marker(dir: &Path) -> PathBuf {
+    dir.join(".download-source")
+}
+
+fn write_download_source(dir: &Path, intent: FetchIntent) {
+    let _ = fs::write(
+        family_download_source_marker(dir),
+        fetch_intent_label(intent).as_bytes(),
+    );
+}
+
+fn read_download_source(dir: &Path) -> Option<FetchIntent> {
+    let s = fs::read_to_string(family_download_source_marker(dir)).ok()?;
+    parse_fetch_intent(s.trim())
+}
+
+/// Boot/scan migration: stamp `.download-source` when evidence is strong.
+/// google if usable `.google-planned` key list; else fontsource if
+/// `.fontsource-planned` / latin-subset names dominate; else leave unset
+/// (never guess wrong). Register still uses `face_allowed_for_register`.
+fn migrate_download_source_stamp(dir: &Path) {
+    if read_download_source(dir).is_some() {
+        return;
+    }
+    if read_google_planned_keys(dir).is_some() {
+        write_download_source(dir, FetchIntent::Google);
+        return;
+    }
+    if read_fontsource_planned_keys(dir).is_some() {
+        write_download_source(dir, FetchIntent::Fontsource);
+        return;
+    }
+    let slug = dir_slug_hint(dir);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    if files.is_empty() {
+        return;
+    }
+    let mut latin = 0usize;
+    let mut other = 0usize;
+    for path in &files {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        if filename_has_latin_subset(name, &slug) {
+            latin = latin.saturating_add(1);
+        } else {
+            other = other.saturating_add(1);
+        }
+    }
+    // Only stamp fontsource when latin-subset names clearly dominate.
+    if latin > 0 && latin > other {
+        write_download_source(dir, FetchIntent::Fontsource);
+    }
+    // else leave unset — do not guess google vs local.
+}
+
+
+fn family_fontsource_planned_marker(dir: &Path) -> PathBuf {
+    dir.join(".fontsource-planned")
+}
+
+fn write_fontsource_planned(dir: &Path, keys: &[String]) {
+    if keys.is_empty() {
+        let _ = fs::remove_file(family_fontsource_planned_marker(dir));
+        return;
+    }
+    let body = keys.join("\n");
+    let _ = fs::write(family_fontsource_planned_marker(dir), body.as_bytes());
+}
+
+fn clear_fontsource_planned(dir: &Path) {
+    let _ = fs::remove_file(family_fontsource_planned_marker(dir));
+}
+
+fn read_fontsource_planned_keys(dir: &Path) -> Option<Vec<String>> {
+    let s = fs::read_to_string(family_fontsource_planned_marker(dir)).ok()?;
+    let keys: Vec<String> = s
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && l.contains('.'))
+        .collect();
+    if keys.is_empty() {
+        None
+    } else {
+        Some(keys)
+    }
+}
+
+/// Register only faces from the chosen download source so leftover other-source
+/// TTFs in a shared family folder cannot go Live for the wrong card.
+fn face_allowed_for_register(dir: &Path, path: &Path, family: &str) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let slug = slug_family(family);
+    let intent = read_download_source(dir).unwrap_or_else(|| intent_for_family(family));
+    match intent {
+        FetchIntent::Local => true,
+        FetchIntent::Google => {
+            if let Some(keys) = read_google_planned_keys(dir) {
+                return keys.iter().any(|k| k == name);
+            }
+            // No Google plan: never Add Fontsource latin-subset leftovers.
+            if !slug.is_empty() && filename_has_latin_subset(name, &slug) {
+                return false;
+            }
+            if let Some(fs_keys) = read_fontsource_planned_keys(dir) {
+                if fs_keys.iter().any(|k| k == name) {
+                    return false;
+                }
+            }
+            true
+        }
+        FetchIntent::Fontsource => {
+            if let Some(keys) = read_fontsource_planned_keys(dir) {
+                return keys.iter().any(|k| k == name);
+            }
+            // No FS plan: never Add Google-planned leftovers for the Fontsource card.
+            if let Some(g_keys) = read_google_planned_keys(dir) {
+                if g_keys.iter().any(|k| k == name) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct GoogleCatalogMeta {
     floor: usize,
@@ -5316,7 +5513,10 @@ fn register_intact_new(app: &AppHandle, family: &str) -> usize {
         walk_font_files(&dir, &mut files);
         sort_faces_var_first(&mut files);
         for path in files {
-            if ttf_intact(&path) && register_family_path(family, &path) {
+            if !ttf_intact(&path) || !face_allowed_for_register(&dir, &path, family) {
+                continue;
+            }
+            if register_family_path(family, &path) {
                 added += 1;
             }
         }
@@ -6076,6 +6276,7 @@ fn forget_queued(family: &str) {
     if let Ok(mut queued) = bulk().queued.lock() {
         queued.remove(&family.trim().to_lowercase());
     }
+    forget_fetch_intent(family);
 }
 
 fn remember_failed(family: &str, reason: &str) {
@@ -6116,6 +6317,8 @@ struct Bulk {
     pending: Mutex<VecDeque<String>>,
     queued: Mutex<HashSet<String>>,
     denied: Mutex<HashSet<String>>,
+    /// Per-family Activate intent (google | fontsource | local).
+    intents: Mutex<HashMap<String, FetchIntent>>,
     circuits: Mutex<HashMap<&'static str, CdnGate>>,
 }
 
@@ -6143,6 +6346,7 @@ fn bulk() -> &'static Bulk {
         pending: Mutex::new(VecDeque::new()),
         queued: Mutex::new(HashSet::new()),
         denied: Mutex::new(HashSet::new()),
+        intents: Mutex::new(HashMap::new()),
         circuits: Mutex::new(HashMap::new()),
     })
 }
@@ -6245,13 +6449,17 @@ fn download_family(
             heal_clear_sans_expected_plan(&dir, family);
         }
     }
+    let intent_early = intent_for_family(family);
     let existing = register_intact_family(app, family);
     if existing > 0 && !bust && family_is_ready(app, family) && !clear_sans_needs_heal {
-        // Complete folders still need missing catalog variable TTFs (no bust)
-        // and name heal for pre-namepatch installs. Statics stay; vars are added.
-        // Do not emit here — caller (drain) coalesces HealStats across families.
-        let (_, mut heal) = ensure_catalog_variable_faces(app, client, family);
-        heal.add(heal_family_google_names(app, family, false));
+        // Complete folders: Google intent may still pull missing catalog VF + name heal.
+        // Fontsource intent must not call Google CSS2 / desktop VF ensure.
+        let mut heal = HealStats::default();
+        if matches!(intent_early, FetchIntent::Google) {
+            let (_, h) = ensure_catalog_variable_faces(app, client, family);
+            heal.add(h);
+            heal.add(heal_family_google_names(app, family, false));
+        }
         let total = register_intact_family(app, family).max(existing);
         return Ok((total, heal));
     }
@@ -6265,14 +6473,28 @@ fn download_family(
     let mut planned = 0usize;
     let mut version = String::new();
 
-    // Google desktop TTFs first (official families): discover richest listing, then stream
-    // to disk (no full-family RAM buffer). Fontsource only when Google listed nothing.
+    let intent = intent_for_family(family);
+    if matches!(intent, FetchIntent::Local) {
+        let total = register_intact_family(app, family);
+        if total > 0 {
+            return Ok((total, HealStats::default()));
+        }
+        return Err("local family has no installable faces".into());
+    }
+    // Stamp chosen source so register only Adds faces from this Activate card.
+    write_download_source(&root, intent);
+
+    // Hard separation: Google Activate = Google faces only (no Fontsource fill).
+    // Fontsource Activate = Fontsource only (no Google CSS2 / desktop fetch).
     let (google_wrote, mut google_listed, mut google_var_files, mut heal) =
-        fetch_google_family_faces_to_dir(client, family, &slug, &root);
-    // If Google CSS listed faces but nothing intact landed, do NOT purge latin
-    // remnants into an empty folder and abort — clear the plan so Fontsource can
-    // fill (or a later Repair can retry Google). Partial Google writes keep the plan.
-    if !google_listed.is_empty() && google_wrote == 0 {
+        if matches!(intent, FetchIntent::Google) {
+            fetch_google_family_faces_to_dir(client, family, &slug, &root)
+        } else {
+            (0, Vec::new(), Vec::new(), HealStats::default())
+        };
+    // If Google CSS listed faces but nothing intact landed, clear the plan — do NOT
+    // Fontsource-fill on Google intent (hard separation). Repair can retry Google.
+    if matches!(intent, FetchIntent::Google) && !google_listed.is_empty() && google_wrote == 0 {
         let keys_probe: Vec<String> = google_listed
             .iter()
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
@@ -6286,7 +6508,7 @@ fn download_family(
     let google_instance_expected = google_listed.len();
     let google_expected = google_instance_expected.saturating_add(google_var_files.len());
     wrote = wrote.saturating_add(google_wrote);
-    if google_expected > 0 {
+    if matches!(intent, FetchIntent::Google) && google_expected > 0 {
         planned = google_expected;
         let instance_keys: Vec<String> = google_listed
             .iter()
@@ -6295,24 +6517,28 @@ fn download_family(
         // Vars first in planned (axes pick), statics retained as backup — never var-only.
         let keys = merge_variable_into_planned_keys(&instance_keys, &google_var_files);
         write_google_planned(&root, &keys);
+        clear_fontsource_planned(&root);
         // Only purge leftovers once we have Google bytes on disk — otherwise a
         // failed Google fetch would delete latin remnants and leave the folder empty.
         if google_wrote > 0 || count_intact_planned_keys(&root, &keys) > 0 {
             purge_unplanned_font_files(&root, &keys);
         }
+    } else if matches!(intent, FetchIntent::Google) {
+        clear_google_planned(&root);
     } else {
+        // Fontsource intent: never keep a stale Google plan that would confuse register.
         clear_google_planned(&root);
     }
 
-    // Fontsource fills remaining when Google had no static CSS listing.
-    // VF may already be on disk (step 1) — still allow FS statics for FS-only /
-    // metadata-missing families. Never use FS to satisfy Google planned keys.
-    let need_fontsource = google_listed.is_empty();
+    // Fontsource fill only on Fontsource intent — never as Google fallback.
+    let need_fontsource = matches!(intent, FetchIntent::Fontsource);
+    let mut fontsource_keys: Vec<String> = Vec::new();
     if need_fontsource && slug == "clear-sans" {
         // Intel-only planned set (8). Never Fontsource face-matrix (10).
         planned = clear_sans_intel_planned_count();
         version = CLEAR_SANS_INTEL_PIN.to_string();
         let keys = clear_sans_intel_face_keys();
+        fontsource_keys = keys.clone();
         for (weight, italic) in CLEAR_SANS_INTEL_FACES {
             if bulk().cancel.load(Ordering::SeqCst) {
                 break;
@@ -6333,6 +6559,7 @@ fn download_family(
         // Drop any leftover ThinItalic / LightItalic / Fontsource shreds outside the plan.
         purge_unplanned_font_files(&root, &keys);
         write_expected_faces(&root, planned);
+        write_fontsource_planned(&root, &fontsource_keys);
     } else if need_fontsource {
         if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();
@@ -6348,17 +6575,23 @@ fn download_family(
                 meta_styles
             };
             let fs_expected = subsets.len().saturating_mul(weights.len()).saturating_mul(styles.len());
-            if google_expected == 0 {
-                planned = fs_expected;
+            planned = fs_expected;
+            for subset in &subsets {
+                for weight in &weights {
+                    for italic in &styles {
+                        let style = if *italic { "italic" } else { "normal" };
+                        fontsource_keys.push(fontsource_face_filename(&slug, subset, *weight, style));
+                    }
+                }
             }
-            // When Google listed a rich set, keep that expected count for .complete honesty.
-            // FS may still fill supplemental files, but *-latin-* never counts toward Google planned.
+            fontsource_keys.sort();
+            fontsource_keys.dedup();
             let fs_wrote = pull_fontsource_subset_to_dir(
                 client, &slug, &version, &subsets, &weights, &styles, &root,
             );
             // CJK honesty: metadata listed chinese-* but FS only dropped latin → do not
-            // claim a Fontsource expected set when Google also wrote nothing.
-            if google_wrote == 0 && all_subsets.iter().any(|s| is_cjk_subset(s)) {
+            // claim a Fontsource expected set when nothing usable landed.
+            if all_subsets.iter().any(|s| is_cjk_subset(s)) {
                 let mut files = Vec::new();
                 walk_font_files(&root, &mut files);
                 let fs_names: Vec<_> = files
@@ -6375,8 +6608,10 @@ fn download_family(
                 }
             }
             wrote = wrote.saturating_add(fs_wrote);
+            write_fontsource_planned(&root, &fontsource_keys);
         }
     }
+
     // Legacy Fontsource packs used `*-latin-*` names — strip when we have a
     // replacement set (Google wrote, or Fontsource-only path). Never strip when
     // Google listed then failed with zero writes — that left folders empty (1.0.148+).
@@ -6548,11 +6783,15 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
-            // Already-complete: still pull missing catalog vars (no bust) + heal names,
-            // then register — do not treat .complete as activated without GDI.
+            // Already-complete: Google intent may pull missing catalog vars + heal names.
+            // Fontsource intent must not hit Google CSS2 / desktop VF ensure.
             // Aggregate — do not emit per family (toast storm).
-            let (_, mut heal) = ensure_catalog_variable_faces(&app, &client, &family);
-            heal.add(heal_family_google_names(&app, &family, false));
+            let mut heal = HealStats::default();
+            if matches!(intent_for_family(&family), FetchIntent::Google) {
+                let (_, h) = ensure_catalog_variable_faces(&app, &client, &family);
+                heal.add(h);
+                heal.add(heal_family_google_names(&app, &family, false));
+            }
             heal_acc.add(heal);
             let (n, cause) = register_intact_family_detailed(&app, &family);
             if n == 0 {
@@ -7133,7 +7372,8 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
         if let Ok(mut p) = state.progress.lock() {
             p.running = true;
             p.paused = false;
-            p.kind = "download".into();
+            // 1.0.205: on-disk Activate All is register, not download (split owners).
+            p.kind = "register".into();
             p.done = 0;
             p.total = families.len() as u32;
             p.failed = 0;
@@ -7176,6 +7416,9 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         let t = family.trim();
         if t.is_empty() {
             continue;
+        }
+        for dir in family_locations(&app, t) {
+            migrate_download_source_stamp(&dir);
         }
         if family_skip_register_this_process(&app, t).is_some() {
             already.push(t.to_string());
@@ -7221,7 +7464,8 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     }
 
     if let Ok(mut p) = state.progress.lock() {
-        p.kind = "download".into();
+        // 1.0.205: on-disk Activate All is register, not download (split owners).
+        p.kind = "register".into();
         p.running = true;
         p.done = already.len() as u32;
         p.total = (already.len() + ready.len()) as u32;
@@ -7690,7 +7934,7 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
     if !bulk().running.load(Ordering::SeqCst) {
         reset_circuits();
     }
-    let added = start_google_downloads(app, need_fetch)?;
+    let added = start_google_downloads(app, need_fetch, None)?;
     Ok(added.saturating_add(reregistered))
 }
 
@@ -7999,6 +8243,8 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             .and_then(|s| s.to_str())
             .unwrap_or("font")
             .to_string();
+        // 1.0.205: migrate legacy folders missing `.download-source`.
+        migrate_download_source_stamp(dir);
         // 1.0.188: purge FS remnants before Scan honesty / undersized flag.
         if family_known_gdi_session_incapable(&name) {
             let _ = purge_known_incapable_fontsource_remnants(dir, &name);
@@ -8107,9 +8353,22 @@ pub fn prune_unknown_folders(app: AppHandle, keep: Vec<String>) -> Result<u32, S
 }
 
 #[tauri::command]
-pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
+pub fn start_google_downloads(
+    app: AppHandle,
+    families: Vec<String>,
+    // Parallel to `families`: "google" | "fontsource" | "local". Missing → infer.
+    intents: Option<Vec<String>>,
+) -> Result<usize, String> {
     if families.is_empty() {
         return Ok(0);
+    }
+    let intent_list = intents.unwrap_or_default();
+    for (i, family) in families.iter().enumerate() {
+        let intent = intent_list
+            .get(i)
+            .and_then(|s| parse_fetch_intent(s))
+            .unwrap_or_else(|| infer_fetch_intent(family));
+        remember_fetch_intent(family, intent);
     }
     let fresh = accept_new_families(families);
     if fresh.is_empty() {
@@ -8192,6 +8451,49 @@ pub fn cancel_google_downloads() -> Result<(), String> {
         p.current = "Stopping…".into();
     }
     Ok(())
+}
+
+/// 1.0.204: Deactivate while download running — drop only those families from the queue.
+#[tauri::command]
+pub fn drop_google_download_families(families: Vec<String>) -> Result<u32, String> {
+    let state = bulk();
+    let keys: std::collections::HashSet<String> = families
+        .iter()
+        .map(|f| f.trim().to_lowercase())
+        .filter(|k| !k.is_empty())
+        .collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let mut dropped = 0u32;
+    if let Ok(mut pending) = state.pending.lock() {
+        let before = pending.len();
+        pending.retain(|f| !keys.contains(&f.trim().to_lowercase()));
+        dropped = dropped.saturating_add((before - pending.len()) as u32);
+    }
+    if let Ok(mut queued) = state.queued.lock() {
+        for key in &keys {
+            if queued.remove(key) {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+    }
+    if let Ok(mut intents) = state.intents.lock() {
+        for key in &keys {
+            intents.remove(key);
+        }
+    }
+    if let Ok(mut denied) = state.denied.lock() {
+        for key in &keys {
+            denied.insert(key.clone());
+        }
+    }
+    if let Ok(mut p) = state.progress.lock() {
+        if p.total > dropped {
+            p.total = p.total.saturating_sub(dropped);
+        }
+    }
+    Ok(dropped)
 }
 
 #[tauri::command]
@@ -9480,6 +9782,114 @@ mod install_path_tests {
             &variable_face_filename("nunito", "wght", false),
             "nunito"
         ));
+    }
+
+    #[test]
+
+    #[test]
+    fn migrate_download_source_stamp_google_planned() {
+        let dir = temp_family_dir("mig-google");
+        write_google_planned(
+            &dir,
+            &["nunito-400-normal.ttf".into(), "nunito-700-normal.ttf".into()],
+        );
+        assert!(read_download_source(&dir).is_none());
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Google));
+        // Idempotent — do not overwrite an existing stamp.
+        write_download_source(&dir, FetchIntent::Fontsource);
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_fontsource_planned() {
+        let dir = temp_family_dir("mig-fs");
+        write_fontsource_planned(&dir, &["clear-sans-400-normal.ttf".into()]);
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_latin_dominates() {
+        // temp_family_dir prefixes the label — nest a real family leaf so
+        // dir_slug_hint == "rubik" and `-latin-` subset detection works.
+        let root = temp_family_dir("mig-latin-root");
+        let dir = root.join("Rubik");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("rubik-latin-400-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-latin-700-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-latin-900-normal.ttf"), b"x").unwrap();
+        // One non-latin google-shaped name — latin still dominates.
+        fs::write(dir.join("rubik-400-normal.ttf"), b"x").unwrap();
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_leaves_ambiguous_unset() {
+        let dir = temp_family_dir("mig-amb");
+        fs::write(dir.join("rubik-400-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-700-normal.ttf"), b"x").unwrap();
+        migrate_download_source_stamp(&dir);
+        assert!(
+            read_download_source(&dir).is_none(),
+            "ambiguous folder must stay unset — never guess google"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn face_allowed_for_register_google_stamp_skips_fontsource() {
+        let dir = temp_family_dir("src-stamp-google");
+        fs::write(dir.join(".download-source"), b"google").unwrap();
+        write_google_planned(
+            &dir,
+            &["inter-400-normal.ttf".into(), "inter-700-normal.ttf".into()],
+        );
+        write_fontsource_planned(&dir, &["inter-latin-400-normal.ttf".into()]);
+        let g = dir.join("inter-400-normal.ttf");
+        let fs = dir.join("inter-latin-400-normal.ttf");
+        fs::write(&g, b"x").unwrap();
+        fs::write(&fs, b"x").unwrap();
+        assert!(face_allowed_for_register(&dir, &g, "Inter"));
+        assert!(!face_allowed_for_register(&dir, &fs, "Inter"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn face_allowed_for_register_fontsource_stamp_skips_google_planned() {
+        let dir = temp_family_dir("src-stamp-fs");
+        fs::write(dir.join(".download-source"), b"fontsource").unwrap();
+        write_google_planned(&dir, &["clear-sans-400-normal.ttf".into()]);
+        write_fontsource_planned(
+            &dir,
+            &["clear-sans-400-normal.ttf".into(), "clear-sans-700-normal.ttf".into()],
+        );
+        let keep = dir.join("clear-sans-400-normal.ttf");
+        let other = dir.join("clear-sans-900-normal.ttf");
+        fs::write(&keep, b"x").unwrap();
+        fs::write(&other, b"x").unwrap();
+        assert!(face_allowed_for_register(&dir, &keep, "Clear Sans"));
+        assert!(!face_allowed_for_register(&dir, &other, "Clear Sans"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_fetch_intent_labels() {
+        assert_eq!(parse_fetch_intent("google"), Some(FetchIntent::Google));
+        assert_eq!(parse_fetch_intent("fontsource"), Some(FetchIntent::Fontsource));
+        assert_eq!(parse_fetch_intent("other"), Some(FetchIntent::Fontsource));
+        assert_eq!(parse_fetch_intent("local"), Some(FetchIntent::Local));
+        assert_eq!(parse_fetch_intent("nope"), None);
+    }
+
+    #[test]
+    fn infer_fetch_intent_official_vs_exclusive() {
+        assert_eq!(infer_fetch_intent("Nunito"), FetchIntent::Google);
+        assert_eq!(infer_fetch_intent("Clear Sans"), FetchIntent::Fontsource);
     }
 
     #[test]

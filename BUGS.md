@@ -1,3 +1,13 @@
+## Fixed in tip / 1.0.205
+- Resume + stamp migration: `resumeGoogleFamilies` passes parallel `intents` (same as Activate — never infer-only on mixed resume). Boot/scan stamps `.download-source` only when `.google-planned` is a usable key list, else fontsource when `.fontsource-planned` / latin-subset names dominate; ambiguous folders stay unset. Register still uses `face_allowed_for_register`.
+- Activate All speed (honesty kept): skip Settled / known Add=0 allowlist; already-Live `loaded()` this process short-circuits re-walk; visible+selected+recent first with remainder in waves (~40) + soft confirm when N>50; register progress owner separate from download. No fake Live / no skip Add after Quit / no FR_PRIVATE / no GDI quota raise.
+- Pending-off timeout: if unload not confirmed in ~8s (Word-locked), keep Live honest and surface “still unloading / retry” — never fake Off.
+- KEEP 204 feel + Google↔Fontsource hard separation.
+
+## Fixed in tip / 1.0.204
+- FontBase activate/deactivate feel: no exclusive Remove→Add thrash, pending-off, progress owners, count lanes, one Live per family, drop download on deactivate, visible-first restore.
+- Google↔Fontsource hard separation: Activate intent `google` | `fontsource` | `local`; Google path never Fontsource-fills; Fontsource path never Google CSS2/desktop fetch; `.download-source` + planned-key register filter; preview CSS no dual Google+Fontsource hrefs.
+
 # Font Manager — known issues / follow-ups
 
 ## Fixed in tip / 1.0.203

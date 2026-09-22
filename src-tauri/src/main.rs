@@ -156,6 +156,7 @@ fn main() {
             activate::repair_incomplete_families,
             activate::skip_google_failures,
             activate::cancel_google_downloads,
+            activate::drop_google_download_families,
             activate::pause_google_downloads,
             activate::resume_google_downloads,
             activate::google_download_progress,

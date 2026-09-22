@@ -1,4 +1,8 @@
-# Font Manager **1.0.203**
+# Font Manager **1.0.205**
+
+**1.0.205.** Resume intents + `.download-source` stamp migration; Activate All speed (skip Settled, already-Live short-circuit, visible-first waves, soft confirm >50); pending-off timeout keeps Live honest. Pack HOLD until Skye re-critique + Eric smoke. Tip-install after Skye APPROVE.
+
+**1.0.204.** FontBase activate/deactivate feel + Google↔Fontsource hard separation.
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 
