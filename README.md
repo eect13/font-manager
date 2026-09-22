@@ -1,4 +1,22 @@
-# Font Manager **1.0.203**
+# Font Manager **1.0.206**
+
+**1.0.206h (Skye ceiling ~9.4–9.6).** Activate remaining count = same Settled/hard-Gidugu filter as `activateSet` queue. `start_google_downloads` skips when disk resolve is None and no explicit intent (never `infer_fetch_intent` after None). Finish toast Live = store `activated.length` only. Deactivate All: `pendingDeactivateSet` in anyOn + one calm desktop queue toast; remove bar Pause/Cancel. Short confirm Cancel labels. OG unit tests isolate cwd `site.json`/`og.jpg` pollution. Session restore visible/favorites/first-page still deferred. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
+**1.0.206g (Skye P2 race + bar-clear hygiene).** Soft Settled Power Retry sets `pending` + drops Settled *synchronously* around `clearSessionGdiRefused` so double-click cannot bypass the soft one-try gate. GDI tip bar-clear assert updated to idle ternary `active ? (p.current ?? "") : ""`. Provenance / Repair / modal / wave0 / Gidugu-hard / Retry clear kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
+**1.0.206f (Skye P1 HOLD + polish).** Soft Settled Power Retry clears `session_gdi_refused` before Activate so Add runs (206e sticky refuse). Cancel/wave0 label honesty (keep prefer if already queued vs visible/first-page). Soft Power tooltip = Retry once/process; after used + Add=0 again stays Settled not Live. Provenance / Repair / modal / Gidugu-hard kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
+**1.0.206e (Skye pre-ship polish).** Soft Settled requires `.settled-add-zero` provenance (wipe bare `.complete` from hard-emoji tips); soft full-face without provenance ≠ Incomplete/Repair; soft session-refuse + Activate All skip; Power hard Settled no-op / soft Retry Add; in-app Activate All modal (OK/Cancel/Abort) + wave0 prefer enqueue; Cancel offers first-page/selection when visible=0. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
+**1.0.206d (Skye pre-ship).** Soft emoji Scan Settled when `.complete` after Add=0 (cold-boot badge honesty); shared `SOFT_GDI_TRY_ADD_FIRST` TS↔Rust table parity; bulk confirm Cancel = Activate visible only; Noto Emoji ≥256KB stub reject parity with color; `firstSettledAllowlistedFamily` soft-aware + toast preview. Hard allowlist stays Gidugu only. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
+**1.0.206c (emoji regression).** Hard `KNOWN_GDI_SESSION_INCAPABLE` is **Gidugu only** (seed Settled + Activate All skip + early-skip). Noto Color Emoji / Noto Emoji are soft try-Add-first — Activate / Activate All **queue** them; Settled + calm toast only after Add=0. Completeness P0 kept (full upstream color TTF, ≥256KB stub reject, never fake Live). ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
+**1.0.206b (pack-blocker nit).** UI Activate All also seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet` on hydrate and skips `isKnownGdiSessionIncapable` in `activateSet` / `setActivatedMany` so Gidugu (hard allowlist) never queues as pending before Rust settle scan hydrates UI. Soft emoji queue (fixed in 206c). ProductVersion stays **1.0.206**. Rust boot seed from 206 kept. Pack HOLD — nits before pack. No tip-install/pack this tip.
+
+**1.0.206.** Seed hard GDI-incapable (Gidugu) into Settled on boot (Activate All never queues Gidugu pre-scan; emoji soft since 206c); resume missing-store intent from stamp/planned/catalog — never blind google; emoji full upstream color TTF + Settled honesty if Add=0; CJK chinese-*/japanese/korean honesty kept. Pack HOLD — tip-install after Skye. No tip-install/pack this tip.
+
+**1.0.204.** FontBase activate/deactivate feel + Google↔Fontsource hard separation.
 
 FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
 

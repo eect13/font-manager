@@ -14,6 +14,7 @@ import { TabPanes } from "./tab-panes";
 import { ThemeToggle } from "./theme-toggle";
 import { DesktopSettings } from "./desktop-settings";
 import { HelpTip } from "./help-tip";
+import { ActivateConfirmDialog } from "./activate-confirm-dialog";
 import { runFontImport } from "./import-fonts";
 import { pickFontFiles, pickFontFolder } from "@/lib/desktop/open-fonts";
 import { useHydrateFonts } from "@/lib/fonts/hydrate";
@@ -268,6 +269,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
           </SheetContent>
         </Sheet>
 
+        <ActivateConfirmDialog />
         <CollectionDialog open={collectionOpen} onOpenChange={setCollectionOpen} />
         <CssExportDialog open={cssOpen} onOpenChange={setCssOpen} />
 
