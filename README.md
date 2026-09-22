@@ -1,6 +1,6 @@
-# Font Manager **1.0.205**
+# Font Manager **1.0.206**
 
-**1.0.205.** Resume intents + `.download-source` stamp migration; Activate All speed (skip Settled, already-Live short-circuit, visible-first waves, soft confirm >50); pending-off timeout keeps Live honest. Pack HOLD until Skye re-critique + Eric smoke. Tip-install after Skye APPROVE.
+**1.0.206.** Seed GDI-incapable allowlist into Settled on boot (Activate All never queues Gidugu/emoji pre-scan); resume missing-store intent from stamp/planned/catalog — never blind google; emoji full upstream color TTF + Settled honesty if Add=0; CJK chinese-*/japanese/korean honesty kept. Pack HOLD — tip-install after Skye. No tip-install/pack this tip.
 
 **1.0.204.** FontBase activate/deactivate feel + Google↔Fontsource hard separation.
 

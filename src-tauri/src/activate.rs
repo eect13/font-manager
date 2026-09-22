@@ -1574,6 +1574,30 @@ fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
     mark_family_complete(dir, expected);
 }
 
+
+/// 1.0.206: on boot, seed allowlisted GDI-incapable families that are already on
+/// disk into Settled (`.complete` + session refused) so Activate All / restore
+/// never queues them before the first settle scan.
+fn seed_known_gdi_incapable_settled(app: &AppHandle) {
+    for entry in KNOWN_GDI_SESSION_INCAPABLE {
+        let family = entry.family;
+        if !family_has_intact(app, family) {
+            continue;
+        }
+        let undersized = family_locations(app, family)
+            .iter()
+            .any(|d| dir_has_undersized_google_static(d, family));
+        if undersized {
+            continue;
+        }
+        stamp_known_incapable_disk_settled(app, family);
+        if family_has_complete_settled(app, family) {
+            note_session_gdi_refused(family);
+            note_settled_quiet(family);
+        }
+    }
+}
+
 fn unregister_family_session(family: &str) -> u32 {
     #[cfg(windows)]
     {
@@ -2518,6 +2542,8 @@ pub fn session_begin(app: &AppHandle) {
         // 1.0.156 leftover: session copies under the per-user Fonts tree.
         // Remove + delete that folder only — never C:\Windows\Fonts.
         purge_legacy_fontmanager_user_fonts_stage();
+        // 1.0.206: seed allowlist Settled before restore / Activate All can queue Add.
+        seed_known_gdi_incapable_settled(app);
         // Do NOT hydrate loaded() from gdi-maps — maps skip copy only; always Add
         // after drain / new process (session-active + maps = toast exemption only).
         // Targeted dirs only — do not walk all of Documents before the UI is up.
@@ -2585,6 +2611,9 @@ pub fn session_begin(app: &AppHandle) {
         if ready.len() != families.len() {
             save_session_families(app, &ready);
         }
+        // Restore may have cleared settled_names; re-seed allowlist on disk
+        // (Gidugu/emoji not in last-session list still skip Activate All).
+        seed_known_gdi_incapable_settled(app);
         session_boot_finish(&ready);
         emit_gdi_pressure_if_high(app);
         let handle = app.clone();
@@ -3046,11 +3075,24 @@ struct KnownGdiIncapableEntry {
     subsets: &'static [&'static str],
 }
 
-const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[KnownGdiIncapableEntry {
-    family: "Gidugu",
-    fs_slug: Some("gidugu"),
-    subsets: &["telugu", "latin"],
-}];
+const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[
+    KnownGdiIncapableEntry {
+        family: "Gidugu",
+        fs_slug: Some("gidugu"),
+        subsets: &["telugu", "latin"],
+    },
+    // COLR/CBDT color emoji often Add=0 on Windows GDI — Settled honesty, never fake Live.
+    KnownGdiIncapableEntry {
+        family: "Noto Color Emoji",
+        fs_slug: Some("noto-color-emoji"),
+        subsets: &["emoji"],
+    },
+    KnownGdiIncapableEntry {
+        family: "Noto Emoji",
+        fs_slug: Some("noto-emoji"),
+        subsets: &["emoji"],
+    },
+];
 
 fn known_gdi_incapable_entry(family: &str) -> Option<&'static KnownGdiIncapableEntry> {
     let key = family.trim();
@@ -3131,7 +3173,14 @@ fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
     if undersized {
         return false;
     }
-    family_session_gdi_refused(family) || family_has_complete_settled(app, family)
+    // 1.0.206: stamp Settled before first settle scan so Activate All never queues
+    // Gidugu-class / emoji allowlist faces that are already intact on disk.
+    stamp_known_incapable_disk_settled(app, family);
+    if family_has_complete_settled(app, family) {
+        note_session_gdi_refused(family);
+        return true;
+    }
+    family_session_gdi_refused(family)
 }
 
 /// Settled (disk OK, Add=0) must never equal Activated.
@@ -3757,6 +3806,40 @@ fn intent_for_family(family: &str) -> FetchIntent {
         }
     }
     infer_fetch_intent(family)
+}
+
+/// Resume / missing-store intent: stamp → planned markers → official Google catalog.
+/// Returns None when ambiguous — never blind-default to Google (wrong-pipes Fontsource).
+fn resolve_fetch_intent_from_disk(app: &AppHandle, family: &str) -> Option<FetchIntent> {
+    let family = family.trim();
+    if family.is_empty() {
+        return None;
+    }
+    let key = family.to_lowercase();
+    if let Ok(map) = bulk().intents.lock() {
+        if let Some(i) = map.get(&key) {
+            return Some(*i);
+        }
+    }
+    for dir in family_locations(app, family) {
+        migrate_download_source_stamp(&dir);
+        if let Some(i) = read_download_source(&dir) {
+            return Some(i);
+        }
+        if read_google_planned_keys(&dir).is_some() {
+            return Some(FetchIntent::Google);
+        }
+        if read_fontsource_planned_keys(&dir).is_some() {
+            return Some(FetchIntent::Fontsource);
+        }
+    }
+    // Catalog: official Google directory → google. Unknown / exclusive without
+    // stamp or planned markers → None (caller skips or uses catalog "other").
+    // Never blind-default to Google.
+    if is_official_google_family(family) {
+        return Some(FetchIntent::Google);
+    }
+    None
 }
 
 fn family_download_source_marker(dir: &Path) -> PathBuf {
@@ -5341,6 +5424,59 @@ fn install_compat_pack(client: &reqwest::blocking::Client, root: &Path, family: 
     }
 }
 
+fn is_emoji_session_family(family: &str) -> bool {
+    let t = family.trim().to_ascii_lowercase();
+    t == "noto color emoji" || t == "noto emoji"
+}
+
+/// Full color-capable TTF from noto-emoji upstream (not CSS unicode-range WOFF2,
+/// not latin-only stubs). Returns bytes written/intact count for the primary face.
+fn pull_emoji_upstream_color_ttf(
+    client: &reqwest::blocking::Client,
+    family: &str,
+    slug: &str,
+    root: &Path,
+) -> usize {
+    if !is_emoji_session_family(family) && slug != "noto-color-emoji" && slug != "noto-emoji" {
+        return 0;
+    }
+    let urls = ttf_urls(slug, "", 400, false, "emoji", 0);
+    if urls.is_empty() {
+        return 0;
+    }
+    let dest_name = if slug == "noto-color-emoji" || family.eq_ignore_ascii_case("Noto Color Emoji")
+    {
+        format!("{slug}.ttf")
+    } else {
+        format!("{slug}-400-normal.ttf")
+    };
+    let dest = root.join(&dest_name);
+    if ttf_intact(&dest) {
+        // Never treat a tiny latin stub as a working emoji face.
+        if let Ok(meta) = fs::metadata(&dest) {
+            if meta.len() < 256 * 1024 && slug == "noto-color-emoji" {
+                let _ = delete_font_file(&dest);
+            } else {
+                return 1;
+            }
+        } else {
+            return 1;
+        }
+    }
+    for url in &urls {
+        if let Some(bytes) = fetch_url_ttf(client, url) {
+            // Color emoji TTF is multi-MB; reject obvious latin stubs.
+            if slug == "noto-color-emoji" && bytes.len() < 256 * 1024 {
+                continue;
+            }
+            if write_font_file(&dest, &bytes).is_ok() && ttf_intact(&dest) {
+                return 1;
+            }
+        }
+    }
+    0
+}
+
 /// Register intact faces. For catalog-variable families, register `*-variable-*`
 /// first so Illustrator/AI can pick axes, then static instances as backup.
 fn sort_faces_var_first(files: &mut [PathBuf]) {
@@ -6486,12 +6622,29 @@ fn download_family(
 
     // Hard separation: Google Activate = Google faces only (no Fontsource fill).
     // Fontsource Activate = Fontsource only (no Google CSS2 / desktop fetch).
-    let (google_wrote, mut google_listed, mut google_var_files, mut heal) =
+    let (mut google_wrote, mut google_listed, mut google_var_files, mut heal) =
         if matches!(intent, FetchIntent::Google) {
             fetch_google_family_faces_to_dir(client, family, &slug, &root)
         } else {
             (0, Vec::new(), Vec::new(), HealStats::default())
         };
+    // 1.0.206: emoji P0 — prefer full color-capable upstream TTF (not CSS WOFF2 /
+    // unicode-range shreds). Live only if later Add>0; allowlist Settled if Add=0.
+    if matches!(intent, FetchIntent::Google) && is_emoji_session_family(family) {
+        let emoji_n = pull_emoji_upstream_color_ttf(client, family, &slug, &root);
+        google_wrote = google_wrote.saturating_add(emoji_n);
+        if emoji_n > 0 {
+            let key = if slug == "noto-color-emoji" {
+                format!("{slug}.ttf")
+            } else {
+                format!("{slug}-400-normal.ttf")
+            };
+            // Track via var_files so planned keys match on-disk name (not CSS face matrix).
+            if !google_var_files.iter().any(|k| k == &key) {
+                google_var_files.push(key);
+            }
+        }
+    }
     // If Google CSS listed faces but nothing intact landed, clear the plan — do NOT
     // Fontsource-fill on Google intent (hard separation). Repair can retry Google.
     if matches!(intent, FetchIntent::Google) && !google_listed.is_empty() && google_wrote == 0 {
@@ -6636,6 +6789,10 @@ fn download_family(
     }
     if planned > 0 {
         write_expected_faces(&root, planned);
+    }
+    // Fontsource emoji path: ensure full upstream color TTF landed (ttf_urls special-case).
+    if matches!(intent, FetchIntent::Fontsource) && is_emoji_session_family(family) {
+        wrote = wrote.saturating_add(pull_emoji_upstream_color_ttf(client, family, &slug, &root));
     }
     if needs_compat_pack(&slug) && (wrote > 0 || existing > 0) {
         install_compat_pack(client, &root, family, &slug);
@@ -8352,11 +8509,18 @@ pub fn prune_unknown_folders(app: AppHandle, keep: Vec<String>) -> Result<u32, S
     Ok(n)
 }
 
+/// Resolve Activate fetch intent for resume when the JS store row is missing.
+/// Returns "google" | "fontsource" | "local" | null (skip — never guess google).
+#[tauri::command]
+pub fn resolve_family_fetch_intent(app: AppHandle, family: String) -> Option<String> {
+    resolve_fetch_intent_from_disk(&app, &family).map(fetch_intent_label).map(|s| s.to_string())
+}
+
 #[tauri::command]
 pub fn start_google_downloads(
     app: AppHandle,
     families: Vec<String>,
-    // Parallel to `families`: "google" | "fontsource" | "local". Missing → infer.
+    // Parallel to `families`: "google" | "fontsource" | "local". Missing → disk/catalog resolve.
     intents: Option<Vec<String>>,
 ) -> Result<usize, String> {
     if families.is_empty() {
@@ -8367,6 +8531,7 @@ pub fn start_google_downloads(
         let intent = intent_list
             .get(i)
             .and_then(|s| parse_fetch_intent(s))
+            .or_else(|| resolve_fetch_intent_from_disk(&app, family))
             .unwrap_or_else(|| infer_fetch_intent(family));
         remember_fetch_intent(family, intent);
     }
@@ -10194,6 +10359,26 @@ mod install_path_tests {
             .any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
         let dest = fontsource_face_filename(&fontsource_gdi_offer_slug("Gidugu"), "latin", 400, "normal");
         assert_eq!(dest, "gidugu-400-normal.ttf");
+    }
+
+    #[test]
+    fn emoji_allowlist_and_upstream_urls_for_settled_honesty() {
+        // 1.0.206: Noto Color Emoji / Noto Emoji on GDI-incapable allowlist;
+        // full color TTF URLs prefer noto-emoji upstream (not latin stub).
+        assert!(family_known_gdi_session_incapable("Noto Color Emoji"));
+        assert!(family_known_gdi_session_incapable("Noto Emoji"));
+        assert!(is_emoji_session_family("Noto Color Emoji"));
+        assert!(is_emoji_session_family("noto emoji"));
+        assert!(!is_emoji_session_family("Nunito"));
+        let urls = ttf_urls("noto-color-emoji", "", 400, false, "emoji", 0);
+        assert!(
+            urls.iter().any(|u| u.contains("NotoColorEmoji.ttf")),
+            "noto-color-emoji must use full upstream color TTF"
+        );
+        assert!(
+            urls.iter().all(|u| !u.contains("fontsource-variable")),
+            "never WOFF2 variable pack for emoji install"
+        );
     }
 
     #[test]

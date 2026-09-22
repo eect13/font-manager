@@ -150,6 +150,7 @@ fn main() {
             activate::flush_font_cache,
             activate::save_library_file,
             activate::remove_library_file,
+            activate::resolve_family_fetch_intent,
             activate::start_google_downloads,
             activate::retry_google_downloads,
             activate::try_fontsource_gdi_offer,

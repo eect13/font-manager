@@ -173,9 +173,9 @@ function countLanes({ live, settled, google, fontsource, disk }) {
   return { live, settled, google, fontsource, disk };
 }
 
-test("1.0.205 version bump (204 feel kept)", () => {
-  assert.equal(pkg.version, "1.0.205");
-  assert.match(version, /1\.0\.205/);
+test("1.0.206 version bump (204 feel kept)", () => {
+  assert.equal(pkg.version, "1.0.206");
+  assert.match(version, /1\.0\.206/);
 });
 
 test("exclusive Activate: no GDI evict / no Remove→Add chain", () => {

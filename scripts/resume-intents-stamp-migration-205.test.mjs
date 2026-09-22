@@ -13,18 +13,19 @@ const toggleTs = readFileSync(join(root, "src/components/font-studio/activate-to
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
-test("version is 1.0.205", () => {
-  assert.equal(pkg.version, "1.0.205");
-  assert.match(version, /1\.0\.205/);
+test("version is 1.0.206", () => {
+  assert.equal(pkg.version, "1.0.206");
+  assert.match(version, /1\.0\.206/);
 });
 
 test("resumeGoogleFamilies passes parallel intents (never infer-only)", () => {
   const start = osActivate.indexOf("export async function resumeGoogleFamilies");
-  const fn = osActivate.slice(start, start + 1600);
+  const fn = osActivate.slice(start, start + 2800);
   assert.match(fn, /intents/);
   assert.match(fn, /fetchIntentFor/);
   assert.match(fn, /start_google_downloads/);
-  assert.match(fn, /families:\s*missing/);
+  assert.match(fn, /families:\s*resumeFamilies|families:\s*missing/);
+  assert.match(fn, /resolve_family_fetch_intent|GOOGLE_FONTS/);
   assert.match(fn, /intents/);
 });
 

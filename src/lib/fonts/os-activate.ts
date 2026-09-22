@@ -472,19 +472,38 @@ export async function resumeGoogleFamilies(families: string[]): Promise<void> {
     if (ready?.length) applyReadyFamilies(ready);
   }
   if (!missing.length) return;
-  // 1.0.205 P0: parallel intents (same as Activate) — never infer-only on mixed resume.
+  // 1.0.205/206: parallel intents (same as Activate). Missing store row → catalog
+  // "other" / disk stamp / planned — never blind "google" (wrong-pipes Fontsource).
   const { useFontStore } = await import("./store");
+  const { GOOGLE_FONTS } = await import("./catalog");
   const { googleFonts, localFonts } = useFontStore.getState();
   const byFamily = new Map<string, FontRecord>();
-  for (const font of [...googleFonts, ...localFonts]) {
-    byFamily.set(font.family.trim().toLowerCase(), font);
+  for (const font of [...googleFonts, ...localFonts, ...GOOGLE_FONTS]) {
+    const key = font.family.trim().toLowerCase();
+    if (!byFamily.has(key)) byFamily.set(key, font);
   }
-  const intents = missing.map((name) => {
+  const resumeFamilies: string[] = [];
+  const intents: Array<"google" | "fontsource" | "local"> = [];
+  for (const name of missing) {
     const font = byFamily.get(name.trim().toLowerCase());
-    return font ? fetchIntentFor(font) : "google";
-  });
+    if (font) {
+      resumeFamilies.push(name);
+      intents.push(fetchIntentFor(font));
+      continue;
+    }
+    const resolved = await tauriInvoke<string | null>("resolve_family_fetch_intent", {
+      family: name,
+    }).catch(() => null);
+    if (resolved === "google" || resolved === "fontsource" || resolved === "local") {
+      resumeFamilies.push(name);
+      intents.push(resolved);
+      continue;
+    }
+    // Ambiguous — skip rather than wrong-pipe Fontsource vs Google.
+  }
+  if (!resumeFamilies.length) return;
   const added = await tauriInvoke<number>("start_google_downloads", {
-    families: missing,
+    families: resumeFamilies,
     intents,
   }).catch(() => 0);
   if (added) startGooglePoll("download");

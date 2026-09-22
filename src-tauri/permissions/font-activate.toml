@@ -14,6 +14,7 @@ commands.allow = [
   "flush_font_cache",
   "save_library_file",
   "remove_library_file",
+  "resolve_family_fetch_intent",
   "start_google_downloads",
   "retry_google_downloads",
   "try_fontsource_gdi_offer",
