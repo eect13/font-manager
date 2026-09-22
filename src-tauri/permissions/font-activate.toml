@@ -20,6 +20,7 @@ commands.allow = [
   "repair_incomplete_families",
   "skip_google_failures",
   "cancel_google_downloads",
+  "drop_google_download_families",
   "pause_google_downloads",
   "resume_google_downloads",
   "google_download_progress",

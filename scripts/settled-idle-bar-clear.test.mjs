@@ -27,7 +27,9 @@ test("applyPayload empty current clears (not sticky || job.current)", () => {
 
 test("os-activate: empty-clear current + dismissDownloadBar (no sticky ||)", () => {
   assert.doesNotMatch(osActivate, /current:\s*p\.current\s*\|\|\s*job\.current/);
-  assert.match(osActivate, /current:\s*p\.current\s*\?\?\s*""/);
+  // 1.0.204: idle forces empty current (stronger than p.current ?? "").
+  assert.match(osActivate, /current:\s*active \? \(p\.current\s*\?\?\s*""\) : ""/);
+  assert.match(osActivate, /p\.current\s*\?\?\s*""/);
   assert.match(osActivate, /export function dismissDownloadBar/);
   assert.match(osActivate, /job = \{ \.\.\.EMPTY \}/);
 });
