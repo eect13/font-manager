@@ -1,3 +1,38 @@
+## Fixed in tip / 1.0.206e
+- **Soft Settled provenance (P1):** Soft Settled only when `.settled-add-zero` written after real Add=0. Scan one-shot wipes soft bare `.complete` lacking provenance (hard-emoji tip upgrade). Soft + full-face size OK + no provenance ⇒ not Incomplete, excluded from Repair (no huge TTF re-download before try-Add).
+- **Soft session refuse + Power (P2):** `note_session_gdi_refused` covers soft after Add=0; Activate All skips soft via settled/session refuse (not bare `.complete`). Power: hard Settled no-op; soft Settled = Retry Add (one try/process); tooltips aligned.
+- **Activate All modal + wave0 (P2):** Replace `window.confirm` with in-app OK=all / Cancel=visible / Abort. Enqueue visible/selected/recent as wave0 immediately; remainder after confirm. Cancel offers first-page/selection when visible=0. Soften ETA copy. ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206d
+- **Scan soft Settled (P1):** `scan_disk_families` reports `settled:true` for soft emoji with intact + size OK + `.complete` (after Add=0) via soft class / `family_may_settle_add_zero` honesty — same badge path as hard Gidugu. Does **not** auto-stamp soft on Scan / does **not** early-skip Add (Activate still try-Add first). `applyDiskStatusHonesty` picks soft Settled from Scan rows so cold boot is not “Library complete” forever.
+- **Soft allowlist SoT (P1):** Rust `SOFT_GDI_TRY_ADD_FIRST` table mirrors TS; `is_emoji_session_family` lookups the table. Tip test asserts exact family-list parity.
+- **Soft confirm Cancel (P2):** Activate All N>50 Cancel = Activate visible only (not silent full abort when copy promises a visible path).
+- **Noto Emoji stub gate (P2):** ≥256KB reject applies to outline Noto Emoji settle/download (parity with color path) so stubs cannot `.complete` after Add=0.
+- **Toast helper (P2):** `firstSettledAllowlistedFamily` includes soft; finish toast preview prefers allowlisted settle names. Hard allowlist remains Gidugu only. ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206c
+- **Emoji Activate regression (Skye/Eric):** Noto Color Emoji / Noto Emoji were on hard `KNOWN_GDI_SESSION_INCAPABLE` → boot Settled seed + Activate All skip + `family_early_skip_known_incapable` never tried Add. Fix: hard allowlist = **Gidugu only**. Soft emoji try Add first; Settled + toast only after Add=0 (`family_may_settle_add_zero` / `stamp_settle_after_add_zero`). Activate All queues catalog (~2099) minus hard allowlist only. Completeness P0 kept (upstream color TTF, ≥256KB reject stubs, no fake Live). ProductVersion stays 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206b
+- **Completeness P0 (standing rule):** Noto Color Emoji Activate skips Google CSS latin/unicode-range stubs — planned = full upstream `NotoColorEmoji.ttf` only (reject <256KB). `pick_subsets` prefers emoji like CJK. TS `fontsourceTtfFiles` mirror matches. Live still Add>0 only; Settled honesty unchanged for Gidugu + emoji.
+- **UI Activate All pack-blocker:** hydrate seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet`; `activateSet` / `setActivatedMany` / Activate visible also skip `isKnownGdiSessionIncapable` so Gidugu (hard) never queues pending if settled set is not hydrated yet. Soft emoji queue (206c). `applyDiskStatusHonesty` re-merges allowlist after disk replace. ProductVersion stays 1.0.206; Rust boot seed from 206 kept.
+
+## Fixed in tip / 1.0.206
+- **Seed allowlist Settled on boot:** `seed_known_gdi_incapable_settled` + early-skip stamps `.complete` / session-refused for intact Gidugu-class (hard allowlist) before first settle scan so Activate All never queues Gidugu. Soft emoji since 206c.
+- **Resume intent when store row missing:** never default `"google"`. Catalog lookup + `resolve_family_fetch_intent` (stamp → planned → official Google); ambiguous families skipped — never wrong-pipe Fontsource vs Google.
+- **Emoji P0:** `pull_emoji_upstream_color_ttf` prefers noto-emoji upstream full color TTF (reject latin stubs / no WOFF2). Soft try-Add (206c) — Live only if Add>0; else honest Settled. Not hard-allowlisted.
+- **CJK:** existing chinese-*/japanese/korean subset preference + tiny latin remnant purge / replace policy kept (incomplete ≠ Done).
+
+## Fixed in tip / 1.0.205
+- Resume + stamp migration: `resumeGoogleFamilies` passes parallel `intents` (same as Activate — never infer-only on mixed resume). Boot/scan stamps `.download-source` only when `.google-planned` is a usable key list, else fontsource when `.fontsource-planned` / latin-subset names dominate; ambiguous folders stay unset. Register still uses `face_allowed_for_register`.
+- Activate All speed (honesty kept): skip Settled / known Add=0 allowlist; already-Live `loaded()` this process short-circuits re-walk; visible+selected+recent first with remainder in waves (~40) + soft confirm when N>50; register progress owner separate from download. No fake Live / no skip Add after Quit / no FR_PRIVATE / no GDI quota raise.
+- Pending-off timeout: if unload not confirmed in ~8s (Word-locked), keep Live honest and surface “still unloading / retry” — never fake Off.
+- KEEP 204 feel + Google↔Fontsource hard separation.
+
+## Fixed in tip / 1.0.204
+- FontBase activate/deactivate feel: no exclusive Remove→Add thrash, pending-off, progress owners, count lanes, one Live per family, drop download on deactivate, visible-first restore.
+- Google↔Fontsource hard separation: Activate intent `google` | `fontsource` | `local`; Google path never Fontsource-fills; Fontsource path never Google CSS2/desktop fetch; `.download-source` + planned-key register filter; preview CSS no dual Google+Fontsource hrefs.
+
 # Font Manager — known issues / follow-ups
 
 ## Fixed in tip / 1.0.203
