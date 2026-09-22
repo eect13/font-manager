@@ -8194,6 +8194,44 @@ pub fn cancel_google_downloads() -> Result<(), String> {
     Ok(())
 }
 
+/// 1.0.204: Deactivate while download running — drop only those families from the queue.
+#[tauri::command]
+pub fn drop_google_download_families(families: Vec<String>) -> Result<u32, String> {
+    let state = bulk();
+    let keys: std::collections::HashSet<String> = families
+        .iter()
+        .map(|f| f.trim().to_lowercase())
+        .filter(|k| !k.is_empty())
+        .collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let mut dropped = 0u32;
+    if let Ok(mut pending) = state.pending.lock() {
+        let before = pending.len();
+        pending.retain(|f| !keys.contains(&f.trim().to_lowercase()));
+        dropped = dropped.saturating_add((before - pending.len()) as u32);
+    }
+    if let Ok(mut queued) = state.queued.lock() {
+        for key in &keys {
+            if queued.remove(key) {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+    }
+    if let Ok(mut denied) = state.denied.lock() {
+        for key in &keys {
+            denied.insert(key.clone());
+        }
+    }
+    if let Ok(mut p) = state.progress.lock() {
+        if p.total > dropped {
+            p.total = p.total.saturating_sub(dropped);
+        }
+    }
+    Ok(dropped)
+}
+
 #[tauri::command]
 pub fn google_download_progress() -> GoogleDlProgress {
     bulk()

@@ -53,8 +53,10 @@ export function activateSet(ids: string[], label: string) {
 
 export function deactivateSet(ids: string[], label: string) {
   if (!ids.length) return;
-  const { activatedSet, pendingSet } = useFontStore.getState();
-  const any = ids.some((id) => activatedSet.has(id) || pendingSet.has(id));
+  const { activatedSet, pendingSet, pendingDeactivateSet } = useFontStore.getState();
+  const any = ids.some(
+    (id) => activatedSet.has(id) || pendingSet.has(id) || pendingDeactivateSet.has(id),
+  );
   if (!any) {
     toast.message(`Nothing on in ${label}`);
     return;
@@ -139,10 +141,12 @@ export function ScanDiskMenuItem() {
           const corrupt = rows.reduce((n, r) => n + (r.corrupt || 0), 0);
           const incomplete = rows.filter((r) => r.incomplete && !r.settled).map((r) => r.name);
           const settled = rows.filter((r) => r.settled).map((r) => r.name);
-          const catalog = googleFonts.length;
+          const gCount = googleFonts.filter(isGoogleCatalog).length;
+          const fsCount = googleFonts.filter(isFontsourceOnly).length;
           const live = useFontStore.getState().activated.length;
+          const diskN = useFontStore.getState().diskFamilies.length;
           const baseBits = [
-            `Live ${live.toLocaleString()} · Settled ${settled.length.toLocaleString()} · Library ${catalog.toLocaleString()}`,
+            `Live ${live.toLocaleString()} · Settled ${settled.length.toLocaleString()} · Google ${gCount.toLocaleString()} · Fontsource ${fsCount.toLocaleString()} · On disk ${diskN.toLocaleString()}`,
             `${files.toLocaleString()} intact TTF/OTF (${(bytes / (1024 * 1024)).toFixed(1)} MB)`,
             corrupt
               ? `${corrupt.toLocaleString()} corrupt (not TTF; WOFF is preview-only)`
@@ -234,6 +238,7 @@ function catalogMenuStats(
   fonts: FontRecord[],
   activatedSet: Set<string>,
   pendingSet: Set<string>,
+  pendingDeactivateSet: Set<string>,
   filter?: (font: FontRecord) => boolean,
 ) {
   let count = 0;
@@ -242,7 +247,12 @@ function catalogMenuStats(
   for (const font of fonts) {
     if (filter && !filter(font)) continue;
     count += 1;
-    if (activatedSet.has(font.id) || pendingSet.has(font.id)) anyOn = true;
+    if (
+      activatedSet.has(font.id) ||
+      pendingSet.has(font.id) ||
+      pendingDeactivateSet.has(font.id)
+    )
+      anyOn = true;
     else remaining += 1;
   }
   return { count, remaining, anyOn };
@@ -256,7 +266,9 @@ function CatalogActivateMenuItem({
   filter?: (font: FontRecord) => boolean;
 }) {
   const { count, remaining, anyOn } = useFontStore(
-    useShallow((s) => catalogMenuStats(s.googleFonts, s.activatedSet, s.pendingSet, filter)),
+    useShallow((s) =>
+      catalogMenuStats(s.googleFonts, s.activatedSet, s.pendingSet, s.pendingDeactivateSet, filter),
+    ),
   );
   function ids() {
     const list = useFontStore.getState().googleFonts;
