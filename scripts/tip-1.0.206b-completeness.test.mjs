@@ -41,7 +41,7 @@ test("Completeness P0: emoji full upstream — never CSS/latin stubs for color",
   assert.match(activateRs, /NotoColorEmoji\.ttf/);
   assert.match(activateRs, /bytes\.len\(\) < 256 \* 1024/);
   assert.match(activateRs, /pick_subsets_prefers_emoji_over_latin/);
-  assert.match(osActivate, /colorEmoji && data\.byteLength < 256 \* 1024/);
+  assert.match(osActivate, /softEmojiStubGate && data\.byteLength < 256 \* 1024/);
   assert.match(osActivate, /NotoColorEmoji\.ttf/);
 });
 

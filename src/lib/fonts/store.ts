@@ -799,7 +799,9 @@ export const useFontStore = create<FontState>()(
             }
             if (row.settled) settledNames.push(n);
           }
-          // Keep UI allowlist seed across disk honesty replace (Activate All skip).
+          // Hard allowlist seed across disk honesty replace (Activate All skip).
+          // Soft emoji Settled comes from Scan rows (`settled:true` when `.complete` after Add=0) —
+          // never always-seed soft (would skip try-Add / cold-boot "Library complete" lie).
           for (const e of KNOWN_GDI_SESSION_INCAPABLE) settledNames.push(e.family);
           const googleFonts = s.googleFonts.map((font) => {
             const onDiskVf = vf.has(font.family.trim().toLowerCase());

@@ -1,7 +1,8 @@
 /**
- * Mirror of Rust `KNOWN_GDI_SESSION_INCAPABLE` in activate.rs.
+ * Mirror of Rust `KNOWN_GDI_SESSION_INCAPABLE` + `SOFT_GDI_TRY_ADD_FIRST` in activate.rs.
  * Hard allowlist = true Add=0 class (Gidugu): Settled seed + Activate All skip + early-skip.
  * Soft emoji (`SOFT_GDI_TRY_ADD_FIRST`) try Add first; Settled only after Add=0 — never hard-skip.
+ * Tip tests assert TS soft family names === Rust `SOFT_GDI_TRY_ADD_FIRST` table (exact parity).
  */
 export type KnownGdiIncapableEntry = {
   /** Display family name (case-insensitive match). */
@@ -19,7 +20,8 @@ export const KNOWN_GDI_SESSION_INCAPABLE: readonly KnownGdiIncapableEntry[] = [
 
 /**
  * Soft: try Add first; Settled + calm toast only after Add=0.
- * Not seeded / not Activate-All-skipped / not early-skipped. Mirror Rust `is_emoji_session_family`.
+ * Not boot-seeded / not Activate-All-skipped / not early-skipped.
+ * Keep in sync with Rust `SOFT_GDI_TRY_ADD_FIRST` (same names + order).
  */
 export const SOFT_GDI_TRY_ADD_FIRST: readonly KnownGdiIncapableEntry[] = [
   { family: "Noto Color Emoji", fsSlug: "noto-color-emoji", subsets: ["emoji"] },
@@ -38,10 +40,13 @@ export function isSoftGdiTryAddFirst(family: string): boolean {
   return SOFT_GDI_TRY_ADD_FIRST.some((e) => e.family.toLowerCase() === key);
 }
 
-/** First settled name on the known-GDI-incapable allowlist (Settled toast / honesty). */
+/**
+ * First settled name on hard OR soft settle-capable lists (toast preview honesty).
+ * Soft included so preview cannot prefer hard-only and lie about emoji Settled.
+ */
 export function firstSettledAllowlistedFamily(settledNames: readonly string[]): string | undefined {
   for (const n of settledNames) {
-    if (isKnownGdiSessionIncapable(n)) return n.trim();
+    if (isKnownGdiSessionIncapable(n) || isSoftGdiTryAddFirst(n)) return n.trim();
   }
   return undefined;
 }

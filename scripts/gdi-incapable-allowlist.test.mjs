@@ -31,8 +31,9 @@ test("allowlist behavioral: mirror helpers + calm Settled toast (no FS download)
   assert.match(mirror, /export function firstSettledAllowlistedFamily/);
   assert.match(mirror, /export function isKnownGdiSessionIncapable/);
   assert.match(mirror, /family:\s*"Gidugu"/);
-  // 1.0.188: toast no longer wires Try Fontsource / firstSettledAllowlistedFamily.
-  assert.doesNotMatch(osActivate, /firstSettledAllowlistedFamily\(settledNames\)/);
+  assert.match(mirror, /isSoftGdiTryAddFirst/);
+  // 1.0.188: no Try Fontsource download. 1.0.206d: soft-aware preview wired (no FS offer).
+  assert.match(osActivate, /firstSettledAllowlistedFamily\(settledNames\)/);
   assert.doesNotMatch(osActivate, /label: "Try Fontsource"/);
   assert.match(osActivate, /settled > 0 \? toast\.message : toast\.success/);
 });

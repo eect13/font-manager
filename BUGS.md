@@ -1,3 +1,10 @@
+## Fixed in tip / 1.0.206d
+- **Scan soft Settled (P1):** `scan_disk_families` reports `settled:true` for soft emoji with intact + size OK + `.complete` (after Add=0) via soft class / `family_may_settle_add_zero` honesty — same badge path as hard Gidugu. Does **not** auto-stamp soft on Scan / does **not** early-skip Add (Activate still try-Add first). `applyDiskStatusHonesty` picks soft Settled from Scan rows so cold boot is not “Library complete” forever.
+- **Soft allowlist SoT (P1):** Rust `SOFT_GDI_TRY_ADD_FIRST` table mirrors TS; `is_emoji_session_family` lookups the table. Tip test asserts exact family-list parity.
+- **Soft confirm Cancel (P2):** Activate All N>50 Cancel = Activate visible only (not silent full abort when copy promises a visible path).
+- **Noto Emoji stub gate (P2):** ≥256KB reject applies to outline Noto Emoji settle/download (parity with color path) so stubs cannot `.complete` after Add=0.
+- **Toast helper (P2):** `firstSettledAllowlistedFamily` includes soft; finish toast preview prefers allowlisted settle names. Hard allowlist remains Gidugu only. ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206c
 - **Emoji Activate regression (Skye/Eric):** Noto Color Emoji / Noto Emoji were on hard `KNOWN_GDI_SESSION_INCAPABLE` → boot Settled seed + Activate All skip + `family_early_skip_known_incapable` never tried Add. Fix: hard allowlist = **Gidugu only**. Soft emoji try Add first; Settled + toast only after Add=0 (`family_may_settle_add_zero` / `stamp_settle_after_add_zero`). Activate All queues catalog (~2099) minus hard allowlist only. Completeness P0 kept (upstream color TTF, ≥256KB reject stubs, no fake Live). ProductVersion stays 1.0.206. No tip-install/pack.
 

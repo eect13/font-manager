@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "./catalog";
+import { firstSettledAllowlistedFamily } from "./gdi-incapable";
 import { idbGet } from "./idb";
 import type { FontRecord } from "./types";
 
@@ -159,7 +160,13 @@ function notifyDownloadResult(
       const liveCount = activated.length || live;
       const settledN = Math.max(settled, settledFamilies.length);
       const title = `Live ${liveCount.toLocaleString()} · Settled ${settledN.toLocaleString()} · Google ${gN.toLocaleString()} · Fontsource ${fsN.toLocaleString()} · Disk ${diskFamilies.length.toLocaleString()}`;
-      const settledPreview = settledNames.slice(0, 3).join(", ");
+      // Prefer hard/soft settle-capable name so toast preview cannot hard-only-lie.
+      const allowlisted = firstSettledAllowlistedFamily(settledNames);
+      const settledPreview = allowlisted
+        ? [allowlisted, ...settledNames.filter((n) => n.toLowerCase() !== allowlisted.toLowerCase())]
+            .slice(0, 3)
+            .join(", ")
+        : settledNames.slice(0, 3).join(", ");
       // 1.0.188: no Try Fontsource download for allowlisted Settled — calm Open folder only.
       const chrome = settled > 0 ? toast.message : toast.success;
       chrome(title, {
@@ -1010,12 +1017,14 @@ async function googleCssTtfFiles(family: string, slug: string) {
 async function fontsourceTtfFiles(font: FontRecord, slug: string) {
   const emoji = /emoji/i.test(font.family);
   const colorEmoji = slug === "noto-color-emoji" || /noto color emoji/i.test(font.family);
+  const outlineEmoji = slug === "noto-emoji" || /^noto emoji$/i.test(font.family.trim());
+  const softEmojiStubGate = colorEmoji || outlineEmoji;
   const weights = emoji
     ? [400]
     : Array.from(new Set(font.weights.length ? font.weights : [400])).sort((a, b) => a - b);
   const styles: Array<"normal" | "italic"> = emoji ? ["normal"] : font.italic ? ["normal", "italic"] : ["normal"];
   // Completeness P0: emoji = script subset / upstream color TTF — never force latin.
-  const subsets = emoji ? (colorEmoji ? ["emoji"] : await fontsourceSubsets(slug)) : await fontsourceSubsets(slug);
+  const subsets = emoji ? (colorEmoji || outlineEmoji ? ["emoji"] : await fontsourceSubsets(slug)) : await fontsourceSubsets(slug);
   const files: { fileName: string; data: Uint8Array }[] = [];
   for (const subset of subsets) {
     for (const weight of weights) {
@@ -1032,12 +1041,18 @@ async function fontsourceTtfFiles(font: FontRecord, slug: string) {
             "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoColorEmoji.ttf",
             "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoColorEmoji.ttf",
           );
+        } else if (outlineEmoji && weight === 400 && style === "normal") {
+          urls.length = 0;
+          urls.push(
+            "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/fonts/NotoEmoji-Regular.ttf",
+            "https://github.com/googlefonts/noto-emoji/raw/refs/heads/main/fonts/NotoEmoji-Regular.ttf",
+          );
         }
         let data: Uint8Array | null = null;
         for (const url of urls) {
           data = await fetchBytes(url);
-          // Color emoji TTF is multi-MB; reject obvious latin stubs (<256KB).
-          if (data && colorEmoji && data.byteLength < 256 * 1024) {
+          // Soft emoji TTFs are large; reject obvious latin stubs (<256KB) — color + outline.
+          if (data && softEmojiStubGate && data.byteLength < 256 * 1024) {
             data = null;
             continue;
           }

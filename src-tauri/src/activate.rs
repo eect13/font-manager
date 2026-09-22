@@ -1534,7 +1534,8 @@ fn stamp_known_incapable_disk_settled(app: &AppHandle, family: &str) {
 }
 
 /// After a real Add attempt returned 0: Settled honesty for hard allowlist OR soft emoji.
-/// Never used for boot seed / early-skip / Scan auto-settle (those stay Gidugu-hard only).
+/// Boot seed / early-skip stay Gidugu-hard only. Scan reports soft Settled when `.complete`
+/// already exists (no auto-stamp on Scan — Activate still try-Add first).
 fn stamp_settle_after_add_zero(app: &AppHandle, family: &str) {
     if family_known_gdi_session_incapable(family) {
         stamp_known_incapable_disk_settled(app, family);
@@ -1548,6 +1549,18 @@ fn stamp_settle_after_add_zero(app: &AppHandle, family: &str) {
     }
 }
 
+fn soft_emoji_full_face_ok(dir: &Path, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return true;
+    }
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    // Soft emoji (color + outline): never settle a latin/CSS stub as "works".
+    files.iter().any(|p| {
+        ttf_intact(p) && fs::metadata(p).map(|m| m.len() >= 256 * 1024).unwrap_or(false)
+    })
+}
+
 fn stamp_soft_settle_dir_after_add_zero(dir: &Path, family: &str) {
     if !family_soft_try_add_then_settle(family) {
         return;
@@ -1555,17 +1568,8 @@ fn stamp_soft_settle_dir_after_add_zero(dir: &Path, family: &str) {
     if !dir_has_intact(dir) {
         return;
     }
-    // Color emoji: never settle a latin/CSS stub as "works".
-    if is_noto_color_emoji_family(family, &slug_family(family)) {
-        let mut files = Vec::new();
-        walk_font_files(dir, &mut files);
-        let ok = files.iter().any(|p| {
-            ttf_intact(p)
-                && fs::metadata(p).map(|m| m.len() >= 256 * 1024).unwrap_or(false)
-        });
-        if !ok {
-            return;
-        }
+    if !soft_emoji_full_face_ok(dir, family) {
+        return;
     }
     if read_google_planned_keys(dir).is_none() {
         let mut files = Vec::new();
@@ -3139,7 +3143,7 @@ struct KnownGdiIncapableEntry {
 }
 
 /// Hard allowlist only: true Add=0 class (Gidugu). Seed Settled + early-skip + Activate All skip.
-/// Soft emoji (`is_emoji_session_family`) try Add first; Settled only after Add=0 — never hard-skip.
+/// Soft emoji (`SOFT_GDI_TRY_ADD_FIRST`) try Add first; Settled only after Add=0 — never hard-skip.
 const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[
     KnownGdiIncapableEntry {
         family: "Gidugu",
@@ -3162,9 +3166,34 @@ fn family_known_gdi_session_incapable(family: &str) -> bool {
     known_gdi_incapable_entry(family).is_some()
 }
 
+/// Soft emoji allowlist — try Add first; Settled only after Add=0.
+/// Mirror of TS `SOFT_GDI_TRY_ADD_FIRST` (same shape as hard table). Tip tests assert parity.
+const SOFT_GDI_TRY_ADD_FIRST: &[KnownGdiIncapableEntry] = &[
+    KnownGdiIncapableEntry {
+        family: "Noto Color Emoji",
+        fs_slug: Some("noto-color-emoji"),
+        subsets: &["emoji"],
+    },
+    KnownGdiIncapableEntry {
+        family: "Noto Emoji",
+        fs_slug: Some("noto-emoji"),
+        subsets: &["emoji"],
+    },
+];
+
+fn soft_gdi_try_add_entry(family: &str) -> Option<&'static KnownGdiIncapableEntry> {
+    let key = family.trim();
+    if key.is_empty() {
+        return None;
+    }
+    SOFT_GDI_TRY_ADD_FIRST
+        .iter()
+        .find(|e| e.family.eq_ignore_ascii_case(key))
+}
+
 /// Soft (emoji): try Add first; Settled honesty only after Add=0 — never boot-seed / early-skip.
 fn family_soft_try_add_then_settle(family: &str) -> bool {
-    is_emoji_session_family(family)
+    soft_gdi_try_add_entry(family).is_some()
 }
 
 /// Hard allowlist OR soft emoji after an Add attempt — Settled / toast-exempt, never fake Live.
@@ -5497,8 +5526,8 @@ fn install_compat_pack(client: &reqwest::blocking::Client, root: &Path, family: 
 }
 
 fn is_emoji_session_family(family: &str) -> bool {
-    let t = family.trim().to_ascii_lowercase();
-    t == "noto color emoji" || t == "noto emoji"
+    // Single source with `SOFT_GDI_TRY_ADD_FIRST` (mirrored in TS).
+    soft_gdi_try_add_entry(family).is_some()
 }
 
 /// Noto Color Emoji only — multi-MB upstream color TTF; never Google CSS latin stubs.
@@ -5528,10 +5557,13 @@ fn pull_emoji_upstream_color_ttf(
         format!("{slug}-400-normal.ttf")
     };
     let dest = root.join(&dest_name);
+    let emoji_stub_gate = slug == "noto-color-emoji"
+        || slug == "noto-emoji"
+        || is_emoji_session_family(family);
     if ttf_intact(&dest) {
-        // Never treat a tiny latin stub as a working emoji face.
+        // Never treat a tiny latin stub as a working emoji face (color + outline).
         if let Ok(meta) = fs::metadata(&dest) {
-            if meta.len() < 256 * 1024 && slug == "noto-color-emoji" {
+            if meta.len() < 256 * 1024 && emoji_stub_gate {
                 let _ = delete_font_file(&dest);
             } else {
                 return 1;
@@ -5542,8 +5574,8 @@ fn pull_emoji_upstream_color_ttf(
     }
     for url in &urls {
         if let Some(bytes) = fetch_url_ttf(client, url) {
-            // Color emoji TTF is multi-MB; reject obvious latin stubs.
-            if slug == "noto-color-emoji" && bytes.len() < 256 * 1024 {
+            // Soft emoji TTFs are large; reject obvious latin/CSS stubs (≥256KB gate).
+            if emoji_stub_gate && bytes.len() < 256 * 1024 {
                 continue;
             }
             if write_font_file(&dest, &bytes).is_ok() && ttf_intact(&dest) {
@@ -8539,11 +8571,18 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
         let missing_variable =
             catalog_variable_expects_public_vf(&name) && !has_variable && intact > 0;
         let undersized = dir_has_undersized_google_static(dir, &name);
-        let settled = family_disk_settled_known_gdi_incapable(
-            family_known_gdi_session_incapable(&name),
-            intact > 0,
-            undersized,
-        );
+        // Hard Gidugu: intact full-size ⇒ Settled (may stamp `.complete` above).
+        // Soft emoji: Settled only when prior Add=0 left `.complete` + intact + size OK —
+        // never auto-stamp soft on Scan (Activate still try-Add first).
+        let settled = if family_known_gdi_session_incapable(&name) {
+            family_disk_settled_known_gdi_incapable(true, intact > 0, undersized)
+        } else if family_soft_try_add_then_settle(&name) {
+            has_complete
+                && soft_emoji_full_face_ok(dir, &name)
+                && family_disk_settled_known_gdi_incapable(true, intact > 0, undersized)
+        } else {
+            false
+        };
         // Settled known-incapable: never Incomplete / Repair-1 (calm disk OK).
         let incomplete = if settled {
             false
@@ -10462,8 +10501,12 @@ mod install_path_tests {
 
     #[test]
     fn emoji_allowlist_and_upstream_urls_for_settled_honesty() {
-        // 1.0.206c: emoji soft try-Add-first — NOT hard allowlist (Gidugu-only).
-        // full color TTF URLs prefer noto-emoji upstream (not latin stub).
+        // 1.0.206c/d: emoji soft try-Add-first — NOT hard allowlist (Gidugu-only).
+        // Soft table SOFT_GDI_TRY_ADD_FIRST is the single Rust source (TS mirror).
+        assert!(!SOFT_GDI_TRY_ADD_FIRST.is_empty());
+        assert_eq!(SOFT_GDI_TRY_ADD_FIRST.len(), 2);
+        assert!(SOFT_GDI_TRY_ADD_FIRST.iter().any(|e| e.family == "Noto Color Emoji"));
+        assert!(SOFT_GDI_TRY_ADD_FIRST.iter().any(|e| e.family == "Noto Emoji"));
         assert!(!family_known_gdi_session_incapable("Noto Color Emoji"));
         assert!(!family_known_gdi_session_incapable("Noto Emoji"));
         assert!(family_soft_try_add_then_settle("Noto Color Emoji"));

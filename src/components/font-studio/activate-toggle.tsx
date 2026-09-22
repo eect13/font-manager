@@ -48,7 +48,7 @@ export function activateSet(ids: string[], label: string) {
     return false;
   }
 
-  // Soft confirm when bulk N > ~50 — warn minutes / offer Activate visible.
+  // Soft confirm when bulk N > ~50 — OK = all; Cancel = Activate visible only (not full abort).
   if (usable.length > 50) {
     const vis = visibleFamilySet();
     const visibleIds = usable.filter((id) => {
@@ -59,13 +59,20 @@ export function activateSet(ids: string[], label: string) {
     const ok = window.confirm(
       `Activate ${usable.length.toLocaleString()} families in ${label}?\n\n` +
         `This can take ~${minutes}+ minutes. Word/Adobe stay honest (Add>0 only).\n\n` +
-        `OK = Activate all ${usable.length.toLocaleString()}\n` +
-        `Cancel = abort` +
+        `OK = Activate all ${usable.length.toLocaleString()}` +
         (visibleIds.length
-          ? `\n\nTip: ${visibleIds.length.toLocaleString()} are visible now — use “Activate visible” from the menu for a faster pass.`
-          : ""),
+          ? `\nCancel = Activate visible only (${visibleIds.length.toLocaleString()})`
+          : `\nCancel = abort`),
     );
-    if (!ok) return false;
+    if (!ok) {
+      // Tip promises a visible path — Cancel must not silently abort the whole bulk.
+      if (visibleIds.length) {
+        const orderedVis = orderActivateIds(visibleIds, state);
+        void activateInWaves(orderedVis, `${label} (visible)`);
+        return true;
+      }
+      return false;
+    }
   }
 
   // Visible + selected + recent first; remainder background (progressive Live early).

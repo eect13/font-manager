@@ -47,7 +47,7 @@ test("Settled card has calm badge only — no Fontsource download affordance", (
 test("finish toast Settled is calm + Open folder (no Try Fontsource download)", () => {
   assert.match(osActivate, /const chrome = settled > 0 \? toast\.message : toast\.success/);
   assert.doesNotMatch(osActivate, /label: "Try Fontsource"/);
-  assert.doesNotMatch(osActivate, /firstSettledAllowlistedFamily\(settledNames\)/);
+  assert.match(osActivate, /firstSettledAllowlistedFamily\(settledNames\)/);
   assert.match(osActivate, /label: "Open folder"/);
   // Fail path stays error; Settled must not use success chrome when settledNames present.
   assert.match(osActivate, /toast\.error\(/);
