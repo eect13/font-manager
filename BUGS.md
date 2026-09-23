@@ -1,3 +1,9 @@
+## Fixed in tip / 1.0.206o
+- **Cancel-label preferBuckets (P3 leftover):** when `visibleIds.length > 0`, Cancel-label path called `orderActivateIds(visibleIds, state)` without buckets → second `preferBuckets` / `visibleFamilySet`. Now passes shared `buckets` so Cancel-label reuses the single Activate All preferBuckets.
+- **Docs:** README tip/1.0.206l historical prefer membership no longer scramble-lists “visible + selected + favorites…” — aligned to `selected → favorites → viewport → first-page → recent`.
+- **Kept:** 206n tip hygiene + bulk confirm visibleIds reuse + wave0 comment order; standing locks (Live=Add>0; Settled skip; Gidugu-hard; soft emoji try-Add; Google↔FS; no parallel Add / FR_PRIVATE / GDI quota / fake Live). Compact density still OOS.
+- **Deferred (still):** compact density (Eric skipped). ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206n
 - **Tip hygiene (Skye WITHDREW 206m):** `tip-1.0.206h` / `tip-1.0.206i` no longer soft-pass on “Deferred P1 (landed 1.0.206l)” — assert session restore prefer **landed 206l**. Progressive restore BUGS line says Landed (not Deferred P1).
 - **Bulk confirm opt:** reuse `buckets.visibleIds` (no second `visibleFamilySet` / visibleIds pass on Activate All confirm path).
