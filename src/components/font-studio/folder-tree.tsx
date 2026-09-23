@@ -282,7 +282,7 @@ function GroupTree({
               {pendingImpact.localFontIds.length === 1 ? "" : "s"} from Documents
             </label>
           ) : null}
-          <div className="flex justify-end gap-2">
+          <div className="fm-dialog-footer">
             <Button type="button" variant="ghost" onClick={() => setPendingDelete(null)}>
               Cancel
             </Button>
