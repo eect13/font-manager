@@ -149,7 +149,7 @@ test("Activate All prefer includes favorites; chunk+yield; no parallel Add path"
   assert.match(activateToggle, /ACTIVATE_WAVE|activateInWaves/);
   assert.match(activateToggle, /activateQueueIds/);
   assert.doesNotMatch(activateToggle, /Worker|Atomics|parallelAdd|AddFontResourceEx/);
-  assert.match(confirmDlg, /visible\/selected\/favorites\/recent/);
+  assert.match(confirmDlg, /selected\/favorites\/visible\/first-page\/recent/);
 });
 
 test("safe throughput docs: prep/skip only — no parallel GDI / FR_PRIVATE / quota raise", () => {

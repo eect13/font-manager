@@ -52,8 +52,10 @@ export function activateSet(ids: string[], label: string) {
     return false;
   }
 
-  const ordered = orderActivateIds(usable, state);
-  const { prefer, remainder } = splitPreferRemainder(ordered, state);
+  // 1.0.206m: one preferBuckets (visible + first-page) per Activate All.
+  const buckets = preferBuckets(usable, state);
+  const ordered = orderActivateIds(usable, state, buckets);
+  const { prefer, remainder } = splitPreferRemainder(ordered, state, buckets);
 
   // Soft confirm when bulk N > ~50 — wave0 (prefer) immediately; remainder after in-app modal.
   if (usable.length > 50) {
@@ -164,11 +166,11 @@ function scopeFirstPageIds(
   return out;
 }
 
-/** Prefer waves (1.0.206l): selected → favorites → viewport → first-page → recent → remainder. */
-function orderActivateIds(
+/** Visible + first-page buckets for prefer waves (one call per Activate All). */
+function preferBuckets(
   ids: string[],
   state: ReturnType<typeof useFontStore.getState>,
-): string[] {
+): { visibleIds: string[]; firstPageIds: string[] } {
   const local = state.localFonts;
   const google = state.googleFonts;
   const byId = new Map<string, FontRecord>();
@@ -179,7 +181,16 @@ function orderActivateIds(
     const font = byId.get(id);
     if (font && vis.has(font.family.trim().toLowerCase())) visibleIds.push(id);
   }
-  const firstPageIds = scopeFirstPageIds(ids, state);
+  return { visibleIds, firstPageIds: scopeFirstPageIds(ids, state) };
+}
+
+/** Prefer waves (1.0.206l): selected → favorites → viewport → first-page → recent → remainder. */
+function orderActivateIds(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+  buckets?: { visibleIds: string[]; firstPageIds: string[] },
+): string[] {
+  const { visibleIds, firstPageIds } = buckets ?? preferBuckets(ids, state);
   return orderPreferKeys(ids, {
     selected: state.selectedId,
     favorites: state.favorites,
@@ -193,22 +204,14 @@ function orderActivateIds(
 function splitPreferRemainder(
   ids: string[],
   state: ReturnType<typeof useFontStore.getState>,
+  buckets?: { visibleIds: string[]; firstPageIds: string[] },
 ): { prefer: string[]; remainder: string[] } {
-  const local = state.localFonts;
-  const google = state.googleFonts;
-  const byId = new Map<string, FontRecord>();
-  for (const f of [...local, ...google]) byId.set(f.id, f);
-  const vis = visibleFamilySet();
-  const visibleIds: string[] = [];
-  for (const id of ids) {
-    const font = byId.get(id);
-    if (font && vis.has(font.family.trim().toLowerCase())) visibleIds.push(id);
-  }
+  const { visibleIds, firstPageIds } = buckets ?? preferBuckets(ids, state);
   return splitPreferRemainderIds(ids, {
     selectedId: state.selectedId,
     favoriteIds: state.favorites,
     visibleIds,
-    firstPageIds: scopeFirstPageIds(ids, state),
+    firstPageIds,
     recentIds: state.recentIds,
   });
 }
@@ -244,8 +247,8 @@ async function activateInWaves(ids: string[], label: string) {
       description: persisted
         ? room < 20 * 1024 * 1024
           ? "Persistent storage on, disk space is low — large families may fail."
-          : "Persistent storage on. Visible/favorites/recent first; Settled skipped. Files stay in Documents."
-        : "Visible/favorites/recent first; Settled skipped. Files go to Documents.",
+          : "Persistent storage on. Selected/favorites/visible/first-page/recent first; Settled skipped. Files stay in Documents."
+        : "Selected/favorites/visible/first-page/recent first; Settled skipped. Files go to Documents.",
     },
   );
 }

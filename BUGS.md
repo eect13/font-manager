@@ -1,3 +1,9 @@
+## Fixed in tip / 1.0.206m
+- **Prefer copy honesty (Skye WITHDREW APPROVE FOR PACK):** Confirm dialog + Activate wave0 toast listed visible/selected/favorites/recent (or Visible/favorites/recent) without **first-page** — soft-lie when wave0 is first-page-only. Copy now includes selected/favorites/visible/first-page/recent. Tip asserts lock honest strings.
+- **preferBuckets (nit):** single visible + `scopeFirstPageIds` call per Activate All (shared into order + split).
+- **Kept:** 206l prefer-order; no parallel Add; Live=Add>0; Gidugu-hard; Cancel wasRemove stack.
+- **Deferred (still):** compact density (Eric skipped). ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206l
 - **Session restore prefer favorites + first-page (P1):** Cold-boot register order is selected → favorites → viewport-visible → first-page (current library scope, not only mounted viewport) → recent(~24) → remainder via shared `prefer-order.mjs`. Tip asserts favorites + first-page ids in early wave ahead of bulk.
 - **Safe Activate All throughput (P1 — NOT parallel GDI):** Wave0 prefer includes favorites (+ visible/selected/first-page/recent); keep skip Live/Settled/hard Gidugu; chunk+yield UI; prep parallelism (disk walk / gdi-maps copy) unchanged — **no** parallel `AddFontResourceEx`, **no** GDI quota raise, **no** FR_PRIVATE, **no** fake Live. Expected wall-clock improvement is prep/skip, not FontBase-matching parallel Add. Tip asserts prefer includes favorites; Settled/hard never queued; no new parallel-Add path.
@@ -7,24 +13,24 @@
 ## Fixed in tip / 1.0.206k
 - **Cancel/Deactivate keepFailed soft-lie (Skye P0 HOLD):** `cancelDownloadQueue` ran `if (keepFailed.length)` first — stale Activate `lastFailedNames` skipped `confirmRemovePrefixByDone` + `restoreRemoveRemainderLive`, leaving Cancel mid-Deactivate remainder pending-off with download-failure toast. Fix: when `wasRemove`, always prefix-confirm + restore Live **independent of** `keepFailed` toast; `beginOwnedJob("remove")` clears `lastFailedNames`. Tip assert `wasRemove && keepFailed.length` still restores Live.
 - **Kept:** wired Pause/Cancel (206i); beginRemoveBatch; prefix Off; Cancel restore (206j); `activateQueueIds`; Live=Add>0; Gidugu-hard; soft/provenance/Retry/no-infer/modal/wave0/Google↔FS; finish `activated.length`.
-- **Deferred (still):** session restore prefer visible/favorites/first-page; compact density. ProductVersion 1.0.206. No tip-install/pack.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
 
 ## Fixed in tip / 1.0.206j
 - **Cancel/Deactivate Live soft-lie (Skye P1 HOLD):** `syncFontsOnSystem(off)` called `confirmDeactivated(all)` at `unload_font_families` invoke-accept (spawn) while GDI only unloads a prefix and Cancel `session_remove`s prefix — UI went all-Off; Cancel toast still claimed “remaining stay Live”. Fix: track remove batch; confirm Off only for unloaded `ready_names` / done prefix (Rust pushes names on each Remove); Cancel → `clearPendingDeactivate` for never-unloaded (stay Live); toast matches store (`liveRemain`). No all-Off early confirm. Tip assert Cancel path.
 - **Kept:** wired Pause/Cancel gate (206i); shared `activateQueueIds`; Live=Add>0; Gidugu-hard; soft/provenance/Retry/no-infer/modal/wave0/Google↔FS; finish toast `activated.length`.
-- **Deferred (still):** session restore prefer visible/favorites/first-page; compact density. ProductVersion 1.0.206. No tip-install/pack.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
 
 ## Fixed in tip / 1.0.206i
 - **Remove Pause/Cancel soft-lie (P1):** `unload_now` / bulk Deactivate All honor `bulk().cancel` + `bulk().pause` via `on_disk_register_gate` (same as on-disk register). Cancel stops further Removes (already-unloaded stay Off; session_remove prefix only); Pause waits, Resume continues. Fresh `unload_font_families` clears leftover cancel/pause. Tip assert wired (not hide).
 - **Catalog remaining via shared queue (P1):** `catalogMenuStats.remaining` calls `catalogMenuRemaining` → `activateQueueIds` (Settled + hard Gidugu + `pendingDeactivateSet` aligned). Tip **runtime** fixture: remaining === `activateQueueIds(...).length`.
-- **Deferred (still):** session restore prefer visible/favorites/first-page; compact density. ProductVersion 1.0.206. No tip-install/pack.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
 
 ## Fixed in tip / 1.0.206h
 - **Activate remaining count honesty (P1):** `ActivateMenuItem` / `catalogMenuStats` / `LibraryActivateMenuItem` share `activateQueueIds` with `activateSet` — skip Settled + hard Gidugu allowlist (not bare Live/pending-only). Tip assert remaining == queue filter.
 - **`start_google_downloads` no infer-after-None (P1):** explicit intent or disk/catalog resolve; if resolve is None and no explicit intent → **skip family** (never `infer_fetch_intent` after None — Google↔FS hard separation).
 - **Test hygiene (P1):** tip CI tip-1.0.206*; OG `grok-pwa-plugin` tests isolate cwd so repo `site.json`/`public/og.jpg` cannot stamp Font Manager into placeholder-card unit tests; write-atomic skill assert updated to direct `public/` writes (skill dropped write-atomic stage).
 - **P2:** `DeactivateMenuItem` `anyOn` includes `pendingDeactivateSet`; desktop Deactivate All one calm queue toast (remove bar kept); finish toast Live = `activated.length` only; short confirm Cancel labels; remove-mode Pause/Cancel on bar.
-- **Deferred (still):** session restore prefer visible/favorites/first-page (BUGS progressive-restore Deferred P1). Compact density not this tip. ProductVersion 1.0.206. No tip-install/pack.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
 
 ## Fixed in tip / 1.0.206g
 - **Soft Retry double-click race (Skye P2):** 206f awaited `clearSessionGdiRefused` after dropping Settled but *before* setting pending — a second Power click in that window skipped the Settled/one-try path and took normal Activate. Fix: set pending + drop Settled in the same synchronous `set()` before await clear; after clear, sync only if still pending (abort if Live / pending-off / pending cleared).
