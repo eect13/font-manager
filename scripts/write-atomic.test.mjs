@@ -164,27 +164,27 @@ test("cli: relative paths follow the script's root, not the caller's cwd", () =>
   assert.equal(existsSync(join(root, "public/og.jpg")), false);
 });
 
-test("every hand-over the og skill prints is one this script accepts", () => {
-  // The card and banner recipes live in the skill's references/, not SKILL.md.
+test("og skill documents direct public/ writes (no write-atomic stage)", () => {
+  // Root cause (1.0.206h): skill recipes moved to ffmpeg → public/og.jpg|x-banner.jpg and
+  // direct site.json edits — they no longer print `node scripts/write-atomic.mjs …`.
+  // write-atomic remains for other agents; this tip asserts the skill contract, not silence.
   const skillDir = join(TEMPLATE_ROOT, ".grok/skills/og");
   const docs = [
     join(skillDir, "SKILL.md"),
     ...readdirSync(join(skillDir, "references")).map((f) => join(skillDir, "references", f)),
   ];
+  const joined = docs.map((p) => readFileSync(p, "utf8")).join("\n");
+  assert.match(joined, /public\/og\.jpg/);
+  assert.match(joined, /x-banner\.jpg/);
+  assert.match(joined, /site\.json/);
   const invocations = docs.flatMap(
     (path) => readFileSync(path, "utf8").match(/node scripts\/write-atomic\.mjs[^\n`]*/g) ?? [],
   );
-  assert.ok(invocations.length >= 3, "og.jpg, x-banner.jpg and site.json each hand over");
-  for (const line of invocations) {
-    const argv = line.replace("node scripts/write-atomic.mjs", "").trim().split(/\s+/);
-    const args = parseWriteAtomicArgs(argv);
-    assert.equal(args.error, undefined, line);
-    assert.equal(
-      stagingError({ staged: args.staged, target: args.target, publicDir: "/workspace/public" }),
-      null,
-      line,
-    );
-  }
+  assert.equal(
+    invocations.length,
+    0,
+    "og skill no longer stages via write-atomic; if invocations return, re-validate stagingError",
+  );
 });
 
 test("cli: a missing staged file fails without touching the target", () => {

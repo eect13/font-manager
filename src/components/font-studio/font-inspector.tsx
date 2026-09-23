@@ -127,8 +127,8 @@ export function FontInspector() {
           aria-label="Close inspector"
           onClick={() => setInspectorOpen(false)}
         />
-        <aside className="fixed inset-y-0 right-0 z-30 flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-border bg-card shadow-border md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0">
-          <div className="flex justify-end p-3">
+        <aside className="fm-inspector fixed inset-y-0 right-0 z-30 flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-border bg-card shadow-border md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0">
+          <div className="fm-inspector-head flex justify-end">
             <Button size="icon-sm" variant="ghost" aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>
               <X />
             </Button>
@@ -200,8 +200,8 @@ export function FontInspector() {
         aria-label="Close inspector"
         onClick={() => setInspectorOpen(false)}
       />
-    <aside className="fixed inset-y-0 right-0 z-30 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-l border-border bg-card shadow-border md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0">
-      <div className="flex items-start justify-between gap-3 p-5 pb-3">
+    <aside className="fm-inspector fixed inset-y-0 right-0 z-30 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-l border-border bg-card shadow-border md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0">
+      <div className="fm-inspector-head flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="font-heading min-w-0 max-w-full overflow-hidden text-xl leading-snug break-words text-foreground" style={{ fontFamily: stack, overflowWrap: "anywhere" }}>
             {font.family}
@@ -224,7 +224,7 @@ export function FontInspector() {
         </Button>
       </div>
       <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-6 px-5 pb-10">
+          <div className="fm-inspector-body space-y-6 pb-10">
             <p
               className={cn(
                 "fm-spec min-w-0 max-w-full overflow-x-hidden overflow-hidden break-words rounded-lg bg-paper px-4 py-4 text-xl leading-snug text-ink",
