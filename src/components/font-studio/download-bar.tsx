@@ -106,7 +106,7 @@ export function DownloadBar() {
                           : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
 
   return (
-    <div className="flex flex-col gap-1.5 border-b border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
+    <div className="fm-download-bar flex flex-col border-b border-border bg-card text-xs text-muted-foreground">
       <div className="flex items-center gap-2">
         {job.running && !job.paused ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" /> : null}
         <p className="min-w-0 flex-1 truncate">

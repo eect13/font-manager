@@ -3,14 +3,11 @@
  * Settled + hard Gidugu skip; pendingDeactivate aligned with catalog remaining.
  * Plain ESM so tip runtime can assert remaining === activateQueueIds(...).length.
  *
- * Hard-incapable check mirrors `isKnownGdiSessionIncapable` (Gidugu only) —
- * tip no-regress keeps TS/Rust allowlist in sync.
+ * Hard-incapable = `isKnownGdiSessionIncapable` SoT from gdi-incapable.ts
+ * (KNOWN_GDI_SESSION_INCAPABLE — Gidugu only). No lone "gidugu" hardcode here.
  */
 
-/** @param {string} family */
-function isHardGdiIncapable(family) {
-  return family.trim().toLowerCase() === "gidugu";
-}
+import { isKnownGdiSessionIncapable } from "./gdi-incapable.ts";
 
 /**
  * @param {string} id
@@ -42,7 +39,7 @@ export function activateQueueIds(ids, state) {
     const font = findFontRecord(id, state.localFonts, state.googleFonts);
     if (!font || font.source === "system") continue;
     if (state.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
-    if (isHardGdiIncapable(font.family)) continue;
+    if (isKnownGdiSessionIncapable(font.family)) continue;
     usable.push(id);
   }
   return usable;

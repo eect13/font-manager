@@ -63,7 +63,7 @@ test("docs mark 206p; density landed; Cancel simplify; no tip-install", () => {
   assert.match(bugs, /Fixed in tip \/ 1\.0\.206p/);
   assert.match(bugs, /Global compact density|Comfortable \| Compact/i);
   assert.match(bugs, /Landed 206p|Landed 1\.0\.206p.*compact density/i);
-  assert.match(readme, /Landed 206p|Deferred compact density/i);
+  assert.match(readme, /Landed 206p/i);
   assert.match(bugs, /cancelLabelActivateIds|Cancel-label simplify/i);
   assert.match(readme, /No tip-install/);
   assert.match(bugs, /No tip-install/);

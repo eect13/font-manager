@@ -39,12 +39,17 @@ test("P1 remaining count uses same filter as activateSet queue", () => {
   assert.match(activateToggle, /activateQueueIds\(ids, s\)\.length/);
   assert.match(activateToggle, /catalogMenuStats\(/);
   assert.match(activateToggle, /catalogMenuRemaining/);
-  // Visible path / hard-skip still referenced in toggle; Settled filter in shared module.
-  assert.match(activateToggle, /settledFamilySet\.has\(font\.family/);
-  assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
+  // 1.0.206q: Settled + hard skip live only in shared activate-queue (SoT); Visible calls activateQueueIds.
   const queueMod = readFileSync(join(root, "src/lib/fonts/activate-queue.mjs"), "utf8");
   assert.match(queueMod, /settledFamilySet/);
-  assert.match(queueMod, /gidugu/i);
+  assert.match(queueMod, /isKnownGdiSessionIncapable/);
+  assert.match(queueMod, /gidugu|Gidugu/i);
+  const visStart = activateToggle.indexOf("export function ActivateVisibleMenuItem");
+  assert.ok(visStart >= 0);
+  const visBody = activateToggle.slice(visStart, visStart + 700);
+  assert.match(visBody, /activateQueueIds\(ids,\s*s\)/);
+  assert.doesNotMatch(visBody, /settledFamilySet\.has/);
+  assert.doesNotMatch(visBody, /isKnownGdiSessionIncapable/);
   // Library remaining also goes through activateQueueIds
   const libStart = activateToggle.indexOf("export function LibraryActivateMenuItem");
   const lib = activateToggle.slice(libStart, libStart + 1200);

@@ -38,7 +38,14 @@ test("docs mark 206n; tip hygiene + bulk opt + wall-clock prep/skip; no tip-inst
   assert.match(bugs, /never imply FontBase-parallel Add|not FontBase/i);
   assert.match(readme, /No tip-install/);
   assert.match(bugs, /No tip-install/);
-  assert.match(bugs, /Deferred \(still\):.*compact density/i);
+  // Historical 1.0.206n section only — compact density later landed 206p (not still-open pack truth).
+  {
+    const secStart = bugs.indexOf("## Fixed in tip / 1.0.206n");
+    assert.ok(secStart >= 0, "1.0.206n Fixed section missing");
+    const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
+    const sec = bugs.slice(secStart, next < 0 ? undefined : next);
+    assert.match(sec, /Deferred \(still\):.*compact density/i);
+  }
 });
 
 test("tip-206h/i hygiene: assert landed 206l; no soft-deferred session-restore prefer", () => {

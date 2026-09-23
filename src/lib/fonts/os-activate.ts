@@ -1669,7 +1669,7 @@ export function pauseDownloadQueue() {
   markJobClock(true, true);
   emit();
   void tauriInvoke("pause_google_downloads").catch(() => undefined);
-  toast.message("Paused", { description: `${Math.round((100 * Math.max(job.done, job.skipped)) / Math.max(1, job.total))}% held. Resume continues from here — it does not restart.` });
+  toast.message("Paused", { description: `${Math.round((100 * job.done) / Math.max(1, job.total))}% held. Resume continues from here — it does not restart.` });
 }
 
 export function resumeDownloadQueue() {

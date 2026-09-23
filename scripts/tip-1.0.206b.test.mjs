@@ -34,8 +34,13 @@ test("activateSet + setActivatedMany skip isKnownGdiSessionIncapable", () => {
   assert.match(queueMod, /gidugu/i);
   assert.match(activateToggle, /activateQueueIds\(ids, state\)/);
   assert.match(activateToggle, /activate-queue\.mjs/);
-  // Visible menu path still hard-skips in toggle.
-  assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
+  // 1.0.206q: ActivateVisible routes hard/Settled skip via activateQueueIds (no dual filter in toggle).
+  const visStart = activateToggle.indexOf("export function ActivateVisibleMenuItem");
+  assert.ok(visStart >= 0);
+  const visBody = activateToggle.slice(visStart, visStart + 700);
+  assert.match(visBody, /activateQueueIds\(ids,\s*s\)/);
+  assert.doesNotMatch(visBody, /isKnownGdiSessionIncapable/);
+  assert.match(queueMod, /isKnownGdiSessionIncapable/);
   const manyStart = store.indexOf("setActivatedMany: (ids, on) =>");
   const many = store.slice(manyStart, manyStart + 2200);
   assert.match(many, /isKnownGdiSessionIncapable/);

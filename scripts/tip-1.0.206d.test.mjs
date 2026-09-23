@@ -107,7 +107,10 @@ test("P1 soft allowlist TS↔Rust exact parity (not string-presence only)", () =
 test("Activate All includes emoji ids (not hard-skip); hard Gidugu only", () => {
   assert.match(hydrate, /KNOWN_GDI_SESSION_INCAPABLE\.map\(\(e\) => e\.family\)/);
   assert.doesNotMatch(hydrate, /SOFT_GDI_TRY_ADD_FIRST/);
-  assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
+  // 1.0.206q: hard skip via activateQueueIds / gdi-incapable SoT; toggle must not soft-hard-skip.
+  assert.match(activateToggle, /activateQueueIds/);
+  const queueMod = readFileSync(join(root, "src/lib/fonts/activate-queue.mjs"), "utf8");
+  assert.match(queueMod, /isKnownGdiSessionIncapable/);
   assert.doesNotMatch(activateToggle, /isSoftGdiTryAddFirst/);
   const hard = gdiMirror.slice(
     gdiMirror.indexOf("KNOWN_GDI_SESSION_INCAPABLE"),
