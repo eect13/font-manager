@@ -32,7 +32,7 @@ export function ActivateConfirmDialog() {
           <DialogDescription>
             {req?.etaHint ?? ""} Word/Adobe stay honest (Add&gt;0 only).
             {req && req.preferCount > 0
-              ? ` First ${req.preferCount.toLocaleString()} (visible/selected/recent) already queued.`
+              ? ` First ${req.preferCount.toLocaleString()} (visible/selected/favorites/recent) already queued.`
               : ""}
           </DialogDescription>
         </DialogHeader>

@@ -5,10 +5,11 @@ import { loadCachedCatalog, scheduleCatalogSync } from "./google-api";
 import { idbGet, persistStorageOnGesture, requestPersistentStorage } from "./idb";
 import { refineLicense } from "./license";
 import { KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
-import { findFont, useFontStore } from "./store";
+import { findFont, filterLibrary, poolForScope, sortLibrary, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { visibleFamilyNames } from "./visible-families";
+import { orderPreferKeys, PREFER_FIRST_PAGE } from "./prefer-order.mjs";
 import {
   restoreSessionFromDisk,
   rememberSessionFamilies,
@@ -208,29 +209,65 @@ export function useHydrateFonts() {
         const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
         // already-Live this session (boot.ready / loaded) → skip re-walk.
         let needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
-        // Visible-first: selected + recent24 + viewport-visible families register before the long tail.
+        // 1.0.206l prefer waves: selected → favorites → viewport → first-page (scope) → recent → remainder.
         if (needRegister.length > 1) {
-          const prefer = new Set<string>();
-          const sel = useFontStore.getState().selectedId;
-          const recent = useFontStore.getState().recentIds;
-          const addPrefer = (id: string | null | undefined) => {
-            if (!id) return;
+          const state = useFontStore.getState();
+          const familyOf = (id: string | null | undefined): string | null => {
+            if (!id) return null;
             const font = findFont(id, localFonts, google);
-            if (font) prefer.add(font.family.trim().toLowerCase());
-            else if (id.startsWith("g:")) prefer.add(id.slice(2).trim().toLowerCase());
+            if (font) return font.family.trim().toLowerCase();
+            if (id.startsWith("g:")) return id.slice(2).trim().toLowerCase();
+            return null;
           };
-          addPrefer(sel);
-          for (const id of recent.slice(0, 24)) addPrefer(id);
-          // 1.0.205: also prefer cards currently in the viewport when UI has reported them.
-          for (const name of visibleFamilyNames()) prefer.add(name.trim().toLowerCase());
-          if (prefer.size) {
-            const head: string[] = [];
-            const tail: string[] = [];
-            for (const n of needRegister) {
-              (prefer.has(n.trim().toLowerCase()) ? head : tail).push(n);
-            }
-            needRegister = [...head, ...tail];
-          }
+          const favoriteNames = state.favorites
+            .map((id) => familyOf(id))
+            .filter((n): n is string => Boolean(n));
+          const recentNames = state.recentIds
+            .slice(0, 24)
+            .map((id) => familyOf(id))
+            .filter((n): n is string => Boolean(n));
+          // First page of current library scope (not only mounted viewport).
+          const liveIds = state.activated;
+          const localPool =
+            state.scope === "gfonts" || state.scope === "google" || state.scope === "system"
+              ? []
+              : localFonts;
+          const pool = poolForScope(
+            state.scope,
+            localPool,
+            google,
+            state.systemFonts,
+            liveIds,
+          );
+          const filtered = filterLibrary(
+            pool,
+            state.scope,
+            state.query,
+            state.favorites,
+            liveIds,
+            state.collections,
+            state.customTags,
+            state.facet,
+            state.recentIds,
+          );
+          const sortMode =
+            state.scope === "system" && (state.preview.sort ?? "name-asc") === "popular"
+              ? "name-asc"
+              : (state.preview.sort ?? "name-asc");
+          const scoped =
+            state.scope === "recent" ? filtered : sortLibrary(filtered, sortMode);
+          const firstPageNames = scoped
+            .slice(0, PREFER_FIRST_PAGE)
+            .map((f) => f.family.trim().toLowerCase())
+            .filter(Boolean);
+          needRegister = orderPreferKeys(needRegister, {
+            selected: familyOf(state.selectedId),
+            favorites: favoriteNames,
+            visible: visibleFamilyNames(),
+            firstPage: firstPageNames,
+            recent: recentNames,
+            caseFold: true,
+          });
         }
         const restore = needRegister.length
           ? restoreSessionFromDisk(needRegister)

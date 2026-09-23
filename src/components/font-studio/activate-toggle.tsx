@@ -6,12 +6,22 @@ import { pruneUnknownFolders, repairIncompleteFamilies, syncManagedDocumentsRoot
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
-import { useFontStore } from "@/lib/fonts/store";
+import {
+  filterLibrary,
+  poolForScope,
+  sortLibrary,
+  useFontStore,
+} from "@/lib/fonts/store";
 import type { FontRecord } from "@/lib/fonts/types";
 import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
 import { activateQueueIds, catalogMenuRemaining } from "@/lib/fonts/activate-queue.mjs";
 import { requestActivateConfirm } from "@/lib/fonts/activate-confirm";
 import { visibleFamilySet } from "@/lib/fonts/visible-families";
+import {
+  orderPreferKeys,
+  PREFER_FIRST_PAGE,
+  splitPreferRemainderIds,
+} from "@/lib/fonts/prefer-order.mjs";
 
 export { activateQueueIds, catalogMenuRemaining };
 
@@ -60,7 +70,7 @@ export function activateSet(ids: string[], label: string) {
           ? prefer
           : ordered.slice(0, Math.min(24, ordered.length));
 
-    // Wave0: enqueue visible/selected/recent immediately (progressive Live early).
+    // Wave0: enqueue visible/selected/favorites/first-page/recent immediately (1.0.206l).
     if (prefer.length) {
       void activateInWaves(prefer, `${label} (first)`);
     }
@@ -113,7 +123,48 @@ function findFontRecord(
   return local.find((f) => f.id === id) ?? google.find((f) => f.id === id);
 }
 
-/** Prefer viewport + selected + recent24, then the long tail. */
+/** First-page ids of current library scope (intersected with candidates). */
+function scopeFirstPageIds(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+): string[] {
+  const idSet = new Set(ids);
+  const liveIds = state.activated;
+  const localPool =
+    state.scope === "gfonts" || state.scope === "google" || state.scope === "system"
+      ? []
+      : state.localFonts;
+  const pool = poolForScope(
+    state.scope,
+    localPool,
+    state.googleFonts,
+    state.systemFonts,
+    liveIds,
+  );
+  const filtered = filterLibrary(
+    pool,
+    state.scope,
+    state.query,
+    state.favorites,
+    liveIds,
+    state.collections,
+    state.customTags,
+    state.facet,
+    state.recentIds,
+  );
+  const sortMode =
+    state.scope === "system" && (state.preview.sort ?? "name-asc") === "popular"
+      ? "name-asc"
+      : (state.preview.sort ?? "name-asc");
+  const scoped = state.scope === "recent" ? filtered : sortLibrary(filtered, sortMode);
+  const out: string[] = [];
+  for (const font of scoped.slice(0, PREFER_FIRST_PAGE)) {
+    if (idSet.has(font.id)) out.push(font.id);
+  }
+  return out;
+}
+
+/** Prefer waves (1.0.206l): selected → favorites → viewport → first-page → recent → remainder. */
 function orderActivateIds(
   ids: string[],
   state: ReturnType<typeof useFontStore.getState>,
@@ -122,26 +173,23 @@ function orderActivateIds(
   const google = state.googleFonts;
   const byId = new Map<string, FontRecord>();
   for (const f of [...local, ...google]) byId.set(f.id, f);
-  const prefer = new Set<string>();
   const vis = visibleFamilySet();
+  const visibleIds: string[] = [];
   for (const id of ids) {
     const font = byId.get(id);
-    if (font && vis.has(font.family.trim().toLowerCase())) prefer.add(id);
+    if (font && vis.has(font.family.trim().toLowerCase())) visibleIds.push(id);
   }
-  if (state.selectedId && ids.includes(state.selectedId)) prefer.add(state.selectedId);
-  for (const id of state.recentIds.slice(0, 24)) {
-    if (ids.includes(id)) prefer.add(id);
-  }
-  const head: string[] = [];
-  const tail: string[] = [];
-  for (const id of ids) {
-    (prefer.has(id) ? head : tail).push(id);
-  }
-  return [...head, ...tail];
+  const firstPageIds = scopeFirstPageIds(ids, state);
+  return orderPreferKeys(ids, {
+    selected: state.selectedId,
+    favorites: state.favorites,
+    visible: visibleIds,
+    firstPage: firstPageIds,
+    recent: state.recentIds,
+  });
 }
 
-
-/** Visible + selected + recent = wave0 prefer; remainder after confirm. */
+/** Wave0 prefer = selected + favorites + viewport + first-page + recent; remainder after confirm. */
 function splitPreferRemainder(
   ids: string[],
   state: ReturnType<typeof useFontStore.getState>,
@@ -150,22 +198,19 @@ function splitPreferRemainder(
   const google = state.googleFonts;
   const byId = new Map<string, FontRecord>();
   for (const f of [...local, ...google]) byId.set(f.id, f);
-  const preferSet = new Set<string>();
   const vis = visibleFamilySet();
+  const visibleIds: string[] = [];
   for (const id of ids) {
     const font = byId.get(id);
-    if (font && vis.has(font.family.trim().toLowerCase())) preferSet.add(id);
+    if (font && vis.has(font.family.trim().toLowerCase())) visibleIds.push(id);
   }
-  if (state.selectedId && ids.includes(state.selectedId)) preferSet.add(state.selectedId);
-  for (const id of state.recentIds.slice(0, 24)) {
-    if (ids.includes(id)) preferSet.add(id);
-  }
-  const prefer: string[] = [];
-  const remainder: string[] = [];
-  for (const id of ids) {
-    (preferSet.has(id) ? prefer : remainder).push(id);
-  }
-  return { prefer, remainder };
+  return splitPreferRemainderIds(ids, {
+    selectedId: state.selectedId,
+    favoriteIds: state.favorites,
+    visibleIds,
+    firstPageIds: scopeFirstPageIds(ids, state),
+    recentIds: state.recentIds,
+  });
 }
 
 const ACTIVATE_WAVE = 40;
@@ -199,8 +244,8 @@ async function activateInWaves(ids: string[], label: string) {
       description: persisted
         ? room < 20 * 1024 * 1024
           ? "Persistent storage on, disk space is low — large families may fail."
-          : "Persistent storage on. Visible/recent first; Settled skipped. Files stay in Documents."
-        : "Visible/recent first; Settled skipped. Files go to Documents.",
+          : "Persistent storage on. Visible/favorites/recent first; Settled skipped. Files stay in Documents."
+        : "Visible/favorites/recent first; Settled skipped. Files go to Documents.",
     },
   );
 }

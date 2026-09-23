@@ -56,7 +56,8 @@ test("already-Live short-circuit kept (204 feel)", () => {
 
 test("visible-first restore includes viewport families", () => {
   assert.match(hydrateTs, /visibleFamilyNames/);
-  assert.match(hydrateTs, /Visible-first/);
+  // 1.0.205 Visible-first; 1.0.206l expands to prefer waves (favorites + first-page).
+  assert.match(hydrateTs, /Visible-first|1\.0\.206l prefer waves/);
 });
 
 test("pending-off timeout keeps Live honest — never fake Off", () => {
