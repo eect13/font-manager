@@ -13,7 +13,6 @@ import {
   useFontStore,
 } from "@/lib/fonts/store";
 import type { FontRecord } from "@/lib/fonts/types";
-import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
 import { activateQueueIds, catalogMenuRemaining } from "@/lib/fonts/activate-queue.mjs";
 import { requestActivateConfirm } from "@/lib/fonts/activate-confirm";
 import { visibleFamilySet } from "@/lib/fonts/visible-families";
@@ -282,16 +281,14 @@ export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string 
 
 export function ActivateVisibleMenuItem({ ids, label }: { ids: string[]; label: string }) {
   const vis = visibleFamilySet();
+  // 1.0.206q: route Settled/hard skip through activateQueueIds (no dual filter);
+  // then intersect viewport-visible families.
   const visibleIds = useFontStore((s) => {
     const out: string[] = [];
-    for (const id of ids) {
-      if (s.activatedSet.has(id) || s.pendingSet.has(id)) continue;
+    for (const id of activateQueueIds(ids, s)) {
       const font =
         s.localFonts.find((f) => f.id === id) ?? s.googleFonts.find((f) => f.id === id);
-      if (!font || font.source === "system") continue;
-      if (s.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
-      if (isKnownGdiSessionIncapable(font.family)) continue;
-      if (vis.has(font.family.trim().toLowerCase())) out.push(id);
+      if (font && vis.has(font.family.trim().toLowerCase())) out.push(id);
     }
     return out;
   });

@@ -1,5 +1,13 @@
+## Fixed in tip / 1.0.206q
+- **Pause toast % soft-lie (P0 honesty):** `pauseDownloadQueue` toast used `Math.max(job.done, job.skipped)/total` — could overstate % vs DownloadBar / rust `done`. Now **done/total** only (same numerator as bar).
+- **ActivateVisibleMenuItem dual filter (P0 honesty):** stop reimplementing Settled/hard skip; route through shared `activateQueueIds` then viewport-visible intersect.
+- **Hard-GDI SoT:** `activate-queue.mjs` no longer hardcodes lone `"gidugu"`; uses `isKnownGdiSessionIncapable` from `gdi-incapable.ts` (`KNOWN_GDI_SESSION_INCAPABLE` — Gidugu only). Tip parity assert.
+- **Density overclaim fix:** wire `--fm-download-py/px/gap` + `--fm-shell-header-py/px/gap` for Comfortable|Compact; Compact tightens download bar + shell header. Docs: primary chrome incl. bar+header (not “everywhere” — dialogs/empty/settings still out). Tip soft-OR `/Landed 206p|Deferred compact density/` killed — require Landed 206p only; l/n/o Deferred asserts scoped to historical sections.
+- **Kept:** standing locks (Live=Add>0; Settled=disk+Add=0; Gidugu-hard only; soft emoji try-Add then Settled; Google↔FS; no FR_PRIVATE / GDI quota raise / parallel Add / fake Live). Prefer order unchanged.
+- ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206p
-- **Global compact density (P1):** Desktop Settings Comfortable | Compact toggle; persists via `font-manager:ui-density` + `data-ui-density` on `<html>` (boot before paint). Compact tightens **everywhere**: library grid + list cards (incl. virtualizer heights), sidebar rows, preview toolbar, inspector — gaps/padding/card heights via root CSS vars (not Grid-only). Tip asserts setting, both modes change CSS vars/classes, persist key.
+- **Global compact density (P1):** Desktop Settings Comfortable | Compact toggle; persists via `font-manager:ui-density` + `data-ui-density` on `<html>` (boot before paint). Compact tightens primary library chrome: library grid + list cards (incl. virtualizer heights), sidebar rows, preview toolbar, inspector — gaps/padding/card heights via root CSS vars (not Grid-only). **1.0.206q** also wires download bar + shell header (dialogs/empty/settings still out). Tip asserts setting, both modes change CSS vars/classes, persist key.
 - **Cancel-label simplify when all visible (P3):** when `visibleIds.length > 0`, Cancel uses `cancelLabelActivateIds` — filter `ordered` by visible (all-visible → reuse `ordered`); no second `orderActivateIds` prefer pass. Keep Cancel semantics (keep prefer if wave0 queued else visible/first-page). Tip **runtime** fixture on fixture data.
 - **Docs:** Deferred compact density → **Landed 206p**.
 - **Kept:** Cancel-label preferBuckets reuse (206o); standing locks (Live=Add>0; Settled skip; Gidugu-hard; soft emoji try-Add; Google↔FS; no parallel Add / FR_PRIVATE / GDI quota / fake Live).
@@ -186,7 +194,7 @@
 - **Variable list lacking (P0 regression):** 1.0.176 accidentally reverted 1.0.170’s catalog Variable facet when landing Gidugu/Clear Sans. Sidebar / `variable` query again = **catalogVariable OR on-disk VF** (like Italic); card badge / axes stay on-disk `*-variable-*` only. Material Symbols* WOFF2-only excluded. Scan `has_variable` again accepts `VariableFont_` / bracket names. Activated `poolForScope` prefers store `googleFonts` so disk VF badge honesty is not wiped by static `FONT_BY_ID` (`variable:false`). Expected facet ≈ Google **558** + **9** Fontsource TTF VFs. Progressive session restore (1.0.190) kept. No tip-install/pack.
 
 ## Fixed in tip / 1.0.190
-- **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Landed 1.0.206l:** visible/favorites/first-page prefer waves (no longer deferred). **Landed 1.0.206p:** compact density (Comfortable|Compact).
+- **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Landed 1.0.206l:** visible/favorites/first-page prefer waves (no longer deferred). **Landed 1.0.206p:** compact density (Comfortable|Compact). **1.0.206q:** bar+header density vars + Pause toast done/total honesty.
 
 ## Fixed in tip / 1.0.189
 - **Quit kill mid-Remove (P0):** `quit_unload_budget_for` was hard-coded 4s for any path count — Activate All (~2k) quit watchdog `process::exit(0)` mid-Remove, leaving GDI-live faces and locked Documents folders. Restored **scaled** budget: `max(12s, min(180s, path_count × 15ms))` (~2k ≈ 31.5s, ~11k ≈ 165s). Watchdog is hung-GDI backstop only; worker still `exit(0)` when `session_end` completes. No FontCache restart on quit (Explorer hang). Hide-window + worker unload + next-boot recover kept.
@@ -392,5 +400,5 @@
 
 ## Notes
 
-- Tip is 1.0.197. NSIS is Windows `deploy.bat` only. `main` may still be 1.0.189 until the 197 tip is merged.
+- Tip is 1.0.206q (ProductVersion 1.0.206 amend-style). NSIS is Windows `deploy.bat` only — pack HOLD this tip.
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

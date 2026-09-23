@@ -111,7 +111,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
   return (
     <TooltipProvider delayDuration={220}>
       <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-        <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b border-border px-2 py-1.5 md:grid-cols-[17rem_1fr_auto] md:pl-0 md:pr-3">
+        <header className="fm-shell-header grid grid-cols-[auto_1fr_auto] items-center border-b border-border md:grid-cols-[17rem_1fr_auto]">
           <div className="flex items-center gap-1.5 pl-2 md:pl-3">
             <Button
               size="icon-sm"

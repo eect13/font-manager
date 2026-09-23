@@ -35,12 +35,19 @@ test("206l keeps ProductVersion 1.0.206 (amend-style)", () => {
   assert.match(version, /1\.0\.206/);
 });
 
-test("docs mark 206l; favorites+first-page landed; compact still deferred; no tip-install", () => {
+test("docs mark 206l; favorites+first-page landed; historical compact deferred note; no tip-install", () => {
   assert.match(readme, /1\.0\.206l/);
   assert.match(bugs, /1\.0\.206l/);
   assert.match(bugs, /favorites.*first-page|first-page.*favorites/i);
   assert.match(bugs, /NOT parallel GDI|no parallel.*AddFontResourceEx|prep\/skip/i);
-  assert.match(bugs, /Deferred \(still\):.*compact density/i);
+  // Historical 1.0.206l section only — compact density later landed 206p (not still-open pack truth).
+  {
+    const secStart = bugs.indexOf("## Fixed in tip / 1.0.206l");
+    assert.ok(secStart >= 0, "1.0.206l Fixed section missing");
+    const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
+    const sec = bugs.slice(secStart, next < 0 ? undefined : next);
+    assert.match(sec, /Deferred \(still\):.*compact density/i);
+  }
   assert.match(readme, /No tip-install/);
   assert.match(bugs, /No tip-install/);
 });

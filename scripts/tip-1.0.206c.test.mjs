@@ -47,7 +47,10 @@ test("hard allowlist is Gidugu only — emoji NOT hard-skipped", () => {
 test("UI still seeds/skips hard allowlist only (Gidugu) — Activate All queues emoji", () => {
   assert.match(hydrate, /KNOWN_GDI_SESSION_INCAPABLE\.map\(\(e\) => e\.family\)/);
   assert.doesNotMatch(hydrate, /SOFT_GDI_TRY_ADD_FIRST/);
-  assert.match(activateToggle, /isKnownGdiSessionIncapable\(font\.family\)/);
+  // 1.0.206q: hard skip shared via activateQueueIds → gdi-incapable SoT (not duplicated in toggle).
+  assert.match(activateToggle, /activateQueueIds/);
+  const queueMod = readFileSync(join(root, "src/lib/fonts/activate-queue.mjs"), "utf8");
+  assert.match(queueMod, /isKnownGdiSessionIncapable/);
   assert.match(store, /isKnownGdiSessionIncapable\(font\.family\)/);
   // Activate All path must not hard-skip soft (206e: soft helper may appear for Power Retry Add).
   assert.doesNotMatch(activateToggle, /isSoftGdiTryAddFirst/);
