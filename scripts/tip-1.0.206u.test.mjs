@@ -81,17 +81,40 @@ test("A) register VF-only when intact VF; fallback statics; dual-VF + denylist g
   assert.equal(poppins[4], false, "Poppins not variable");
 });
 
-test("B) download/planned vars-only when VF complete (no static backup)", () => {
+test("A/P1) purge only after VarsOnly Add>0 (keep statics for fallback)", () => {
+  assert.match(activateRs, /fn commit_vf_primary_after_successful_add/);
+  assert.match(activateRs, /fn merge_variable_into_planned_keys_keep_statics/);
+  assert.match(activateRs, /purge_after_successful_vf_add_ordering_keep_statics_until_commit/);
+  // register path: commit only inside n > 0 after VarsOnly
+  const reg = activateRs.slice(
+    activateRs.indexOf("fn register_intact_family_detailed"),
+    activateRs.indexOf("fn register_intact_family_detailed") + 2500,
+  );
+  assert.match(reg, /RegisterFaceMode::VarsOnly/);
+  assert.match(reg, /commit_vf_primary_after_successful_add/);
+  assert.match(reg, /AllIntactFallback/);
+  // fetch must NOT skip statics via vf_complete
+  assert.doesNotMatch(
+    activateRs,
+    /let vf_complete = !var_files\.is_empty/,
+    "must not skip static fetch before Add",
+  );
+  assert.match(
+    activateRs,
+    /always fetch static instances alongside VF until VarsOnly/,
+  );
+  // adopt must not purge
+  const adopt = activateRs.slice(
+    activateRs.indexOf("fn adopt_variable_files_into_plan"),
+    activateRs.indexOf("fn adopt_variable_files_into_plan") + 1200,
+  );
+  assert.doesNotMatch(adopt, /purge_redundant_statics_in_dir/);
+  assert.match(adopt, /merge_variable_into_planned_keys_keep_statics/);
+});
+
+test("B) planned vars-only after successful Add; keep_statics pre-Add", () => {
   assert.match(activateRs, /merge_variable_into_planned_vars_only_when_vf_present/);
-  assert.match(activateRs, /VF-primary: when intact VF/);
-  assert.match(activateRs, /vf_complete/);
-  assert.match(activateRs, /planned = \*\*vars only\*\*|vars-only when|VF-primary.*vars only/i);
-  // Doc comment above merge must declare VF-primary vars-only (not statics-as-backup).
-  const mergeAt = activateRs.indexOf("fn merge_variable_into_planned_keys");
-  assert.ok(mergeAt > 0);
-  const mergeDoc = activateRs.slice(Math.max(0, mergeAt - 400), mergeAt + 500);
-  assert.match(mergeDoc, /VF-primary|vars only/i);
-  assert.doesNotMatch(mergeDoc, /statics stay|never var-only/);
+  assert.match(activateRs, /fn merge_variable_into_planned_keys_keep_statics/);
   assert.match(activateRs, /if !keys\.is_empty\(\) \{\s*return keys;/);
 });
 
@@ -100,7 +123,26 @@ test("C) purge redundant statics + gdi-maps; keep VF", () => {
   assert.match(activateRs, /fn purge_redundant_statics_for_family/);
   assert.match(activateRs, /gdi_map_dest_for/);
   assert.match(activateRs, /purge_redundant_statics_keeps_vf_deletes_statics/);
-  assert.match(activateRs, /Do NOT delete|VF must remain|keeps_vf/i);
+});
+
+test("C/P1) Finlandica dual-VF = Text + Headline (not bare Finlandica)", () => {
+  const dual = activateRs.slice(
+    activateRs.indexOf("fn family_expects_dual_variable"),
+    activateRs.indexOf("fn family_expects_dual_variable") + 500,
+  );
+  assert.match(dual, /Finlandica Text/);
+  assert.match(dual, /Finlandica Headline/);
+  assert.doesNotMatch(
+    dual,
+    /eq_ignore_ascii_case\("Finlandica"\)/,
+    "bare Finlandica must not be dual-VF gate",
+  );
+  assert.match(activateRs, /Finlandica Text/);
+  assert.match(activateRs, /Finlandica Headline/);
+  const ft = familyRow("Finlandica Text");
+  const fh = familyRow("Finlandica Headline");
+  assert.ok(ft && ft[4] === true, "Finlandica Text catalog-variable");
+  assert.ok(fh && fh[4] === true, "Finlandica Headline catalog-variable");
 });
 
 test("D) Refresh Documents sync command + UI (progress/cancel/testid)", () => {
@@ -117,6 +159,28 @@ test("D) Refresh Documents sync command + UI (progress/cancel/testid)", () => {
   assert.match(activateToggle, /syncManagedDocumentsRoot/);
 });
 
+test("D/P2) Settings locked toast + Cancel mid-Refresh context toast", () => {
+  // Settings mirrors Library Repair locked hint.
+  assert.match(
+    desktopSettings,
+    /locked — deactivate fonts or quit Adobe\/Word, then Repair/,
+  );
+  assert.match(desktopSettings, /sync-docs-vf-locked/);
+  assert.match(activateToggle, /sync-docs-vf-locked/);
+  // Cancel mid-Refresh: docsVfSyncActive suppresses generic Download cancelled.
+  assert.match(osActivate, /docsVfSyncActive/);
+  assert.match(osActivate, /wasDocsVfSync/);
+  assert.match(osActivate, /Documents refresh cancelled/);
+  assert.match(activateToggle, /Documents refresh cancelled/);
+  // cancel path must early-return when wasDocsVfSync (no Download cancelled)
+  const cancel = osActivate.slice(
+    osActivate.indexOf("export function cancelDownloadQueue"),
+    osActivate.indexOf("export function pauseDownloadQueue"),
+  );
+  assert.match(cancel, /wasDocsVfSync/);
+  assert.match(cancel, /if \(wasDocsVfSync\) \{\s*return;/);
+});
+
 test("E) Activate remaining aria-label matches visible text", () => {
   const start = activateToggle.indexOf("export function ActivateMenuItem");
   assert.ok(start >= 0);
@@ -124,7 +188,6 @@ test("E) Activate remaining aria-label matches visible text", () => {
   const body = activateToggle.slice(start, next < 0 ? undefined : next);
   assert.match(body, /activateLabel/);
   assert.match(body, /aria-label=\{activateLabel/);
-  // Catalog + Library use expression aria matching remaining ternary.
   assert.match(
     activateToggle,
     /aria-label=\{\s*remaining && remaining < count\s*\?\s*`Activate remaining/,

@@ -95,14 +95,32 @@ export function DesktopSettings() {
                 if (!result) return;
                 await syncManagedDocumentsRoot();
                 if (result.cancelled) {
-                  toast.message("Documents refresh cancelled", { id: "sync-docs-vf" });
+                  toast.message("Documents refresh cancelled", {
+                    id: "sync-docs-vf",
+                    description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
+                  });
                   return;
+                }
+                if (result.locked > 0) {
+                  toast.error(
+                    `${result.locked.toLocaleString()} face${result.locked === 1 ? "" : "s"} locked — deactivate fonts or quit Adobe/Word, then Repair`,
+                    {
+                      id: "sync-docs-vf-locked",
+                      description:
+                        "Illustrator, fontdrvhost, or another app is holding static TTFs during Refresh. Quit those apps (or Deactivate), then Refresh or Repair again.",
+                      duration: 24_000,
+                    },
+                  );
                 }
                 toast.success(
                   `Documents refreshed — ${result.staticsDeleted.toLocaleString()} redundant statics removed`,
                   {
                     id: "sync-docs-vf",
-                    description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated.`,
+                    description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated${
+                      result.locked
+                        ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`
+                        : ""
+                    }.`,
                     duration: 12_000,
                   },
                 );

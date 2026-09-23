@@ -1,10 +1,10 @@
 ## Fixed in tip / 1.0.206u
-- **P0 VF-primary Activate:** `register_intact_family_detailed` (+ session restore): when `dir_vf_primary_ready` (intact VF; dual-VF italic CJK respected; no-public-VF denylist excluded), only Add/stage `*-variable-*`. VF Add=0 → fallback register statics. Live = Add>0 only; Inter ~2 Adds not ~20; Poppins still all statics; Gidugu Settled unchanged.
-- **P0 Download/planned:** `fetch_google_family_faces_to_dir` skips static instance fetch when VF complete; `merge_variable_into_planned_keys` → vars-only when vars present (supersedes “statics as backup / never var-only”).
-- **P0 Purge redundant statics:** `purge_redundant_statics_in_dir` deletes sibling static TTFs when VF intact (+ matching gdi-maps); recalc `.complete`. Locked → count for soft toast / Repair path. No touch Poppins-class / no-VF.
-- **P0 Refresh Documents:** `sync_documents_vf_policy` + Library/Settings control — reconcile installed folders to VF policy (progress bar + Cancel via existing download cancel). Honest toasts; rescan after; no full-catalog surprise download. `data-testid="refresh-documents"` / `refresh-documents-settings`.
-- **Nit:** visible “Activate remaining (N)” aria-label matches label (not stuck “Activate All”).
-- **Kept:** 206t #185 primitive visibleCount / array-root useShallow; TIP_SHA.txt / write-tip-sha provenance; Live=Add>0; Settled=disk+Add=0; Gidugu-hard; soft emoji try-Add; Google↔FS; no FR_PRIVATE / parallel Add / GDI quota / fake Live / Off-at-spawn.
+- **P0 VF-primary Activate:** `register_intact_family_detailed`: when `dir_vf_primary_ready`, VarsOnly Add first. **Skye HOLD amend:** purge / vars-only planned **only after VarsOnly Add>0** (`commit_vf_primary_after_successful_add`). Pre-Add: fetch statics + `merge_variable_into_planned_keys_keep_statics` — never purge-before-register (Add=0 → AllIntactFallback needs statics). Live = Add>0 only.
+- **P1 Finlandica dual-VF:** gate = **Finlandica Text** + **Finlandica Headline** (catalog), not bare `Finlandica`. Hei/Sung unchanged.
+- **P0 Refresh Documents:** `sync_documents_vf_policy` + Library/Settings. **P2:** Settings locked toast mirrors Repair (`deactivate… then Repair`); Cancel mid-Refresh → `Documents refresh cancelled` only (`docsVfSyncActive` / `wasDocsVfSync` suppresses generic Download cancelled).
+- **P0 Download:** always fetch statics alongside VF until Add succeeds; adopt does not purge.
+- **Nit:** Activate remaining aria-label matches visible text.
+- **Kept:** 206t #185 / useShallow; TIP_SHA; Live=Add>0; Settled; Gidugu-hard; soft emoji; Google↔FS; no FR_PRIVATE / parallel Add / Off-at-spawn.
 - ProductVersion 1.0.206. No tip-install/pack.
 
 ## Fixed in tip / 1.0.206t

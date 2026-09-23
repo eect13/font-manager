@@ -498,6 +498,17 @@ export function RefreshDocumentsMenuItem() {
             });
             return;
           }
+          if (result.locked > 0) {
+            toast.error(
+              `${result.locked.toLocaleString()} face${result.locked === 1 ? "" : "s"} locked — deactivate fonts or quit Adobe/Word, then Repair`,
+              {
+                id: "sync-docs-vf-locked",
+                description:
+                  "Illustrator, fontdrvhost, or another app is holding static TTFs during Refresh. Quit those apps (or Deactivate), then Refresh or Repair again.",
+                duration: 24_000,
+              },
+            );
+          }
           const lockBit = result.locked
             ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`
             : "";

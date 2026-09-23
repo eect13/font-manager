@@ -626,6 +626,7 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
     });
     return null;
   }
+  docsVfSyncActive = true;
   startGooglePoll("download");
   try {
     const raw = await tauriInvoke<{
@@ -651,6 +652,7 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
     toast.error("Could not refresh Documents", { description: msg });
     return null;
   } finally {
+    docsVfSyncActive = false;
     finishOwnedJob("download");
   }
 }
@@ -1228,6 +1230,8 @@ let lastPaint = 0;
 let pollTimer = 0;
 let rustSeenRunning = false;
 let ignoreProgress = false;
+/** 1.0.206u: Refresh Documents owns cancel toast (not generic Download cancelled). */
+let docsVfSyncActive = false;
 let expectKind: "" | "download" | "register" | "remove" = "";
 
 function emitProgress(force = false) {
@@ -1644,6 +1648,8 @@ async function pumpRemove(myBatch: number) {
 }
 
 export function cancelDownloadQueue() {
+  // Snapshot before syncDocumentsVfPolicy finally clears the flag.
+  const wasDocsVfSync = docsVfSyncActive;
   batchId += 1;
   installQueue.length = 0;
   const queuedRemove = removeQueue.splice(0, removeQueue.length);
@@ -1702,6 +1708,11 @@ export function cancelDownloadQueue() {
       description = `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`;
     } else {
       description = "Fonts already saved stay in Documents → Font Manager.";
+    }
+    // 1.0.206u Skye P2: mid-Refresh Cancel — caller toasts "Documents refresh cancelled";
+    // do not also fire generic Download cancelled (use snapshot — flag may already clear).
+    if (wasDocsVfSync) {
+      return;
     }
     toast.message(wasRemove ? "Deactivate cancelled" : "Download cancelled", {
       description,

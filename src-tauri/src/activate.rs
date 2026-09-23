@@ -1483,15 +1483,28 @@ fn register_intact_family_detailed(
     if family_early_skip_soft_session_refused(app, family) {
         return (0, RegisterFailKind::AddReturnedZero);
     }
-    // 1.0.206u VF-primary: when intact VF present (dual-VF italic respected), Add
-    // only *-variable-* faces. If VF Add=0 / missing / no-public-VF → all statics.
+    // 1.0.206u VF-primary (Skye amend): when intact VF present (dual-VF italic
+    // respected), Add only *-variable-* first. Purge statics **only after**
+    // VarsOnly Add>0 — never before register (fallback needs statics on disk).
     let vf_primary = family_any_dir_vf_primary(app, family);
     if vf_primary {
         let (n, fail) = register_intact_family_pass(app, family, RegisterFaceMode::VarsOnly);
         if n > 0 {
+            let (_del, lock) = commit_vf_primary_after_successful_add(app, family);
+            if lock > 0 {
+                if let Ok(mut p) = bulk().progress.lock() {
+                    p.failed = p.failed.saturating_add(lock as u32);
+                    let detail = format!(
+                        "{family}: {lock} static(s) locked — deactivate fonts or quit Adobe/Word, then Repair"
+                    );
+                    if !p.failed_details.iter().any(|d| d == &detail) {
+                        p.failed_details.push(detail);
+                    }
+                }
+            }
             return (n, fail);
         }
-        // Fallback: VF Add returned 0 — register statics (ignore vars-only plan filter).
+        // Fallback: VF Add returned 0 — keep statics, register all intact faces.
         return register_intact_family_pass(app, family, RegisterFaceMode::AllIntactFallback);
     }
     register_intact_family_pass(app, family, RegisterFaceMode::RespectPlan)
@@ -4334,7 +4347,8 @@ fn fs_only_google_vf_folder(family: &str) -> Option<String> {
         "big shoulders stencil display" => Some("bigshouldersstencildisplay"),
         "big shoulders stencil text" => Some("bigshouldersstenciltext"),
         "briem hand" => Some("briemhand"),
-        "finlandica" => Some("finlandica"),
+        "finlandica text" => Some("finlandicatext"),
+        "finlandica headline" => Some("finlandicaheadline"),
         _ => None,
     };
     if let Some(f) = fixed {
@@ -4536,7 +4550,9 @@ fn family_expects_dual_variable(family: &str) -> bool {
     let t = family.trim();
     t.eq_ignore_ascii_case("Chiron Hei HK")
         || t.eq_ignore_ascii_case("Chiron Sung HK")
-        || t.eq_ignore_ascii_case("Finlandica")
+        // Catalog names (not bare "Finlandica"): each ships roman + italic VF.
+        || t.eq_ignore_ascii_case("Finlandica Text")
+        || t.eq_ignore_ascii_case("Finlandica Headline")
 }
 
 fn dir_has_intact_variable_italic(dir: &Path) -> bool {
@@ -4738,7 +4754,7 @@ fn dir_has_intact_variable(dir: &Path) -> bool {
 }
 
 /// 1.0.206u: VF is primary when an intact variable face is present.
-/// Dual-VF CJK (Hei/Sung/Finlandica): roman + italic both required.
+/// Dual-VF (Hei/Sung + Finlandica Text/Headline): roman + italic both required.
 /// No-public-VF denylist (Poppins-class catalog statics, Google Sans, Edu hands) never VF-primary.
 fn dir_vf_primary_ready(dir: &Path, family: &str) -> bool {
     if family_has_no_public_vf(family) {
@@ -4831,9 +4847,7 @@ fn purge_redundant_statics_for_family(app: &AppHandle, family: &str) -> (usize, 
     (deleted, locked)
 }
 
-/// Merge var filenames into planned keys.
-/// **1.0.206u VF-primary:** when `var_files` is non-empty, planned = **vars only**
-/// (statics are not retained as backup). When no vars, keep existing static keys.
+/// Vars-only planned keys (after successful VarsOnly Add>0).
 fn merge_variable_into_planned_keys(existing: &[String], var_files: &[String]) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     for v in var_files {
@@ -4850,6 +4864,64 @@ fn merge_variable_into_planned_keys(existing: &[String], var_files: &[String]) -
         }
     }
     keys
+}
+
+/// Pre-Add merge: vars first, **statics kept on disk/plan** until VarsOnly Add>0.
+/// Skye P1: skipping static fetch / purging before Add guts AllIntactFallback.
+fn merge_variable_into_planned_keys_keep_statics(
+    existing: &[String],
+    var_files: &[String],
+) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for v in var_files {
+        if !v.is_empty() && !keys.iter().any(|k| k == v) {
+            keys.push(v.clone());
+        }
+    }
+    for k in existing {
+        if !k.is_empty() && !keys.iter().any(|x| x == k) {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
+
+/// After VarsOnly Add>0: rewrite planned to vars-only and purge redundant statics.
+fn commit_vf_primary_after_successful_add(app: &AppHandle, family: &str) -> (usize, usize) {
+    let mut deleted = 0usize;
+    let mut locked = 0usize;
+    for dir in family_locations(app, family) {
+        if !dir_vf_primary_ready(&dir, family) {
+            continue;
+        }
+        // Collect intact vars → planned vars-only, then purge statics.
+        let mut vars = Vec::new();
+        let mut files = Vec::new();
+        walk_font_files(&dir, &mut files);
+        for p in &files {
+            let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if is_variable_face_filename(name) && ttf_intact(p) {
+                vars.push(name.to_string());
+            }
+        }
+        if vars.is_empty() {
+            continue;
+        }
+        write_google_planned(&dir, &vars);
+        let intact = count_intact_planned_keys(&dir, &vars);
+        if intact >= vars.len() {
+            mark_family_complete(&dir, vars.len());
+        } else {
+            write_expected_faces(&dir, vars.len());
+            clear_complete_marker(&dir);
+        }
+        let (d, l) = purge_redundant_statics_in_dir(&dir, family);
+        deleted = deleted.saturating_add(d);
+        locked = locked.saturating_add(l);
+    }
+    (deleted, locked)
 }
 
 /// Collect intact Google static instance filenames already on disk (for adopting
@@ -4874,14 +4946,16 @@ fn collect_intact_google_instance_keys(dir: &Path) -> Vec<String> {
 }
 
 /// When variable TTFs land, fold them into `.google-planned` / expected / complete.
-/// **1.0.206u VF-primary:** planned becomes **vars only**; redundant statics are
-/// purged from the family folder (and matching gdi-maps) when VF is intact.
+/// **1.0.206u amend (Skye):** planned may list vars first, but **do not purge**
+/// statics here — purge only after VarsOnly Add>0 (see register_intact_family_detailed).
+/// Happy-path purge-before-register guts AllIntactFallback when VF Add=0.
 fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
     if var_files.is_empty() {
         return;
     }
     let existing = read_google_planned_keys(root).unwrap_or_else(|| collect_intact_google_instance_keys(root));
-    let keys = merge_variable_into_planned_keys(&existing, var_files);
+    // Keep statics in planned until successful VF Add; merge lists vars first.
+    let keys = merge_variable_into_planned_keys_keep_statics(&existing, var_files);
     if keys.is_empty() {
         return;
     }
@@ -4893,14 +4967,6 @@ fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
         write_expected_faces(root, keys.len());
         // Honest: planned grew to include vars that are not all intact yet.
         clear_complete_marker(root);
-    }
-    let family = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    if !family.is_empty() && dir_vf_primary_ready(root, &family) {
-        let _ = purge_redundant_statics_in_dir(root, &family);
     }
 }
 
@@ -4917,9 +4983,8 @@ fn http_download_client() -> Option<reqwest::blocking::Client> {
 
 /// Always pull real `*-variable-*` TTFs for catalog-variable families — including
 /// when the folder is already `.complete` / statics-only. `.complete` must **not**
-/// block VF fetch. After vars land, `adopt_variable_files_into_plan` sets planned
-/// to vars-only and purges redundant statics (1.0.206u VF-primary). No-public-VF
-/// catalog families are skipped (no invent).
+/// block VF fetch. `adopt_variable_files_into_plan` updates planned (statics kept
+/// until VarsOnly Add>0). No-public-VF catalog families are skipped (no invent).
 /// Returns (var filenames written/intact, HealStats from intact var heals).
 fn ensure_catalog_variable_faces(
     app: &AppHandle,
@@ -5683,17 +5748,9 @@ fn fetch_google_family_faces_to_dir(
         (Vec::new(), HealStats::default())
     };
     heal.add(var_heal);
-    // 1.0.206u VF-primary: when intact VF(s) complete (dual-VF needs italic), do
-    // not fetch static instances. Keep static downloads for no-public-VF / missing VF.
-    let vf_complete = !var_files.is_empty()
-        && (!family_expects_dual_variable(family)
-            || var_files.iter().any(|n| variable_face_filename_is_italic(n))
-            || dir_has_intact_variable_italic(root));
-    let listed = if vf_complete {
-        Vec::new()
-    } else {
-        discover_richest_google_listing(client, family)
-    };
+    // 1.0.206u Skye P1: always fetch static instances alongside VF until VarsOnly
+    // Add>0 succeeds — skipping static fetch guts AllIntactFallback on Add=0.
+    let listed = discover_richest_google_listing(client, family);
     let (inst_wrote, _, inst_heal) = if listed.is_empty() {
         (0, 0, HealStats::default())
     } else {
@@ -7073,18 +7130,15 @@ fn download_family(
             .iter()
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
             .collect();
-        // 1.0.206u: vars present → planned vars-only (VF primary); else statics.
-        let keys = merge_variable_into_planned_keys(&instance_keys, &google_var_files);
+        // 1.0.206u Skye P1: vars first but keep statics in plan/on disk until
+        // VarsOnly Add>0 (commit_vf_primary_after_successful_add). Do not purge here.
+        let keys = merge_variable_into_planned_keys_keep_statics(&instance_keys, &google_var_files);
         write_google_planned(&root, &keys);
         clear_fontsource_planned(&root);
-        // Only purge leftovers once we have Google bytes on disk — otherwise a
-        // failed Google fetch would delete latin remnants and leave the folder empty.
+        // Only purge *unplanned* leftovers (latin shreds) — never drop planned statics
+        // before register (would gut Add=0 fallback).
         if google_wrote > 0 || count_intact_planned_keys(&root, &keys) > 0 {
             purge_unplanned_font_files(&root, &keys);
-        }
-        // VF-primary: drop leftover statics when intact VF is ready (planned may already be vars-only).
-        if dir_vf_primary_ready(&root, family) {
-            let _ = purge_redundant_statics_in_dir(&root, family);
         }
     } else if matches!(intent, FetchIntent::Google) {
         clear_google_planned(&root);
@@ -9558,7 +9612,9 @@ mod complete_marker_tests {
     #[test]
     fn fs_only_google_vf_folder_maps_42dot_and_skips_material() {
         assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans".into()));
-        assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica".into()));
+        assert_eq!(fs_only_google_vf_folder("Finlandica Text"), Some("finlandicatext".into()));
+        assert_eq!(fs_only_google_vf_folder("Finlandica Headline"), Some("finlandicaheadline".into()));
+        assert!(fs_only_google_vf_folder("Finlandica").is_none());
         assert_eq!(
             fs_only_google_vf_folder("Big Shoulders Display"),
             Some("bigshouldersdisplay".into())
@@ -9573,7 +9629,9 @@ mod complete_marker_tests {
         assert!(family_ensures_google_vf("42dot Sans"));
         assert!(!google_catalog_is_variable("42dot Sans"));
         assert!(fs_only_google_vf_folder("42dot Sans").is_some());
-        assert!(family_expects_dual_variable("Finlandica"));
+        assert!(family_expects_dual_variable("Finlandica Text"));
+        assert!(family_expects_dual_variable("Finlandica Headline"));
+        assert!(!family_expects_dual_variable("Finlandica"));
         assert!(!family_expects_dual_variable("42dot Sans"));
     }
 
@@ -10176,7 +10234,29 @@ mod install_path_tests {
         fs::create_dir_all(&pop).unwrap();
         fs::write(pop.join("poppins-400-normal.ttf"), &fake).unwrap();
         assert!(!dir_vf_primary_ready(&pop, "Poppins"));
+        // Finlandica Text (catalog dual-VF) — roman alone not enough.
+        let ft = parent.join("Finlandica Text");
+        fs::create_dir_all(&ft).unwrap();
+        fs::write(ft.join("finlandica-text-variable-wght.ttf"), &fake).unwrap();
+        assert!(family_expects_dual_variable("Finlandica Text"));
+        assert!(!dir_vf_primary_ready(&ft, "Finlandica Text"));
+        fs::write(ft.join("finlandica-text-variable-wght-italic.ttf"), &fake).unwrap();
+        assert!(dir_vf_primary_ready(&ft, "Finlandica Text"));
+        assert!(!family_expects_dual_variable("Finlandica"));
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn purge_after_successful_vf_add_ordering_keep_statics_until_commit() {
+        // Skye P1: merge keep_statics + no purge on adopt; vars-only merge after.
+        let statics = vec!["inter-400-normal.ttf".into()];
+        let vars = vec!["inter-variable-wght.ttf".into()];
+        let kept = merge_variable_into_planned_keys_keep_statics(&statics, &vars);
+        assert!(kept.iter().any(|k| k.contains("-variable-")));
+        assert!(kept.iter().any(|k| k == "inter-400-normal.ttf"));
+        let only = merge_variable_into_planned_keys(&statics, &vars);
+        assert_eq!(only, vars);
+        assert!(!only.iter().any(|k| k.contains("-normal")));
     }
 
     #[test]
@@ -10225,14 +10305,14 @@ mod install_path_tests {
             keys.iter().any(|k| k == var_roman),
             "planned must include variable after adopt: {keys:?}"
         );
+        // Skye P1: adopt must NOT purge — statics stay until VarsOnly Add>0.
         assert!(
-            !keys.iter().any(|k| k == inst),
-            "1.0.206u VF-primary: planned must NOT keep static: {keys:?}"
+            keys.iter().any(|k| k == inst),
+            "pre-Add planned keeps static for fallback: {keys:?}"
         );
-        assert_eq!(keys, vec![var_roman.to_string()], "vars only after adopt");
         assert!(
-            !dir.join(inst).is_file(),
-            "redundant static purged from disk"
+            dir.join(inst).is_file(),
+            "static must remain on disk until successful VF Add"
         );
         assert!(dir_is_complete(&dir), "complete when all planned intact");
         let _ = fs::remove_dir_all(&parent);
@@ -10562,9 +10642,9 @@ mod install_path_tests {
     }
 
     #[test]
-    fn complete_statics_only_keeps_stamp_until_vf_adopt_then_purge_statics() {
+    fn complete_statics_kept_until_post_add_purge() {
         // Eric: .complete must not block VF backfill while VF missing.
-        // 1.0.206u: once VF lands via adopt, planned=vars-only and statics purged.
+        // 1.0.206u Skye: adopt keeps statics; purge only after VarsOnly Add>0.
         let parent = temp_family_dir("statics-only-complete");
         let dir = parent.join("Nunito");
         fs::create_dir_all(&dir).unwrap();
@@ -10592,13 +10672,25 @@ mod install_path_tests {
         adopt_variable_files_into_plan(&dir, &[varf.into()]);
         let keys = read_google_planned_keys(&dir).expect("planned");
         assert!(keys.iter().any(|k| k == varf), "planned gains var: {keys:?}");
-        // 1.0.206u VF-primary: planned vars-only; redundant static purged.
-        assert!(!keys.iter().any(|k| k == inst), "planned must drop static: {keys:?}");
-        assert!(!dir.join(inst).is_file(), "static purged after VF adopt");
-        let _ = static_bytes_before; // was used pre-206u to assert untouched bytes
+        // Skye P1: adopt keeps statics until VarsOnly Add>0.
+        assert!(keys.iter().any(|k| k == inst), "planned keeps static pre-Add: {keys:?}");
+        assert_eq!(
+            fs::read(dir.join(inst)).unwrap(),
+            static_bytes_before,
+            "static face bytes untouched by adopt"
+        );
         assert!(dir.is_dir());
+        assert!(dir.join(inst).is_file());
         assert!(dir.join(varf).is_file(), "VF remains");
         assert!(dir_is_complete(&dir), "stamp honest once vars intact");
+        // Simulate post-Add commit: vars-only plan + purge.
+        write_google_planned(&dir, &[varf.into()]);
+        mark_family_complete(&dir, 1);
+        let (del, lock) = purge_redundant_statics_in_dir(&dir, "Nunito");
+        assert_eq!(lock, 0);
+        assert!(del >= 1, "purge-after-successful-VF-Add deletes static");
+        assert!(!dir.join(inst).is_file(), "static gone after post-Add purge");
+        assert!(dir.join(varf).is_file(), "VF remains after purge");
         let _ = fs::remove_dir_all(&parent);
     }
 
