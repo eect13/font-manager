@@ -76,8 +76,8 @@ export function DownloadBar() {
   const registering = job.mode === "register" || job.owner === "register" || /registering/i.test(job.current);
   // 1.0.190: calm Restoring N/T — not download hang chrome.
   const restoring = /restoring/i.test(job.current);
-  // 1.0.206w: Refresh Documents owns the bar — never bare "Downloading".
-  const docsSync = isDocsVfSyncJob() || /syncing documents|scanning documents/i.test(job.current);
+  // 1.0.206w amend: sticky docs ownership only — never bare "scanning documents" (Activate shares it).
+  const docsSync = isDocsVfSyncJob();
   const pct = job.total > 0 || job.done > 0 ? clampPct((100 * processed) / total) : job.paused ? holdPct.current : 0;
   if (pct > holdPct.current) holdPct.current = pct;
   const shownPct = job.paused ? Math.max(pct, holdPct.current) : pct;

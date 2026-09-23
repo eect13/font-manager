@@ -2,7 +2,7 @@ import { Power, RefreshCw, ScanSearch } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { cancelDownloadQueue, didDocsVfSyncCancelToast, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { armDocsVfSyncOwnership, cancelDownloadQueue, didDocsVfSyncCancelToast, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
@@ -471,6 +471,8 @@ export function RefreshDocumentsMenuItem() {
       data-testid="refresh-documents"
       onSelect={() => {
         void (async () => {
+          // Arm sticky before toast Cancel so mid-scan Cancel is docs-owned (not Download cancelled).
+          armDocsVfSyncOwnership();
           toast.message("Refreshing Documents folder…", {
             id: "sync-docs-vf",
             description:
@@ -492,7 +494,7 @@ export function RefreshDocumentsMenuItem() {
           // Rescan honesty after purge.
           await syncManagedDocumentsRoot();
           if (result.cancelled) {
-            // 1.0.206w: cancelDownloadQueue owns Documents refresh cancelled (sticky); skip double-toast.
+            // 1.0.206w amend: skip if cancel already toasted; else toast on Rust cancelled.
             if (!didDocsVfSyncCancelToast()) {
               toast.message("Documents refresh cancelled", {
                 id: "sync-docs-vf",
