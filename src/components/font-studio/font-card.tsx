@@ -391,7 +391,7 @@ export const FontCard = memo(function FontCard({
   );
 
   const specimenPane = (
-    <div className={cn("fm-spec-pane px-4", layout === "list" ? "py-2" : "py-3")}>
+    <div className={cn("fm-spec-pane px-4", layout === "list" ? "fm-spec-list" : "fm-spec-grid")}>
       {specimen}
       {axisPop}
     </div>
@@ -411,7 +411,7 @@ export const FontCard = memo(function FontCard({
       }}
       className={cn(
         "fm-font-card group relative w-full cursor-pointer overflow-hidden rounded-xl text-left shadow-border",
-        layout === "list" ? "flex h-[9.5rem] flex-col" : "flex h-[14.5rem] flex-col",
+        layout === "list" ? "fm-layout-list flex flex-col" : "fm-layout-grid flex flex-col",
         THEME[preview.theme],
       )}
     >
@@ -437,7 +437,7 @@ export const FontCard = memo(function FontCard({
 
       {layout === "list" ? (
         <>
-          <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
+          <div className={cn("fm-card-meta flex w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             {settled ? (
@@ -457,7 +457,7 @@ export const FontCard = memo(function FontCard({
       ) : (
         <>
           {specimenPane}
-          <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-t px-3", metaTone)}>
+          <div className={cn("fm-card-meta flex w-full min-w-0 shrink-0 items-center gap-1.5 border-t px-3", metaTone)}>
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             <span className="ml-auto flex min-w-0 items-center gap-1.5">

@@ -4,6 +4,7 @@ import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { ThemeRoot } from "@/components/font-studio/theme-root";
 import { AppShell } from "@/components/font-studio/app-shell";
 import { THEME_BOOTSTRAP } from "@/lib/theme";
+import { UI_DENSITY_BOOT } from "@/lib/ui-density";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "Font Manager";
@@ -56,6 +57,7 @@ export const Route = createRootRoute({
       <html lang="en" className="antialiased" data-theme="dark" suppressHydrationWarning>
         <head>
           <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
+          <script dangerouslySetInnerHTML={{ __html: UI_DENSITY_BOOT }} />
           <HeadContent />
         </head>
         <body className="bg-background text-foreground">

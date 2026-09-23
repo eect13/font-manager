@@ -18,6 +18,7 @@ import { activateQueueIds, catalogMenuRemaining } from "@/lib/fonts/activate-que
 import { requestActivateConfirm } from "@/lib/fonts/activate-confirm";
 import { visibleFamilySet } from "@/lib/fonts/visible-families";
 import {
+  cancelLabelActivateIds,
   orderPreferKeys,
   PREFER_FIRST_PAGE,
   splitPreferRemainderIds,
@@ -60,13 +61,9 @@ export function activateSet(ids: string[], label: string) {
     // 1.0.206n: reuse preferBuckets.visibleIds (no second visibleFamilySet pass).
     const visibleIds = buckets.visibleIds;
     // Cancel targets: visible, or first-page/selection/recent when visible=0 (P3).
-    // 1.0.206o: pass buckets so Cancel-label orderActivateIds does not rebuild preferBuckets/visibleFamilySet.
-    const cancelIds =
-      visibleIds.length > 0
-        ? orderActivateIds(visibleIds, state, buckets)
-        : prefer.length
-          ? prefer
-          : ordered.slice(0, Math.min(24, ordered.length));
+    // 1.0.206o: buckets reused (no second preferBuckets). 1.0.206p: filter ordered /
+    // reuse when all-visible — no second orderActivateIds prefer pass.
+    const cancelIds = cancelLabelActivateIds(ordered, visibleIds, prefer);
 
     // Wave0: enqueue selected → favorites → viewport → first-page → recent immediately (1.0.206l).
     if (prefer.length) {
