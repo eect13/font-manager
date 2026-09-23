@@ -126,15 +126,16 @@ test("P1 pendingDeactivate aligned — not counted as remaining", () => {
   assert.equal(catalogMenuRemaining(fonts, state), 1);
 });
 
-test("docs mark 206i; session restore prefer still deferred", () => {
+test("docs mark 206i; session restore prefer landed 206l (not soft-deferred)", () => {
   assert.match(readme, /1\.0\.206i/);
   assert.match(bugs, /1\.0\.206i/);
   assert.match(bugs, /unload_now.*honor|honor.*Pause|Pause\+Cancel/i);
   assert.match(bugs, /catalogMenuRemaining|catalogMenuStats\.remaining/i);
-  assert.match(bugs, /Deferred \(still\):.*session restore prefer|session restore prefer/i);
-  assert.match(
+  // 1.0.206n hygiene: assert landed, not soft-pass on "Deferred P1 (landed …)" wording.
+  assert.match(bugs, /session restore prefer landed 206l|Landed 1\.0\.206l.*prefer waves/i);
+  assert.doesNotMatch(
     bugs,
-    /Deferred P1.*visible\/favorites\/first-page|session restore.*deferred/i,
+    /Deferred \(still\): session restore prefer visible\/favorites\/first-page/,
   );
 });
 

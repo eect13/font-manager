@@ -101,10 +101,15 @@ test("P2 remove-mode Pause/Cancel on download bar", () => {
   assert.match(osActivate, /Deactivate cancelled/);
 });
 
-test("docs mark 206h; session restore prefer still deferred", () => {
+test("docs mark 206h; session restore prefer landed 206l (not soft-deferred)", () => {
   assert.match(readme, /1\.0\.206h/);
   assert.match(bugs, /1\.0\.206h/);
-  assert.match(bugs, /Deferred P1.*visible\/favorites\/first-page|session restore.*deferred/i);
+  // 1.0.206n hygiene: do not soft-pass on "Deferred P1 (landed 1.0.206l)" wording.
+  assert.match(bugs, /session restore prefer landed 206l|Landed 1\.0\.206l.*prefer waves/i);
+  assert.doesNotMatch(
+    bugs,
+    /Deferred \(still\): session restore prefer visible\/favorites\/first-page/,
+  );
 });
 
 test("no reopen: Live=Add>0 / Gidugu-hard / Soft Retry / modal wave0 / Google↔FS", () => {

@@ -1,3 +1,11 @@
+## Fixed in tip / 1.0.206n
+- **Tip hygiene (Skye WITHDREW 206m):** `tip-1.0.206h` / `tip-1.0.206i` no longer soft-pass on “Deferred P1 (landed 1.0.206l)” — assert session restore prefer **landed 206l**. Progressive restore BUGS line says Landed (not Deferred P1).
+- **Bulk confirm opt:** reuse `buckets.visibleIds` (no second `visibleFamilySet` / visibleIds pass on Activate All confirm path).
+- **Prefer-order comment:** wave0 comment = `selected → favorites → viewport → first-page → recent` (matches real prefer-order).
+- **Chrome honesty sweep:** confirm + Activate toast keep selected/favorites/visible/first-page/recent; tip asserts no omit-list / no scramble order in wave0 comment.
+- **Wall-clock Activate:** win = prep/skip/prefer only — never imply FontBase-parallel Add. Standing locks: Live=Add>0; Settled skip; Gidugu-hard only; soft emoji try-Add; Google↔FS hard separation; no parallel Add / FR_PRIVATE / GDI quota / fake Live. Compact density still OOS.
+- **Deferred (still):** compact density (Eric skipped). ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206m
 - **Prefer copy honesty (Skye WITHDREW APPROVE FOR PACK):** Confirm dialog + Activate wave0 toast listed visible/selected/favorites/recent (or Visible/favorites/recent) without **first-page** — soft-lie when wave0 is first-page-only. Copy now includes selected/favorites/visible/first-page/recent. Tip asserts lock honest strings.
 - **preferBuckets (nit):** single visible + `scopeFirstPageIds` call per Activate All (shared into order + split).
@@ -165,7 +173,7 @@
 - **Variable list lacking (P0 regression):** 1.0.176 accidentally reverted 1.0.170’s catalog Variable facet when landing Gidugu/Clear Sans. Sidebar / `variable` query again = **catalogVariable OR on-disk VF** (like Italic); card badge / axes stay on-disk `*-variable-*` only. Material Symbols* WOFF2-only excluded. Scan `has_variable` again accepts `VariableFont_` / bracket names. Activated `poolForScope` prefers store `googleFonts` so disk VF badge honesty is not wiped by static `FONT_BY_ID` (`variable:false`). Expected facet ≈ Google **558** + **9** Fontsource TTF VFs. Progressive session restore (1.0.190) kept. No tip-install/pack.
 
 ## Fixed in tip / 1.0.190
-- **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Deferred P1 (landed 1.0.206l):** visible/favorites/first-page prefer waves. Compact density still deferred.
+- **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Landed 1.0.206l:** visible/favorites/first-page prefer waves (no longer deferred). Compact density still deferred.
 
 ## Fixed in tip / 1.0.189
 - **Quit kill mid-Remove (P0):** `quit_unload_budget_for` was hard-coded 4s for any path count — Activate All (~2k) quit watchdog `process::exit(0)` mid-Remove, leaving GDI-live faces and locked Documents folders. Restored **scaled** budget: `max(12s, min(180s, path_count × 15ms))` (~2k ≈ 31.5s, ~11k ≈ 165s). Watchdog is hung-GDI backstop only; worker still `exit(0)` when `session_end` completes. No FontCache restart on quit (Explorer hang). Hide-window + worker unload + next-boot recover kept.

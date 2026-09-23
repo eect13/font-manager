@@ -40,8 +40,6 @@ function webPreviewNote(label: string) {
 export function activateSet(ids: string[], label: string) {
   if (!ids.length) return false;
   const state = useFontStore.getState();
-  const local = state.localFonts;
-  const google = state.googleFonts;
 
   // 1.0.205 P0 / 1.0.206i: skip Settled / hard Gidugu / pending-off — menu remaining uses same filter.
   const usable = activateQueueIds(ids, state);
@@ -59,11 +57,8 @@ export function activateSet(ids: string[], label: string) {
 
   // Soft confirm when bulk N > ~50 — wave0 (prefer) immediately; remainder after in-app modal.
   if (usable.length > 50) {
-    const vis = visibleFamilySet();
-    const visibleIds = usable.filter((id) => {
-      const font = findFontRecord(id, local, google);
-      return font ? vis.has(font.family.trim().toLowerCase()) : false;
-    });
+    // 1.0.206n: reuse preferBuckets.visibleIds (no second visibleFamilySet pass).
+    const visibleIds = buckets.visibleIds;
     // Cancel targets: visible, or first-page/selection/recent when visible=0 (P3).
     const cancelIds =
       visibleIds.length > 0
@@ -72,7 +67,7 @@ export function activateSet(ids: string[], label: string) {
           ? prefer
           : ordered.slice(0, Math.min(24, ordered.length));
 
-    // Wave0: enqueue visible/selected/favorites/first-page/recent immediately (1.0.206l).
+    // Wave0: enqueue selected → favorites → viewport → first-page → recent immediately (1.0.206l).
     if (prefer.length) {
       void activateInWaves(prefer, `${label} (first)`);
     }
@@ -116,14 +111,6 @@ export function activateSet(ids: string[], label: string) {
   return true;
 }
 
-
-function findFontRecord(
-  id: string,
-  local: FontRecord[],
-  google: FontRecord[],
-): FontRecord | undefined {
-  return local.find((f) => f.id === id) ?? google.find((f) => f.id === id);
-}
 
 /** First-page ids of current library scope (intersected with candidates). */
 function scopeFirstPageIds(
