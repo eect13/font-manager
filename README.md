@@ -1,5 +1,7 @@
 # Font Manager **1.0.206**
 
+**1.0.206t (Skye P0 — React #185 Library overflow).** Unstable Zustand getSnapshot in ActivateVisibleMenuItem (fresh string[] each call, no useShallow) → React 19 + Zustand 5 Maximum update depth when opening Library / All typefaces / catalog ⋯ menus. Fix: primitive visibleCount subscription; resolve ids onSelect; shallow libraryIds/catalogIds (no inline getState ids amplifier). 206s UIA hooks kept. TIP_SHA.txt tip-install provenance stamp (write-tip-sha.mjs + before-build). ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
 **1.0.206s (Eric GO — Windows UIA smoke hooks).** Stable aria-label + data-testid for Settings, Comfortable/Compact density, Activate All, Deactivate All, Pause/Cancel (+Resume). A11y attrs only — no activate path / density CSS / ProductVersion bump. Standing honesty locks kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
 
 **1.0.206r (Skye P2 density — dialogs / empty / settings).** Compact|Comfortable CSS vars for secondary chrome: dialogs/sheets (`--fm-dialog-*` / `--fm-sheet-pad`), empty panes (`--fm-empty-*`), Desktop Settings rows (`--fm-settings-*`). Primary + secondary chrome density-aware; toasts/chips/pickers/playground/duplicates still out. Standing Activate/Deactivate honesty locks re-asserted (no Off-at-spawn; Cancel Deactivate; Live=Add>0; Gidugu-hard; no parallel Add). Density-only — no activate/unload edits. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.

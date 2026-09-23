@@ -1,3 +1,10 @@
+## Fixed in tip / 1.0.206t
+- **P0 amend (Skye 7.2):** `LibraryActivateMenuItem` must not nest `libraryIds[]` inside `useShallow({...})` — nested `Object.is` always false → #185. Catalog-style: `libraryIds = useFontStore(useShallow(s => [...]))` array root + separate primitive selectors for `count` / `remaining` / `anyOn`.
+- **P0 React #185 (Maximum update depth) on Library / All typefaces overflow:** Unstable Zustand getSnapshot in `ActivateVisibleMenuItem` — selector returned a NEW `string[]` every call with no `useShallow` → React 19 + Zustand 5 max update depth when sidebar mounted Library (full google+local ids) or catalog overflow menus. Fix: subscribe to a **primitive count** only; resolve visible ids inside `onSelect` via `resolveVisibleActivateIds` (still `activateQueueIds` + visible intersect — 206q honesty kept). Also stop Library `ids={[...getState()...]}` amplifier — one shallow `libraryIds` / `catalogIds` snapshot.
+- **206s a11y kept:** Activate All / Deactivate All `aria-label` + `data-testid` unchanged.
+- **Install provenance stamp (no pack):** `scripts/write-tip-sha.mjs` writes `TIP_SHA.txt` (sha/short/branch/tip/stamped_at) next to install dir or exe; `tauri-before-build.mjs` stamps the UI bundle dir. After a tip copy, call write-tip-sha so smoke can trust binary SHA (Skye saw installed SHA ≠ tip SHA).
+- ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206s
 - **UIA smoke hooks (a11y attrs only):** Stable Windows UIA names for Skye live-test of density + Activate/Deactivate. Settings gear `aria-label="Settings"` + `data-testid="settings-open"`; density Comfortable/Compact `aria-label` + `data-testid="density-*"` (keep aria-pressed + title); Activate All / Deactivate All menu items `aria-label` + `data-testid`; download-bar Pause/Cancel (+Resume) `aria-label` + `data-testid="activate-bar-*"`.
 - **Scope:** a11y attrs ONLY — no store/os-activate edits, no activateSet/queue/Settled skip changes, no density CSS vars, no ProductVersion bump.

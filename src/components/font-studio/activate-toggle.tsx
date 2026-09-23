@@ -284,26 +284,42 @@ export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string 
 }
 
 
-export function ActivateVisibleMenuItem({ ids, label }: { ids: string[]; label: string }) {
+/** Visible ids for Activate visible — resolve at click, never as Zustand snapshot (1.0.206t #185). */
+function resolveVisibleActivateIds(ids: string[]): string[] {
+  const s = useFontStore.getState();
   const vis = visibleFamilySet();
+  const out: string[] = [];
   // 1.0.206q: route Settled/hard skip through activateQueueIds (no dual filter);
   // then intersect viewport-visible families.
-  const visibleIds = useFontStore((s) => {
-    const out: string[] = [];
+  for (const id of activateQueueIds(ids, s)) {
+    const font =
+      s.localFonts.find((f) => f.id === id) ?? s.googleFonts.find((f) => f.id === id);
+    if (font && vis.has(font.family.trim().toLowerCase())) out.push(id);
+  }
+  return out;
+}
+
+export function ActivateVisibleMenuItem({ ids, label }: { ids: string[]; label: string }) {
+  // 1.0.206t: subscribe to a primitive count only — returning a fresh string[] from
+  // useFontStore (without useShallow) caused React 19 + Zustand 5 max update depth #185
+  // when Library / catalog overflow menus mounted ActivateVisibleMenuItem.
+  const visibleCount = useFontStore((s) => {
+    const vis = visibleFamilySet();
+    let n = 0;
     for (const id of activateQueueIds(ids, s)) {
       const font =
         s.localFonts.find((f) => f.id === id) ?? s.googleFonts.find((f) => f.id === id);
-      if (font && vis.has(font.family.trim().toLowerCase())) out.push(id);
+      if (font && vis.has(font.family.trim().toLowerCase())) n += 1;
     }
-    return out;
+    return n;
   });
   return (
     <DropdownMenuItem
-      disabled={!visibleIds.length}
-      onSelect={() => activateSet(visibleIds, `${label} (visible)`)}
+      disabled={!visibleCount}
+      onSelect={() => activateSet(resolveVisibleActivateIds(ids), `${label} (visible)`)}
     >
       <Power className="size-3.5" />
-      Activate visible ({visibleIds.length.toLocaleString()})
+      Activate visible ({visibleCount.toLocaleString()})
     </DropdownMenuItem>
   );
 }
@@ -516,29 +532,32 @@ function CatalogActivateMenuItem({
       ),
     ),
   );
-  function ids() {
-    const list = useFontStore.getState().googleFonts;
-    return filter ? list.filter(filter).map((font) => font.id) : list.map((font) => font.id);
-  }
+  // 1.0.206t: stable catalog id list via useShallow — no fresh ids() each render.
+  const catalogIds = useFontStore(
+    useShallow((s) => {
+      const list = s.googleFonts;
+      return filter ? list.filter(filter).map((font) => font.id) : list.map((font) => font.id);
+    }),
+  );
   return (
     <>
       <DropdownMenuItem
         disabled={!count}
         aria-label="Activate All"
         data-testid="activate-all"
-        onSelect={() => activateSet(ids(), label)}
+        onSelect={() => activateSet(catalogIds, label)}
       >
         <Power className="size-3.5" />
         {remaining && remaining < count
           ? `Activate remaining (${remaining.toLocaleString()})`
           : "Activate all"}
       </DropdownMenuItem>
-      <ActivateVisibleMenuItem ids={ids()} label={label} />
+      <ActivateVisibleMenuItem ids={catalogIds} label={label} />
       <DropdownMenuItem
         disabled={!anyOn}
         aria-label="Deactivate All"
         data-testid="deactivate-all"
-        onSelect={() => deactivateSet(ids(), label)}
+        onSelect={() => deactivateSet(catalogIds, label)}
       >
         <Power className="size-3.5" />
         Deactivate all
@@ -549,6 +568,14 @@ function CatalogActivateMenuItem({
 }
 
 export function LibraryActivateMenuItem() {
+  // 1.0.206t amend (Skye 7.2): Catalog-style array-root useShallow — do NOT nest a
+  // fresh libraryIds[] inside a shallow object (nested Object.is always false → #185).
+  const libraryIds = useFontStore(
+    useShallow((s) => [
+      ...s.googleFonts.map((f) => f.id),
+      ...s.localFonts.map((f) => f.id),
+    ]),
+  );
   const count = useFontStore((s) => s.googleFonts.length + s.localFonts.length);
   const remaining = useFontStore((s) => {
     const hide = s.autoHideDuplicates ? new Set(s.duplicateHideIds) : null;
@@ -583,37 +610,19 @@ export function LibraryActivateMenuItem() {
         disabled={!count}
         aria-label="Activate All"
         data-testid="activate-all"
-        onSelect={() => {
-          const { googleFonts, localFonts } = useFontStore.getState();
-          activateSet(
-            [...googleFonts, ...localFonts].map((font) => font.id),
-            "Library",
-          );
-        }}
+        onSelect={() => activateSet(libraryIds, "Library")}
       >
         <Power className="size-3.5" />
         {remaining && remaining < count
           ? `Activate remaining (${remaining.toLocaleString()})`
           : "Activate all"}
       </DropdownMenuItem>
-      <ActivateVisibleMenuItem
-        ids={[
-          ...useFontStore.getState().googleFonts.map((f) => f.id),
-          ...useFontStore.getState().localFonts.map((f) => f.id),
-        ]}
-        label="Library"
-      />
+      <ActivateVisibleMenuItem ids={libraryIds} label="Library" />
       <DropdownMenuItem
         disabled={!anyOn}
         aria-label="Deactivate All"
         data-testid="deactivate-all"
-        onSelect={() => {
-          const { googleFonts, localFonts } = useFontStore.getState();
-          deactivateSet(
-            [...googleFonts, ...localFonts].map((font) => font.id),
-            "Library",
-          );
-        }}
+        onSelect={() => deactivateSet(libraryIds, "Library")}
       >
         <Power className="size-3.5" />
         Deactivate all
