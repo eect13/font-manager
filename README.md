@@ -1,5 +1,7 @@
 # Font Manager **1.0.206**
 
+**1.0.206s (Eric GO — Windows UIA smoke hooks).** Stable aria-label + data-testid for Settings, Comfortable/Compact density, Activate All, Deactivate All, Pause/Cancel (+Resume). A11y attrs only — no activate path / density CSS / ProductVersion bump. Standing honesty locks kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
 **1.0.206r (Skye P2 density — dialogs / empty / settings).** Compact|Comfortable CSS vars for secondary chrome: dialogs/sheets (`--fm-dialog-*` / `--fm-sheet-pad`), empty panes (`--fm-empty-*`), Desktop Settings rows (`--fm-settings-*`). Primary + secondary chrome density-aware; toasts/chips/pickers/playground/duplicates still out. Standing Activate/Deactivate honesty locks re-asserted (no Off-at-spawn; Cancel Deactivate; Live=Add>0; Gidugu-hard; no parallel Add). Density-only — no activate/unload edits. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
 
 **1.0.206q (Skye NO-LIE — Pause toast / ActivateVisible / hard-GDI SoT / density chrome honesty).** Pause toast % = done/total only (not max(done,skipped)). ActivateVisibleMenuItem → `activateQueueIds` + visible intersect. `activate-queue.mjs` hard skip shares `gdi-incapable` SoT (Gidugu only). Density: wire download bar + shell header `--fm-*` vars under `data-ui-density`; docs say primary chrome incl. bar+header (not everywhere). Tip soft-OR Deferred bait killed; l/n/o Deferred scoped historical. Standing locks kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.

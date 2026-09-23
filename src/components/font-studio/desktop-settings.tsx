@@ -31,7 +31,7 @@ export function DesktopSettings() {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button size="icon-sm" variant="ghost" aria-label="Desktop settings">
+        <Button size="icon-sm" variant="ghost" aria-label="Settings" data-testid="settings-open">
           <Settings />
         </Button>
       </DialogTrigger>
@@ -56,8 +56,10 @@ export function DesktopSettings() {
                 type="button"
                 size="sm"
                 variant={density === opt.id ? "default" : "outline"}
+                aria-label={opt.label}
                 aria-pressed={density === opt.id}
                 title={opt.hint}
+                data-testid={`density-${opt.id}`}
                 onClick={() => setDensity(opt.id)}
               >
                 {opt.label}
