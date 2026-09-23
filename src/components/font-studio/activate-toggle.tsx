@@ -60,9 +60,10 @@ export function activateSet(ids: string[], label: string) {
     // 1.0.206n: reuse preferBuckets.visibleIds (no second visibleFamilySet pass).
     const visibleIds = buckets.visibleIds;
     // Cancel targets: visible, or first-page/selection/recent when visible=0 (P3).
+    // 1.0.206o: pass buckets so Cancel-label orderActivateIds does not rebuild preferBuckets/visibleFamilySet.
     const cancelIds =
       visibleIds.length > 0
-        ? orderActivateIds(visibleIds, state)
+        ? orderActivateIds(visibleIds, state, buckets)
         : prefer.length
           ? prefer
           : ordered.slice(0, Math.min(24, ordered.length));
