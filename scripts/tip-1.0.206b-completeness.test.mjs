@@ -45,11 +45,12 @@ test("Completeness P0: emoji full upstream — never CSS/latin stubs for color",
   assert.match(osActivate, /NotoColorEmoji\.ttf/);
 });
 
-test("Completeness P0: VF families keep vars + statics (Google path)", () => {
+test("Completeness P0: VF families download vars (Google path); 206u VF-primary vars-only planned", () => {
   assert.match(activateRs, /fn download_google_variable_ttfs/);
   assert.match(activateRs, /fn ensure_catalog_variable_faces/);
   assert.match(activateRs, /merge_variable_into_planned_keys/);
-  assert.match(activateRs, /never var-only/);
+  // 1.0.206u superseded "statics as backup / never var-only" — planned = vars only when VF present.
+  assert.match(activateRs, /VF-primary|vars only|vars-only/);
 });
 
 test("Honesty P0: Live = Add>0; Gidugu hard; emoji soft try-Add then Settled", () => {

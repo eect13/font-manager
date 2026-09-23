@@ -608,6 +608,53 @@ export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
   }
 }
 
+
+export type SyncDocsResult = {
+  familiesSeen: number;
+  familiesPurged: number;
+  staticsDeleted: number;
+  locked: number;
+  cancelled: boolean;
+};
+
+/** 1.0.206u: Refresh Documents — purge redundant statics when intact VF present. */
+export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
+  if (!(await inDesktopShell())) return null;
+  if (!beginOwnedJob("download", { total: 1, current: "Scanning Documents…" })) {
+    toast.message("Busy", {
+      description: "Activate/download already running — Cancel or wait, then Refresh again.",
+    });
+    return null;
+  }
+  startGooglePoll("download");
+  try {
+    const raw = await tauriInvoke<{
+      familiesSeen?: number;
+      families_seen?: number;
+      familiesPurged?: number;
+      families_purged?: number;
+      staticsDeleted?: number;
+      statics_deleted?: number;
+      locked?: number;
+      cancelled?: boolean;
+    }>("sync_documents_vf_policy");
+    if (!raw) return null;
+    return {
+      familiesSeen: raw.familiesSeen ?? raw.families_seen ?? 0,
+      familiesPurged: raw.familiesPurged ?? raw.families_purged ?? 0,
+      staticsDeleted: raw.staticsDeleted ?? raw.statics_deleted ?? 0,
+      locked: raw.locked ?? 0,
+      cancelled: Boolean(raw.cancelled),
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? "sync failed");
+    toast.error("Could not refresh Documents", { description: msg });
+    return null;
+  } finally {
+    finishOwnedJob("download");
+  }
+}
+
 /** Keep library diskFamilies in sync with Documents\Font Manager (incl. Activated/Library). */
 export async function syncManagedDocumentsRoot(): Promise<DiskFamilyInfo[]> {
   const rows = await scanDiskFamilies();

@@ -1,8 +1,8 @@
-import { Power, ScanSearch } from "lucide-react";
+import { Power, RefreshCw, ScanSearch } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { pruneUnknownFolders, repairIncompleteFamilies, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { cancelDownloadQueue, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
@@ -268,17 +268,19 @@ export function deactivateSet(ids: string[], label: string) {
 export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string }) {
   const remaining = useFontStore((s) => activateQueueIds(ids, s).length);
   const total = ids.length;
+  const activateLabel =
+    remaining && remaining < total
+      ? `Activate remaining (${remaining.toLocaleString()})`
+      : "Activate all";
   return (
     <DropdownMenuItem
       disabled={!total}
-      aria-label="Activate All"
+      aria-label={activateLabel === "Activate all" ? "Activate All" : activateLabel}
       data-testid="activate-all"
       onSelect={() => activateSet(ids, label)}
     >
       <Power className="size-3.5" />
-      {remaining && remaining < total
-        ? `Activate remaining (${remaining.toLocaleString()})`
-        : "Activate all"}
+      {activateLabel}
     </DropdownMenuItem>
   );
 }
@@ -461,6 +463,61 @@ export function ScanDiskMenuItem() {
   );
 }
 
+
+export function RefreshDocumentsMenuItem() {
+  return (
+    <DropdownMenuItem
+      aria-label="Refresh Documents folder"
+      data-testid="refresh-documents"
+      onSelect={() => {
+        void (async () => {
+          toast.message("Refreshing Documents folder…", {
+            id: "sync-docs-vf",
+            description:
+              "Removes redundant statics when a variable font is present. Keeps static-only families. Cancel from the progress bar.",
+            duration: 8_000,
+            action: {
+              label: "Cancel",
+              onClick: () => void cancelDownloadQueue(),
+            },
+          });
+          const result = await syncDocumentsVfPolicy();
+          if (!result) {
+            toast.error("Could not refresh Documents", {
+              id: "sync-docs-vf",
+              description: "Activate/download may be running — Cancel or wait, then try again.",
+            });
+            return;
+          }
+          // Rescan honesty after purge.
+          await syncManagedDocumentsRoot();
+          if (result.cancelled) {
+            toast.message("Documents refresh cancelled", {
+              id: "sync-docs-vf",
+              description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
+            });
+            return;
+          }
+          const lockBit = result.locked
+            ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`
+            : "";
+          toast.success(
+            `Documents refreshed — ${result.staticsDeleted.toLocaleString()} redundant statics removed`,
+            {
+              id: "sync-docs-vf",
+              description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated${lockBit}. Static-only families kept.`,
+              duration: 12_000,
+            },
+          );
+        })();
+      }}
+    >
+      <RefreshCw className="size-3.5" />
+      Refresh Documents — VF policy
+    </DropdownMenuItem>
+  );
+}
+
 export function GoogleActivateMenuItem() {
   return (
     <CatalogActivateMenuItem
@@ -543,7 +600,11 @@ function CatalogActivateMenuItem({
     <>
       <DropdownMenuItem
         disabled={!count}
-        aria-label="Activate All"
+        aria-label={
+          remaining && remaining < count
+            ? `Activate remaining (${remaining.toLocaleString()})`
+            : "Activate All"
+        }
         data-testid="activate-all"
         onSelect={() => activateSet(catalogIds, label)}
       >
@@ -563,6 +624,7 @@ function CatalogActivateMenuItem({
         Deactivate all
       </DropdownMenuItem>
       <ScanDiskMenuItem />
+      <RefreshDocumentsMenuItem />
     </>
   );
 }
@@ -608,7 +670,11 @@ export function LibraryActivateMenuItem() {
     <>
       <DropdownMenuItem
         disabled={!count}
-        aria-label="Activate All"
+        aria-label={
+          remaining && remaining < count
+            ? `Activate remaining (${remaining.toLocaleString()})`
+            : "Activate All"
+        }
         data-testid="activate-all"
         onSelect={() => activateSet(libraryIds, "Library")}
       >
@@ -627,6 +693,8 @@ export function LibraryActivateMenuItem() {
         <Power className="size-3.5" />
         Deactivate all
       </DropdownMenuItem>
+      <ScanDiskMenuItem />
+      <RefreshDocumentsMenuItem />
     </>
   );
 }

@@ -133,7 +133,8 @@ test("LibraryActivateMenuItem: Catalog-style array-root useShallow (no nested li
   assert.match(body, /const remaining = useFontStore\(/);
   assert.match(body, /const anyOn = useFontStore\(/);
   assert.match(body, /<ActivateVisibleMenuItem ids=\{libraryIds\}/);
-  assert.match(body, /aria-label="Activate All"/);
+  // 1.0.206u: aria may be dynamic (Activate remaining) — still must expose Activate All string + testid.
+  assert.match(body, /Activate All/);
   assert.match(body, /data-testid="activate-all"/);
   assert.match(body, /aria-label="Deactivate All"/);
   assert.match(body, /data-testid="deactivate-all"/);
@@ -151,12 +152,10 @@ test("CatalogActivateMenuItem: stable catalogIds via useShallow (no ids() each r
 });
 
 test("206s UIA smoke hooks still present (a11y not regressed)", () => {
-  const activateAll = [
-    ...activateToggle.matchAll(
-      /aria-label="Activate All"[\s\S]*?data-testid="activate-all"/g,
-    ),
-  ];
-  assert.equal(activateAll.length, 3, `expected 3 Activate All hooks, got ${activateAll.length}`);
+  // 1.0.206u: aria-label may be expression (Activate remaining vs Activate All); count testids.
+  const activateAll = [...activateToggle.matchAll(/data-testid="activate-all"/g)];
+  assert.equal(activateAll.length, 3, `expected 3 activate-all testids, got ${activateAll.length}`);
+  assert.match(activateToggle, /Activate All/);
   const deactivateAll = [
     ...activateToggle.matchAll(
       /aria-label="Deactivate All"[\s\S]*?data-testid="deactivate-all"/g,

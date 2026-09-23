@@ -75,13 +75,11 @@ test("Density buttons: Comfortable/Compact aria-label + density-* testids", () =
 });
 
 test("Activate All menu items: aria-label Activate All + data-testid activate-all", () => {
-  const activateAll = [
-    ...activateToggle.matchAll(
-      /aria-label="Activate All"[\s\S]*?data-testid="activate-all"/g,
-    ),
-  ];
+  // 1.0.206u: aria-label may be dynamic (Activate remaining); require testid + Activate All string.
+  const activateAll = [...activateToggle.matchAll(/data-testid="activate-all"/g)];
   // ActivateMenuItem, CatalogActivateMenuItem, LibraryActivateMenuItem
-  assert.equal(activateAll.length, 3, `expected 3 Activate All hooks, got ${activateAll.length}`);
+  assert.equal(activateAll.length, 3, `expected 3 activate-all testids, got ${activateAll.length}`);
+  assert.match(activateToggle, /Activate All/);
   // Visible text may stay dynamic
   assert.match(activateToggle, /Activate remaining/);
   assert.match(activateToggle, /"Activate all"/);

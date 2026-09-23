@@ -1,3 +1,12 @@
+## Fixed in tip / 1.0.206u
+- **P0 VF-primary Activate:** `register_intact_family_detailed` (+ session restore): when `dir_vf_primary_ready` (intact VF; dual-VF italic CJK respected; no-public-VF denylist excluded), only Add/stage `*-variable-*`. VF Add=0 → fallback register statics. Live = Add>0 only; Inter ~2 Adds not ~20; Poppins still all statics; Gidugu Settled unchanged.
+- **P0 Download/planned:** `fetch_google_family_faces_to_dir` skips static instance fetch when VF complete; `merge_variable_into_planned_keys` → vars-only when vars present (supersedes “statics as backup / never var-only”).
+- **P0 Purge redundant statics:** `purge_redundant_statics_in_dir` deletes sibling static TTFs when VF intact (+ matching gdi-maps); recalc `.complete`. Locked → count for soft toast / Repair path. No touch Poppins-class / no-VF.
+- **P0 Refresh Documents:** `sync_documents_vf_policy` + Library/Settings control — reconcile installed folders to VF policy (progress bar + Cancel via existing download cancel). Honest toasts; rescan after; no full-catalog surprise download. `data-testid="refresh-documents"` / `refresh-documents-settings`.
+- **Nit:** visible “Activate remaining (N)” aria-label matches label (not stuck “Activate All”).
+- **Kept:** 206t #185 primitive visibleCount / array-root useShallow; TIP_SHA.txt / write-tip-sha provenance; Live=Add>0; Settled=disk+Add=0; Gidugu-hard; soft emoji try-Add; Google↔FS; no FR_PRIVATE / parallel Add / GDI quota / fake Live / Off-at-spawn.
+- ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206t
 - **P0 amend (Skye 7.2):** `LibraryActivateMenuItem` must not nest `libraryIds[]` inside `useShallow({...})` — nested `Object.is` always false → #185. Catalog-style: `libraryIds = useFontStore(useShallow(s => [...]))` array root + separate primitive selectors for `count` / `remaining` / `anyOn`.
 - **P0 React #185 (Maximum update depth) on Library / All typefaces overflow:** Unstable Zustand getSnapshot in `ActivateVisibleMenuItem` — selector returned a NEW `string[]` every call with no `useShallow` → React 19 + Zustand 5 max update depth when sidebar mounted Library (full google+local ids) or catalog overflow menus. Fix: subscribe to a **primitive count** only; resolve visible ids inside `onSelect` via `resolveVisibleActivateIds` (still `activateQueueIds` + visible intersect — 206q honesty kept). Also stop Library `ids={[...getState()...]}` amplifier — one shallow `libraryIds` / `catalogIds` snapshot.
@@ -398,7 +407,7 @@
 ## Fixed in tip / 1.0.151
 - **P0a** ACL: `repair_incomplete_families` allowlisted in `font-activate.toml` so Repair works in the installed app.
 - **P0b** Latin subset purge is slug-aware: detect Fontsource `latin` token only after the family slug (no raw `contains("-latin-")`). Families whose slug embeds "latin" (`m-plus-code-latin`, `anek-latin`) keep Google faces; true `{slug}-latin-*` packs still purge.
-- **Always download variable TTFs** for catalog-variable families — including Activate/Repair of already-`.complete` folders (no full bust). Planned = **statics + vars** (never var-only); both registered; vars listed/registered first so Illustrator/AI can pick axes; namepatched statics stay as backup.
+- **Always download variable TTFs** for catalog-variable families — including Activate/Repair of already-`.complete` folders (no full bust). Planned was statics+vars through 206t; **1.0.206u VF-primary** → planned vars-only when intact VF present (statics purged, not backup).
 
 ## Fixed in tip / 1.0.150
 - Fontsource italic-only packs (e.g. Syne Italic): use API styles only — do not invent normal; do not abort pull on 400-normal 404 when italic is planned; prefer `@latest` before pinned jsDelivr tags that return HTTP 400.

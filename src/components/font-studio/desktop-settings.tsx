@@ -1,4 +1,4 @@
-import { Settings } from "lucide-react";
+import { RefreshCw, Settings } from "lucide-react";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,7 +11,9 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { applyDesktopPrefs } from "@/lib/desktop/prefs";
+import { cancelDownloadQueue, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { useFontStore } from "@/lib/fonts/store";
+import { toast } from "sonner";
 import { useUiDensity, type UiDensity } from "@/lib/ui-density";
 
 export function DesktopSettings() {
@@ -67,6 +69,51 @@ export function DesktopSettings() {
             ))}
           </div>
         </div>
+
+        <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Documents library</p>
+            <p className="text-xs text-muted-foreground">
+              Removes redundant statics when a variable font is present. Keeps static-only families. Does not download the full catalog.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-label="Refresh Documents folder"
+            data-testid="refresh-documents-settings"
+            onClick={() => {
+              void (async () => {
+                toast.message("Refreshing Documents folder…", {
+                  id: "sync-docs-vf",
+                  description: "Cancel from the progress bar if needed.",
+                  duration: 8_000,
+                  action: { label: "Cancel", onClick: () => void cancelDownloadQueue() },
+                });
+                const result = await syncDocumentsVfPolicy();
+                if (!result) return;
+                await syncManagedDocumentsRoot();
+                if (result.cancelled) {
+                  toast.message("Documents refresh cancelled", { id: "sync-docs-vf" });
+                  return;
+                }
+                toast.success(
+                  `Documents refreshed — ${result.staticsDeleted.toLocaleString()} redundant statics removed`,
+                  {
+                    id: "sync-docs-vf",
+                    description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated.`,
+                    duration: 12_000,
+                  },
+                );
+              })();
+            }}
+          >
+            <RefreshCw className="size-3.5" />
+            Refresh Documents
+          </Button>
+        </div>
+
         <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
           Close to tray
           <Switch

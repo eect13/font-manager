@@ -170,6 +170,7 @@ fn main() {
             activate::session_boot_state,
             activate::read_family_font,
             activate::scan_disk_families,
+            activate::sync_documents_vf_policy,
             activate::prune_unknown_folders,
             parse::parse_family_cmap,
             parse::parse_family_layout,
