@@ -14,6 +14,10 @@ import {
   skipFailedDownloads,
   subscribeDownloadJob,
 } from "@/lib/fonts/os-activate";
+import {
+  advanceDocsCancelChrome,
+  cancelChromeA11y,
+} from "@/lib/fonts/docs-vf-sync-ownership.mjs";
 
 function clampPct(n: number) {
   if (!Number.isFinite(n)) return 0;
@@ -40,7 +44,13 @@ const SETTLED_IDLE_AUTO_HIDE_MS = 16_000;
 export function DownloadBar() {
   const job = useSyncExternalStore(subscribeDownloadJob, getDownloadJob, getDownloadJob);
   const [, setTick] = useState(0);
+  const [, setDocsHoldTick] = useState(0);
   const holdPct = useRef(0);
+  // 1.0.206x: latch docs Cancel identity + min display across progress ticks / early idle.
+  const docsCancelLatch = useRef<{ latched: boolean; paintedAt: number | null }>({
+    latched: false,
+    paintedAt: null,
+  });
   const skipped = job.skipped ?? 0;
   // Progress is rust `done` (families processed). Do not use `skipped` as the
   // numerator — it double-counts already-on-disk + successful Add (4044/2253).
@@ -68,47 +78,86 @@ export function DownloadBar() {
     return () => window.clearTimeout(t);
   }, [settledIdle]);
 
-  if ((!job.running && !job.paused && job.mode === "idle" && (job.owner === "idle" || !job.owner) && !job.failedNames.length && !settledIdle) || empty) {
+  // Peek docs ownership before idle early-return so min-display hold can keep Cancel ≥1s.
+  const docsSync = isDocsVfSyncJob();
+  const cancelEligible = job.running || job.paused;
+  const now = Date.now();
+  const chrome = advanceDocsCancelChrome({
+    docsOwns: docsSync,
+    cancelChromeEligible: cancelEligible || docsCancelLatch.current.latched,
+    now,
+    paintedAt: docsCancelLatch.current.paintedAt,
+    latched: docsCancelLatch.current.latched,
+  });
+  docsCancelLatch.current = { latched: chrome.latched, paintedAt: chrome.paintedAt };
+
+  // Re-render when min-display hold expires after natural docs end (no fake Pause).
+  useEffect(() => {
+    if (!chrome.holdCancelChrome || chrome.remainingMinMs <= 0) return;
+    if (job.running || job.paused) return;
+    const t = window.setTimeout(() => setDocsHoldTick((n) => n + 1), chrome.remainingMinMs + 1);
+    return () => window.clearTimeout(t);
+  }, [chrome.holdCancelChrome, chrome.remainingMinMs, job.running, job.paused]);
+
+  const holdDocsCancelChrome =
+    chrome.holdCancelChrome && !cancelEligible && chrome.showDocsCancelIdentity;
+  const idleHide =
+    (!job.running &&
+      !job.paused &&
+      job.mode === "idle" &&
+      (job.owner === "idle" || !job.owner) &&
+      !job.failedNames.length &&
+      !settledIdle) ||
+    empty;
+
+  if (idleHide && !holdDocsCancelChrome) {
     holdPct.current = 0;
     return null;
   }
+
   const scanning = /scanning/i.test(job.current);
   const registering = job.mode === "register" || job.owner === "register" || /registering/i.test(job.current);
   // 1.0.190: calm Restoring N/T — not download hang chrome.
-  const restoring = /restoring/i.test(job.current);
+  const restoring = /restoring/i.test(job.current) && !chrome.showDocsCancelIdentity;
   // 1.0.206w amend: sticky docs ownership only — never bare "scanning documents" (Activate shares it).
-  const docsSync = isDocsVfSyncJob();
+  // 1.0.206x: prefer latched docs identity for label/Cancel so progress ticks don't thrash UIA.
+  const docsChrome = chrome.showDocsCancelIdentity;
   const pct = job.total > 0 || job.done > 0 ? clampPct((100 * processed) / total) : job.paused ? holdPct.current : 0;
   if (pct > holdPct.current) holdPct.current = pct;
   const shownPct = job.paused ? Math.max(pct, holdPct.current) : pct;
   const clock = getJobClock();
-  const eta = job.paused || scanning || restoring || docsSync || settledIdle ? "" : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
+  const eta =
+    job.paused || scanning || restoring || docsChrome || settledIdle || holdDocsCancelChrome
+      ? ""
+      : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
   const label =
-    settledIdle
-      ? "Done"
-      : job.mode === "remove"
-        ? `Deactivating ${processed.toLocaleString()} / ${total.toLocaleString()}`
-        : job.failed && !job.running && !job.paused
-          ? `${job.failed.toLocaleString()} failed — retry or skip`
-          : job.paused
-            ? `Paused ${shownPct}% · ${processed.toLocaleString()} / ${total.toLocaleString()}`
-            : scanning || (docsSync && /scanning/i.test(job.current))
-              ? `Scanning Documents${total ? ` — ${total.toLocaleString()} queued` : ""}`
-              : docsSync && job.running
-                ? `Refreshing Documents ${processed.toLocaleString()} / ${total.toLocaleString()}`
-                : restoring && job.running
-                  ? `Restoring ${processed.toLocaleString()} / ${total.toLocaleString()}`
-                  : registering && job.running
-                    ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
-                    : skipped && remaining === 0 && job.running
-                      ? `Registering ${skipped.toLocaleString()} already on disk`
-                      : skipped && job.running
-                        ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - Math.min(skipped, processed)).toLocaleString()} / ${Math.max(0, total - Math.min(skipped, total)).toLocaleString()}`
-                        : job.running
-                          ? `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`
-                          : skipped && remaining === 0
-                            ? `${skipped.toLocaleString()} already on disk`
-                            : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
+    holdDocsCancelChrome
+      ? "Refreshing complete"
+      : settledIdle
+        ? "Done"
+        : job.mode === "remove"
+          ? `Deactivating ${processed.toLocaleString()} / ${total.toLocaleString()}`
+          : job.failed && !job.running && !job.paused
+            ? `${job.failed.toLocaleString()} failed — retry or skip`
+            : job.paused
+              ? `Paused ${shownPct}% · ${processed.toLocaleString()} / ${total.toLocaleString()}`
+              : scanning || (docsChrome && /scanning/i.test(job.current))
+                ? `Scanning Documents${total ? ` — ${total.toLocaleString()} queued` : ""}`
+                : docsChrome && job.running
+                  ? `Refreshing Documents ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                  : restoring && job.running
+                    ? `Restoring ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                    : registering && job.running
+                      ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                      : skipped && remaining === 0 && job.running
+                        ? `Registering ${skipped.toLocaleString()} already on disk`
+                        : skipped && job.running
+                          ? `${skipped.toLocaleString()} on disk · downloading ${Math.max(0, processed - Math.min(skipped, processed)).toLocaleString()} / ${Math.max(0, total - Math.min(skipped, total)).toLocaleString()}`
+                          : job.running
+                            ? `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                            : skipped && remaining === 0
+                              ? `${skipped.toLocaleString()} already on disk`
+                              : `Downloading ${processed.toLocaleString()} / ${total.toLocaleString()}`;
 
   return (
     <div className="fm-download-bar flex flex-col border-b border-border bg-card text-xs text-muted-foreground">
@@ -116,7 +165,8 @@ export function DownloadBar() {
         {job.running && !job.paused ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" /> : null}
         <p className="min-w-0 flex-1 truncate">
           <span className="font-medium text-foreground">{label}</span>
-          {job.current && !scanning && !restoring && !docsSync && !settledIdle ? ` — ${job.current}` : ""}
+          {/* 1.0.206x: never put rapidly changing job.current into a11y tree during docs sync. */}
+          {job.current && !scanning && !restoring && !docsChrome && !settledIdle && !holdDocsCancelChrome ? ` — ${job.current}` : ""}
           {job.failedNames.length ? (
             <span className="block truncate text-destructive">
               Couldn’t load: {job.failedNames.slice(0, 8).join(", ")}
@@ -129,7 +179,7 @@ export function DownloadBar() {
             </span>
           ) : null}
           <span className="text-muted-foreground">
-            {settledIdle
+            {settledIdle || holdDocsCancelChrome
               ? ""
               : job.paused
                 ? " · queue held at this percent — Resume continues, does not restart"
@@ -163,7 +213,21 @@ export function DownloadBar() {
             Dismiss
           </Button>
         ) : null}
-        {job.running || job.paused ? (
+        {holdDocsCancelChrome ? (
+          /* Min-display hold after docs job ended: honest Dismiss (dismissDownloadBar only) — never Cancel Name. */
+          <Button
+            key="activate-bar-dismiss"
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2"
+            data-testid="activate-bar-dismiss"
+            {...cancelChromeA11y({ dismissHold: true })}
+            onClick={() => dismissDownloadBar()}
+          >
+            <X />
+            Dismiss
+          </Button>
+        ) : job.running || job.paused ? (
           <>
             {job.paused ? (
               <Button size="sm" variant="ghost" className="h-7 px-2" aria-label="Resume" data-testid="activate-bar-resume" onClick={() => resumeDownloadQueue()}>
@@ -177,15 +241,16 @@ export function DownloadBar() {
               </Button>
             )}
             <Button
+              key="activate-bar-cancel"
               size="sm"
               variant="ghost"
               className="h-7 px-2"
-              /* 1.0.206w: stable Name for UIA — docs vs restore vs download; keep activate-bar-cancel. */
-              aria-label={docsSync ? "Cancel Documents refresh" : restoring ? "Cancel session restore" : "Cancel"}
+              /* 1.0.206x: stable key + latched docs Cancel ≥1s while cancellable; a11y from cancelChromeA11y. */
               data-testid="activate-bar-cancel"
-              data-docs-cancel={docsSync ? "activate-bar-cancel-docs" : undefined}
-              data-cancel-kind={docsSync ? "documents-refresh" : restoring ? "session-restore" : "download"}
-              id={docsSync ? "fm-cancel-documents-refresh" : restoring ? "fm-cancel-session-restore" : undefined}
+              {...cancelChromeA11y({
+                showDocsCancelIdentity: docsChrome,
+                restoring,
+              })}
               onClick={() => cancelDownloadQueue()}
             >
               <X />
