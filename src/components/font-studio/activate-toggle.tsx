@@ -6,8 +6,24 @@ import { pruneUnknownFolders, repairIncompleteFamilies, syncManagedDocumentsRoot
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
-import { useFontStore } from "@/lib/fonts/store";
+import {
+  filterLibrary,
+  poolForScope,
+  sortLibrary,
+  useFontStore,
+} from "@/lib/fonts/store";
 import type { FontRecord } from "@/lib/fonts/types";
+import { isKnownGdiSessionIncapable } from "@/lib/fonts/gdi-incapable";
+import { activateQueueIds, catalogMenuRemaining } from "@/lib/fonts/activate-queue.mjs";
+import { requestActivateConfirm } from "@/lib/fonts/activate-confirm";
+import { visibleFamilySet } from "@/lib/fonts/visible-families";
+import {
+  orderPreferKeys,
+  PREFER_FIRST_PAGE,
+  splitPreferRemainderIds,
+} from "@/lib/fonts/prefer-order.mjs";
+
+export { activateQueueIds, catalogMenuRemaining };
 
 function webPreviewNote(label: string) {
   if (label === "Fontsource") {
@@ -19,42 +35,218 @@ function webPreviewNote(label: string) {
   return "This website previews in the browser. Use the desktop app to download files into Documents.";
 }
 
+
+
 export function activateSet(ids: string[], label: string) {
   if (!ids.length) return false;
-  useFontStore.getState().setActivatedMany(ids, true);
-  void (async () => {
-    const desktop = await inDesktopShell();
-    const live = useFontStore.getState().activated.length;
-    const pending = useFontStore.getState().pendingActivate.length;
-    if (!desktop) {
-      toast.success(`${label} on — ${live.toLocaleString()} live`, {
-        description: webPreviewNote(label),
-      });
-      return;
+  const state = useFontStore.getState();
+
+  // 1.0.205 P0 / 1.0.206i: skip Settled / hard Gidugu / pending-off — menu remaining uses same filter.
+  const usable = activateQueueIds(ids, state);
+  if (!usable.length) {
+    toast.message(`Nothing to activate in ${label}`, {
+      description: "Already Live, pending, or Settled (known Add=0).",
+    });
+    return false;
+  }
+
+  // 1.0.206m: one preferBuckets (visible + first-page) per Activate All.
+  const buckets = preferBuckets(usable, state);
+  const ordered = orderActivateIds(usable, state, buckets);
+  const { prefer, remainder } = splitPreferRemainder(ordered, state, buckets);
+
+  // Soft confirm when bulk N > ~50 — wave0 (prefer) immediately; remainder after in-app modal.
+  if (usable.length > 50) {
+    // 1.0.206n: reuse preferBuckets.visibleIds (no second visibleFamilySet pass).
+    const visibleIds = buckets.visibleIds;
+    // Cancel targets: visible, or first-page/selection/recent when visible=0 (P3).
+    const cancelIds =
+      visibleIds.length > 0
+        ? orderActivateIds(visibleIds, state)
+        : prefer.length
+          ? prefer
+          : ordered.slice(0, Math.min(24, ordered.length));
+
+    // Wave0: enqueue selected → favorites → viewport → first-page → recent immediately (1.0.206l).
+    if (prefer.length) {
+      void activateInWaves(prefer, `${label} (first)`);
     }
-    const persisted = await requestPersistentStorage();
-    const { quota, usage } = await storageEstimate();
-    const room = quota ? quota - usage : Number.POSITIVE_INFINITY;
-    toast.success(
-      pending
-        ? `Queuing ${pending.toLocaleString()} in ${label} — live ${live.toLocaleString()}`
-        : `${live.toLocaleString()} in ${label} on`,
-      {
-        description: persisted
-          ? room < 20 * 1024 * 1024
-            ? "Persistent storage on, disk space is low — large families may fail."
-            : "Persistent storage on. Files stay in Documents even if this origin is cleared."
-          : "Files go to Documents. Browser cache is best-effort only.",
-      },
-    );
-  })();
+
+    void (async () => {
+      const choice = await requestActivateConfirm({
+        label,
+        total: usable.length,
+        preferCount: prefer.length,
+        remainderCount: remainder.length,
+        visibleCount: visibleIds.length,
+        cancelCount: cancelIds.length,
+        // Soften ETA — no hard minute promise.
+        etaHint:
+          "Large Activate All can take a while depending on downloads and Windows load.",
+      });
+      if (choice === "ok") {
+        if (remainder.length) {
+          void activateInWaves(remainder, label);
+        } else if (!prefer.length) {
+          void activateInWaves(ordered, label);
+        }
+        return;
+      }
+      if (choice === "cancel") {
+        // Prefer already wave0 — Cancel keeps that queue (label: keep first / already queued).
+        // If prefer empty, enqueue cancel fallback; label must match visible vs first-page.
+        if (!prefer.length && cancelIds.length) {
+          const cancelLabel =
+            visibleIds.length > 0 ? `${label} (visible)` : `${label} (first page)`;
+          void activateInWaves(cancelIds, cancelLabel);
+        }
+        return;
+      }
+      // Abort: leave wave0 if already queued; do not enqueue remainder.
+    })();
+    return true;
+  }
+
+  void activateInWaves(ordered, label);
   return true;
 }
 
+
+/** First-page ids of current library scope (intersected with candidates). */
+function scopeFirstPageIds(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+): string[] {
+  const idSet = new Set(ids);
+  const liveIds = state.activated;
+  const localPool =
+    state.scope === "gfonts" || state.scope === "google" || state.scope === "system"
+      ? []
+      : state.localFonts;
+  const pool = poolForScope(
+    state.scope,
+    localPool,
+    state.googleFonts,
+    state.systemFonts,
+    liveIds,
+  );
+  const filtered = filterLibrary(
+    pool,
+    state.scope,
+    state.query,
+    state.favorites,
+    liveIds,
+    state.collections,
+    state.customTags,
+    state.facet,
+    state.recentIds,
+  );
+  const sortMode =
+    state.scope === "system" && (state.preview.sort ?? "name-asc") === "popular"
+      ? "name-asc"
+      : (state.preview.sort ?? "name-asc");
+  const scoped = state.scope === "recent" ? filtered : sortLibrary(filtered, sortMode);
+  const out: string[] = [];
+  for (const font of scoped.slice(0, PREFER_FIRST_PAGE)) {
+    if (idSet.has(font.id)) out.push(font.id);
+  }
+  return out;
+}
+
+/** Visible + first-page buckets for prefer waves (one call per Activate All). */
+function preferBuckets(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+): { visibleIds: string[]; firstPageIds: string[] } {
+  const local = state.localFonts;
+  const google = state.googleFonts;
+  const byId = new Map<string, FontRecord>();
+  for (const f of [...local, ...google]) byId.set(f.id, f);
+  const vis = visibleFamilySet();
+  const visibleIds: string[] = [];
+  for (const id of ids) {
+    const font = byId.get(id);
+    if (font && vis.has(font.family.trim().toLowerCase())) visibleIds.push(id);
+  }
+  return { visibleIds, firstPageIds: scopeFirstPageIds(ids, state) };
+}
+
+/** Prefer waves (1.0.206l): selected → favorites → viewport → first-page → recent → remainder. */
+function orderActivateIds(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+  buckets?: { visibleIds: string[]; firstPageIds: string[] },
+): string[] {
+  const { visibleIds, firstPageIds } = buckets ?? preferBuckets(ids, state);
+  return orderPreferKeys(ids, {
+    selected: state.selectedId,
+    favorites: state.favorites,
+    visible: visibleIds,
+    firstPage: firstPageIds,
+    recent: state.recentIds,
+  });
+}
+
+/** Wave0 prefer = selected + favorites + viewport + first-page + recent; remainder after confirm. */
+function splitPreferRemainder(
+  ids: string[],
+  state: ReturnType<typeof useFontStore.getState>,
+  buckets?: { visibleIds: string[]; firstPageIds: string[] },
+): { prefer: string[]; remainder: string[] } {
+  const { visibleIds, firstPageIds } = buckets ?? preferBuckets(ids, state);
+  return splitPreferRemainderIds(ids, {
+    selectedId: state.selectedId,
+    favoriteIds: state.favorites,
+    visibleIds,
+    firstPageIds,
+    recentIds: state.recentIds,
+  });
+}
+
+const ACTIVATE_WAVE = 40;
+
+async function activateInWaves(ids: string[], label: string) {
+  if (!ids.length) return;
+  const desktop = await inDesktopShell();
+  // Queue pending in waves so the UI stays responsive; each wave uses setActivatedMany.
+  for (let i = 0; i < ids.length; i += ACTIVATE_WAVE) {
+    const wave = ids.slice(i, i + ACTIVATE_WAVE);
+    useFontStore.getState().setActivatedMany(wave, true);
+    // Yield to paint progressive Live / progress owners between waves.
+    await new Promise<void>((r) => window.setTimeout(r, 0));
+  }
+  const live = useFontStore.getState().activated.length;
+  const pending = useFontStore.getState().pendingActivate.length;
+  if (!desktop) {
+    toast.success(`${label} on — ${live.toLocaleString()} live`, {
+      description: webPreviewNote(label),
+    });
+    return;
+  }
+  const persisted = await requestPersistentStorage();
+  const { quota, usage } = await storageEstimate();
+  const room = quota ? quota - usage : Number.POSITIVE_INFINITY;
+  toast.success(
+    pending
+      ? `Queuing ${pending.toLocaleString()} in ${label} — live ${live.toLocaleString()}`
+      : `${live.toLocaleString()} in ${label} on`,
+    {
+      description: persisted
+        ? room < 20 * 1024 * 1024
+          ? "Persistent storage on, disk space is low — large families may fail."
+          : "Persistent storage on. Selected/favorites/visible/first-page/recent first; Settled skipped. Files stay in Documents."
+        : "Selected/favorites/visible/first-page/recent first; Settled skipped. Files go to Documents.",
+    },
+  );
+}
+
+
 export function deactivateSet(ids: string[], label: string) {
   if (!ids.length) return;
-  const { activatedSet, pendingSet } = useFontStore.getState();
-  const any = ids.some((id) => activatedSet.has(id) || pendingSet.has(id));
+  const { activatedSet, pendingSet, pendingDeactivateSet } = useFontStore.getState();
+  const any = ids.some(
+    (id) => activatedSet.has(id) || pendingSet.has(id) || pendingDeactivateSet.has(id),
+  );
   if (!any) {
     toast.message(`Nothing on in ${label}`);
     return;
@@ -63,18 +255,21 @@ export function deactivateSet(ids: string[], label: string) {
   void inDesktopShell().then((desktop) => {
     if (!desktop) {
       toast.success(`${label} off — preview only`);
+      return;
     }
+    // 1.0.206h: one calm queue toast (parity with Activate); remove bar still tracks unload.
+    const pendingOff = useFontStore.getState().pendingDeactivate.length;
+    toast.success(
+      pendingOff
+        ? `Queuing ${pendingOff.toLocaleString()} off in ${label}`
+        : `${label} off`,
+      { description: "Remove bar tracks unload. Files stay in Documents." },
+    );
   });
 }
 
 export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string }) {
-  const remaining = useFontStore((s) => {
-    let n = 0;
-    for (const id of ids) {
-      if (!s.activatedSet.has(id) && !s.pendingSet.has(id)) n += 1;
-    }
-    return n;
-  });
+  const remaining = useFontStore((s) => activateQueueIds(ids, s).length);
   const total = ids.length;
   return (
     <DropdownMenuItem disabled={!total} onSelect={() => activateSet(ids, label)}>
@@ -86,8 +281,39 @@ export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string 
   );
 }
 
+
+export function ActivateVisibleMenuItem({ ids, label }: { ids: string[]; label: string }) {
+  const vis = visibleFamilySet();
+  const visibleIds = useFontStore((s) => {
+    const out: string[] = [];
+    for (const id of ids) {
+      if (s.activatedSet.has(id) || s.pendingSet.has(id)) continue;
+      const font =
+        s.localFonts.find((f) => f.id === id) ?? s.googleFonts.find((f) => f.id === id);
+      if (!font || font.source === "system") continue;
+      if (s.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
+      if (isKnownGdiSessionIncapable(font.family)) continue;
+      if (vis.has(font.family.trim().toLowerCase())) out.push(id);
+    }
+    return out;
+  });
+  return (
+    <DropdownMenuItem
+      disabled={!visibleIds.length}
+      onSelect={() => activateSet(visibleIds, `${label} (visible)`)}
+    >
+      <Power className="size-3.5" />
+      Activate visible ({visibleIds.length.toLocaleString()})
+    </DropdownMenuItem>
+  );
+}
+
 export function DeactivateMenuItem({ ids, label }: { ids: string[]; label: string }) {
-  const anyOn = useFontStore((s) => ids.some((id) => s.activatedSet.has(id) || s.pendingSet.has(id)));
+  const anyOn = useFontStore((s) =>
+    ids.some(
+      (id) => s.activatedSet.has(id) || s.pendingSet.has(id) || s.pendingDeactivateSet.has(id),
+    ),
+  );
   return (
     <DropdownMenuItem disabled={!anyOn} onSelect={() => deactivateSet(ids, label)}>
       <Power className="size-3.5" />
@@ -139,10 +365,12 @@ export function ScanDiskMenuItem() {
           const corrupt = rows.reduce((n, r) => n + (r.corrupt || 0), 0);
           const incomplete = rows.filter((r) => r.incomplete && !r.settled).map((r) => r.name);
           const settled = rows.filter((r) => r.settled).map((r) => r.name);
-          const catalog = googleFonts.length;
+          const gCount = googleFonts.filter(isGoogleCatalog).length;
+          const fsCount = googleFonts.filter(isFontsourceOnly).length;
           const live = useFontStore.getState().activated.length;
+          const diskN = useFontStore.getState().diskFamilies.length;
           const baseBits = [
-            `Live ${live.toLocaleString()} · Settled ${settled.length.toLocaleString()} · Library ${catalog.toLocaleString()}`,
+            `Live ${live.toLocaleString()} · Settled ${settled.length.toLocaleString()} · Google ${gCount.toLocaleString()} · Fontsource ${fsCount.toLocaleString()} · On disk ${diskN.toLocaleString()}`,
             `${files.toLocaleString()} intact TTF/OTF (${(bytes / (1024 * 1024)).toFixed(1)} MB)`,
             corrupt
               ? `${corrupt.toLocaleString()} corrupt (not TTF; WOFF is preview-only)`
@@ -232,19 +460,31 @@ export function GfontsActivateMenuItem() {
 
 function catalogMenuStats(
   fonts: FontRecord[],
-  activatedSet: Set<string>,
-  pendingSet: Set<string>,
+  state: {
+    activatedSet: Set<string>;
+    pendingSet: Set<string>;
+    pendingDeactivateSet: Set<string>;
+    settledFamilySet: Set<string>;
+    localFonts: FontRecord[];
+    googleFonts: FontRecord[];
+  },
   filter?: (font: FontRecord) => boolean,
 ) {
   let count = 0;
-  let remaining = 0;
   let anyOn = false;
   for (const font of fonts) {
     if (filter && !filter(font)) continue;
     count += 1;
-    if (activatedSet.has(font.id) || pendingSet.has(font.id)) anyOn = true;
-    else remaining += 1;
+    if (
+      state.activatedSet.has(font.id) ||
+      state.pendingSet.has(font.id) ||
+      state.pendingDeactivateSet.has(font.id)
+    ) {
+      anyOn = true;
+    }
   }
+  // 1.0.206i: remaining MUST call shared activateQueueIds (via catalogMenuRemaining).
+  const remaining = catalogMenuRemaining(fonts, state, filter);
   return { count, remaining, anyOn };
 }
 
@@ -256,7 +496,20 @@ function CatalogActivateMenuItem({
   filter?: (font: FontRecord) => boolean;
 }) {
   const { count, remaining, anyOn } = useFontStore(
-    useShallow((s) => catalogMenuStats(s.googleFonts, s.activatedSet, s.pendingSet, filter)),
+    useShallow((s) =>
+      catalogMenuStats(
+        s.googleFonts,
+        {
+          activatedSet: s.activatedSet,
+          pendingSet: s.pendingSet,
+          pendingDeactivateSet: s.pendingDeactivateSet,
+          settledFamilySet: s.settledFamilySet,
+          localFonts: s.localFonts,
+          googleFonts: s.googleFonts,
+        },
+        filter,
+      ),
+    ),
   );
   function ids() {
     const list = useFontStore.getState().googleFonts;
@@ -270,6 +523,7 @@ function CatalogActivateMenuItem({
           ? `Activate remaining (${remaining.toLocaleString()})`
           : "Activate all"}
       </DropdownMenuItem>
+      <ActivateVisibleMenuItem ids={ids()} label={label} />
       <DropdownMenuItem disabled={!anyOn} onSelect={() => deactivateSet(ids(), label)}>
         <Power className="size-3.5" />
         Deactivate all
@@ -283,22 +537,28 @@ export function LibraryActivateMenuItem() {
   const count = useFontStore((s) => s.googleFonts.length + s.localFonts.length);
   const remaining = useFontStore((s) => {
     const hide = s.autoHideDuplicates ? new Set(s.duplicateHideIds) : null;
-    let n = 0;
-    for (const font of s.googleFonts) {
-      if (!s.activatedSet.has(font.id) && !s.pendingSet.has(font.id)) n += 1;
-    }
-    for (const font of s.localFonts) {
-      if (hide?.has(font.id)) continue;
-      if (!s.activatedSet.has(font.id) && !s.pendingSet.has(font.id)) n += 1;
-    }
-    return n;
+    const ids = [
+      ...s.googleFonts.map((f) => f.id),
+      ...s.localFonts.filter((f) => !hide?.has(f.id)).map((f) => f.id),
+    ];
+    return activateQueueIds(ids, s).length;
   });
   const anyOn = useFontStore((s) => {
     for (const font of s.googleFonts) {
-      if (s.activatedSet.has(font.id) || s.pendingSet.has(font.id)) return true;
+      if (
+        s.activatedSet.has(font.id) ||
+        s.pendingSet.has(font.id) ||
+        s.pendingDeactivateSet.has(font.id)
+      )
+        return true;
     }
     for (const font of s.localFonts) {
-      if (s.activatedSet.has(font.id) || s.pendingSet.has(font.id)) return true;
+      if (
+        s.activatedSet.has(font.id) ||
+        s.pendingSet.has(font.id) ||
+        s.pendingDeactivateSet.has(font.id)
+      )
+        return true;
     }
     return false;
   });
@@ -319,6 +579,13 @@ export function LibraryActivateMenuItem() {
           ? `Activate remaining (${remaining.toLocaleString()})`
           : "Activate all"}
       </DropdownMenuItem>
+      <ActivateVisibleMenuItem
+        ids={[
+          ...useFontStore.getState().googleFonts.map((f) => f.id),
+          ...useFontStore.getState().localFonts.map((f) => f.id),
+        ]}
+        label="Library"
+      />
       <DropdownMenuItem
         disabled={!anyOn}
         onSelect={() => {

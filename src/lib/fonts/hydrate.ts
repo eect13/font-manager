@@ -4,9 +4,12 @@ import { GOOGLE_FONTS } from "./catalog";
 import { loadCachedCatalog, scheduleCatalogSync } from "./google-api";
 import { idbGet, persistStorageOnGesture, requestPersistentStorage } from "./idb";
 import { refineLicense } from "./license";
-import { findFont, useFontStore } from "./store";
+import { KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
+import { findFont, filterLibrary, poolForScope, sortLibrary, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
+import { visibleFamilyNames } from "./visible-families";
+import { orderPreferKeys, PREFER_FIRST_PAGE } from "./prefer-order.mjs";
 import {
   restoreSessionFromDisk,
   rememberSessionFamilies,
@@ -139,6 +142,10 @@ export function useHydrateFonts() {
         useFontStore.getState().setScope("all");
       }
       setHydrated(true);
+      // 1.0.206b: seed GDI-incapable allowlist into settled on UI boot (mirror Rust seed).
+      useFontStore.getState().addSettledFamilies(
+        KNOWN_GDI_SESSION_INCAPABLE.map((e) => e.family),
+      );
       useFontStore.getState().clearPendingActivate();
       void requestPersistentStorage();
       persistStorageOnGesture();
@@ -200,7 +207,68 @@ export function useHydrateFonts() {
         const sessionNames = bootReady;
         const bootSet = new Set(sessionNames.map((n) => n.trim().toLowerCase()));
         const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
-        const needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
+        // already-Live this session (boot.ready / loaded) → skip re-walk.
+        let needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
+        // 1.0.206l prefer waves: selected → favorites → viewport → first-page (scope) → recent → remainder.
+        if (needRegister.length > 1) {
+          const state = useFontStore.getState();
+          const familyOf = (id: string | null | undefined): string | null => {
+            if (!id) return null;
+            const font = findFont(id, localFonts, google);
+            if (font) return font.family.trim().toLowerCase();
+            if (id.startsWith("g:")) return id.slice(2).trim().toLowerCase();
+            return null;
+          };
+          const favoriteNames = state.favorites
+            .map((id) => familyOf(id))
+            .filter((n): n is string => Boolean(n));
+          const recentNames = state.recentIds
+            .slice(0, 24)
+            .map((id) => familyOf(id))
+            .filter((n): n is string => Boolean(n));
+          // First page of current library scope (not only mounted viewport).
+          const liveIds = state.activated;
+          const localPool =
+            state.scope === "gfonts" || state.scope === "google" || state.scope === "system"
+              ? []
+              : localFonts;
+          const pool = poolForScope(
+            state.scope,
+            localPool,
+            google,
+            state.systemFonts,
+            liveIds,
+          );
+          const filtered = filterLibrary(
+            pool,
+            state.scope,
+            state.query,
+            state.favorites,
+            liveIds,
+            state.collections,
+            state.customTags,
+            state.facet,
+            state.recentIds,
+          );
+          const sortMode =
+            state.scope === "system" && (state.preview.sort ?? "name-asc") === "popular"
+              ? "name-asc"
+              : (state.preview.sort ?? "name-asc");
+          const scoped =
+            state.scope === "recent" ? filtered : sortLibrary(filtered, sortMode);
+          const firstPageNames = scoped
+            .slice(0, PREFER_FIRST_PAGE)
+            .map((f) => f.family.trim().toLowerCase())
+            .filter(Boolean);
+          needRegister = orderPreferKeys(needRegister, {
+            selected: familyOf(state.selectedId),
+            favorites: favoriteNames,
+            visible: visibleFamilyNames(),
+            firstPage: firstPageNames,
+            recent: recentNames,
+            caseFold: true,
+          });
+        }
         const restore = needRegister.length
           ? restoreSessionFromDisk(needRegister)
           : Promise.resolve({ ready: [] as string[], missing: [] as string[], onDisk: [] as string[] });

@@ -9,11 +9,12 @@ const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf
 const downloadBar = readFileSync(join(root, "src/components/font-studio/download-bar.tsx"), "utf8");
 
 /**
- * Mirror of applyPayload current merge (1.0.187):
+ * Mirror of applyPayload current merge (1.0.187 → 1.0.204):
  * empty Rust clear must stick — never `p.current || job.current`.
+ * Idle forces "" via `current: active ? (p.current ?? "") : ""`.
  */
-function mergeCurrent(pCurrent, _jobCurrent) {
-  return pCurrent ?? "";
+function mergeCurrent(pCurrent, _jobCurrent, active = true) {
+  return active ? (pCurrent ?? "") : "";
 }
 
 test("applyPayload empty current clears (not sticky || job.current)", () => {
@@ -21,13 +22,16 @@ test("applyPayload empty current clears (not sticky || job.current)", () => {
   assert.equal(mergeCurrent("Registering Nunito", "Registering Zilla Slab"), "Registering Nunito");
   assert.equal(mergeCurrent(undefined, "stale"), "");
   assert.equal(mergeCurrent(null, "stale"), "");
+  assert.equal(mergeCurrent("stale", "x", false), "");
   // Legacy bug: empty || stale kept "Registering …" after rustIdle finish.
   assert.notEqual("" || "Registering Zilla Slab", "");
 });
 
 test("os-activate: empty-clear current + dismissDownloadBar (no sticky ||)", () => {
   assert.doesNotMatch(osActivate, /current:\s*p\.current\s*\|\|\s*job\.current/);
-  assert.match(osActivate, /current:\s*p\.current\s*\?\?\s*""/);
+  // 1.0.204: idle forces empty current (stronger than p.current ?? "").
+  assert.match(osActivate, /current:\s*active \? \(p\.current\s*\?\?\s*""\) : ""/);
+  assert.match(osActivate, /p\.current\s*\?\?\s*""/);
   assert.match(osActivate, /export function dismissDownloadBar/);
   assert.match(osActivate, /job = \{ \.\.\.EMPTY \}/);
 });
