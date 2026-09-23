@@ -1,3 +1,10 @@
+## Fixed in tip / 1.0.206v
+- **P0 Refresh Documents ACL:** add registered/invoked `sync_documents_vf_policy` to `src-tauri/permissions/font-activate.toml` `commands.allow`; fixes “Could not refresh Documents” / “not allowed by ACL”.
+- **ACL audit:** tip assert parses frontend Tauri invokes and requires every invoked command to be both registered in `generate_handler!` and allowed by `allow-font-activate`; registered handlers and this permission also stay in exact parity.
+- **No unused lifecycle ACL noise:** `session_begin`, `session_end`, and `quit_unload_budget` are internal Rust setup/quit calls, not `#[tauri::command]` frontend invokes, so they remain outside `commands.allow`.
+- **Kept:** 206u VF-primary, Finlandica Text/Headline dual-VF, Refresh Documents cancel-toast behavior, and TIP_SHA provenance.
+- ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206u
 - **P0 VF-primary Activate:** `register_intact_family_detailed`: when `dir_vf_primary_ready`, VarsOnly Add first. **Skye HOLD amend:** purge / vars-only planned **only after VarsOnly Add>0** (`commit_vf_primary_after_successful_add`). Pre-Add: fetch statics + `merge_variable_into_planned_keys_keep_statics` — never purge-before-register (Add=0 → AllIntactFallback needs statics). Live = Add>0 only.
 - **P1 Finlandica dual-VF:** gate = **Finlandica Text** + **Finlandica Headline** (catalog), not bare `Finlandica`. Hei/Sung unchanged.

@@ -34,6 +34,7 @@ commands.allow = [
   "session_boot_state",
   "read_family_font",
   "scan_disk_families",
+  "sync_documents_vf_policy",
   "prune_unknown_folders",
   "parse_family_cmap",
   "parse_family_layout",
