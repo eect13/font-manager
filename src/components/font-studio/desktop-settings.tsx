@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { applyDesktopPrefs } from "@/lib/desktop/prefs";
-import { cancelDownloadQueue, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { armDocsVfSyncOwnership, cancelDownloadQueue, didDocsVfSyncCancelToast, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { useFontStore } from "@/lib/fonts/store";
 import { toast } from "sonner";
 import { useUiDensity, type UiDensity } from "@/lib/ui-density";
@@ -85,6 +85,7 @@ export function DesktopSettings() {
             data-testid="refresh-documents-settings"
             onClick={() => {
               void (async () => {
+                armDocsVfSyncOwnership();
                 toast.message("Refreshing Documents folder…", {
                   id: "sync-docs-vf",
                   description: "Cancel from the progress bar if needed.",
@@ -95,10 +96,13 @@ export function DesktopSettings() {
                 if (!result) return;
                 await syncManagedDocumentsRoot();
                 if (result.cancelled) {
-                  toast.message("Documents refresh cancelled", {
-                    id: "sync-docs-vf",
-                    description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
-                  });
+                  // 1.0.206w amend: skip if cancel already toasted; else toast on Rust cancelled.
+                  if (!didDocsVfSyncCancelToast()) {
+                    toast.message("Documents refresh cancelled", {
+                      id: "sync-docs-vf",
+                      description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
+                    });
+                  }
                   return;
                 }
                 if (result.locked > 0) {

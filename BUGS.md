@@ -1,3 +1,12 @@
+## Fixed in tip / 1.0.206w
+- **P0 amend (Skye HOLD 6.2 — Scanning collision):** Activate and docs sync both use **Scanning Documents…**. Docs ownership is sticky `docsVfSyncActive || docsVfSyncCancelPending` first; belt regex is docs-only (`Syncing Documents` / `Sync cancelled` / `Refreshing Documents`) — **bare `scanning documents` removed** from `isDocsRefreshJobCurrent` / download-bar `docsSync`. Cancel mid-Activate scan → **Download cancelled** (not Documents refresh / not `fm-cancel-documents-refresh`).
+- **P0 Cancel mid-Refresh Documents toast ownership:** `cancelDownloadQueue` snapshots sticky/`docsVfSyncOwnsJob` and **never** emits **Download cancelled** on docs Cancel (early return). Prefer **Documents refresh cancelled** when Rust confirms `cancelled` (callers via `didDocsVfSyncCancelToast`); sticky pending covers cancel-before-start. Choice: (a) never Download cancelled on docs Cancel, (b) Documents toast on confirmed cancelled — avoid cancel-then-success flip.
+- **Should:** `armDocsVfSyncOwnership()` before Refreshing Documents toast Cancel; sync arms sticky **before** `beginOwnedJob`.
+- **Smoke Cancel discoverability:** progress-bar Cancel keeps `data-testid="activate-bar-cancel"`; while sticky docs-owned → aria **Cancel Documents refresh** + `fm-cancel-documents-refresh`; bar prefers Refreshing Documents over bare Downloading.
+- **Optional honesty:** **Restoring N/T** Cancel → **Session restore cancelled**. Deactivate cancelled / real Download cancelled unchanged.
+- **Kept:** 206v ACL for `sync_documents_vf_policy`; 206u VF-primary / Finlandica Text+Headline; Activate/Deactivate regression guards; TIP_SHA.
+- ProductVersion 1.0.206. No tip-install/pack. Smoke note: avoid ZZSmokeD-style library floods (hangs FM).
+
 ## Fixed in tip / 1.0.206v
 - **P0 Refresh Documents ACL:** add registered/invoked `sync_documents_vf_policy` to `src-tauri/permissions/font-activate.toml` `commands.allow`; fixes “Could not refresh Documents” / “not allowed by ACL”.
 - **ACL audit:** tip assert parses frontend Tauri invokes and requires every invoked command to be both registered in `generate_handler!` and allowed by `allow-font-activate`; registered handlers and this permission also stay in exact parity.
