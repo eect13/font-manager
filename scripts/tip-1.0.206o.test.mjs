@@ -41,13 +41,11 @@ test("docs mark 206o; Cancel-label buckets + 206l prefer align; no tip-install",
 test("Cancel-label reuses buckets (no second preferBuckets when visibleIds>0)", () => {
   const start = activateToggle.indexOf("if (usable.length > 50)");
   assert.ok(start >= 0);
-  const body = activateToggle.slice(start, start + 1200);
+  const body = activateToggle.slice(start, start + 1400);
   assert.match(body, /buckets\.visibleIds/);
-  // P3: visible path must pass buckets — not bare orderActivateIds(visibleIds, state)
-  assert.match(
-    body,
-    /orderActivateIds\(\s*visibleIds,\s*state,\s*buckets\s*\)/,
-  );
+  // 206o: buckets reuse. 206p: cancelLabelActivateIds — no second preferBuckets /
+  // visibleFamilySet / bare orderActivateIds(visibleIds, state).
+  assert.match(body, /cancelLabelActivateIds\(ordered,\s*visibleIds,\s*prefer\)/);
   assert.doesNotMatch(
     body,
     /orderActivateIds\(\s*visibleIds,\s*state\s*\)/,

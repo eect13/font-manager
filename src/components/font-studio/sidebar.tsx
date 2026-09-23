@@ -201,7 +201,7 @@ export function Sidebar({
 
   return (
     <aside className={cn("flex h-full min-w-0 flex-col overflow-hidden bg-card", className)}>
-      <div className="sidebar-nav min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain py-3 pl-2 pr-2">
+      <div className="sidebar-nav fm-sidebar-nav min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pl-2 pr-2">
         <div className="min-w-0 space-y-4">
           <section>
             <p className="mb-0.5 px-2.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">

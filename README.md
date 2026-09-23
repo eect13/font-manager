@@ -1,5 +1,7 @@
 # Font Manager **1.0.206**
 
+**1.0.206p (Skye ceiling — global compact density + Cancel-label simplify).** Desktop Settings Comfortable|Compact density (persist `data-ui-density` + localStorage); Compact tightens library grid/list cards, sidebar rows, preview toolbar, inspector via root CSS vars. Cancel-label when visible: filter/reuse ordered (all-visible → ordered as-is) — no second `orderActivateIds` prefer pass; tip **runtime** fixture for Cancel-label reuse. Deferred compact density → **Landed 206p**. Standing locks kept. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
+
 **1.0.206o (Skye leftovers after WITHDREW 206n APPROVE FOR PACK).** Cancel-label path reuses `preferBuckets` when `visibleIds.length > 0` (`orderActivateIds(visibleIds, state, buckets)` — no second preferBuckets/visibleFamilySet). README 206l prefer membership aligned to `selected → favorites → viewport → first-page → recent` (was scramble-list). Standing locks kept; compact density OOS. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.
 
 **1.0.206n (Skye WITHDREW 206m — nits before re-critique).** Tip hygiene: 206h/i assert restore prefer landed 206l (no soft-pass on Deferred P1 landed wording). Bulk confirm reuses `buckets.visibleIds`. Wave0 comment order = selected → favorites → viewport → first-page → recent. Chrome honesty + wall-clock = prep/skip/prefer only (never FontBase-parallel Add). Standing locks kept; compact density OOS. ProductVersion stays **1.0.206**. Pack HOLD. No tip-install/pack this tip.

@@ -123,3 +123,26 @@ export function splitPreferRemainderIds(orderedIds, ctx = {}) {
   }
   return { prefer, remainder };
 }
+
+/**
+ * Cancel-label Activate targets for bulk confirm (1.0.206p).
+ *
+ * When viewport-visible ids exist: reuse already-ordered prefer list via filter
+ * (no second orderPreferKeys / preferBuckets). If every candidate is already
+ * visible, return `ordered` as-is (selected/favorites reorder only).
+ * When visible is empty: keep prefer wave0 if any, else first-page slice.
+ *
+ * @param {string[]} ordered full prefer-ordered usable ids
+ * @param {readonly string[]} visibleIds viewport-visible subset (from preferBuckets)
+ * @param {readonly string[]} prefer wave0 prefer ids already queued or about to be
+ * @returns {string[]}
+ */
+export function cancelLabelActivateIds(ordered, visibleIds, prefer) {
+  if ((visibleIds ?? []).length > 0) {
+    if (visibleIds.length >= ordered.length) return ordered.slice();
+    const vis = new Set(visibleIds);
+    return ordered.filter((id) => vis.has(id));
+  }
+  if ((prefer ?? []).length) return prefer.slice();
+  return ordered.slice(0, Math.min(PREFER_FIRST_PAGE, ordered.length));
+}

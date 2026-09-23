@@ -12,14 +12,21 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { applyDesktopPrefs } from "@/lib/desktop/prefs";
 import { useFontStore } from "@/lib/fonts/store";
+import { useUiDensity, type UiDensity } from "@/lib/ui-density";
 
 export function DesktopSettings() {
   const prefs = useFontStore((s) => s.desktopPrefs);
   const setDesktopPrefs = useFontStore((s) => s.setDesktopPrefs);
+  const { density, setDensity } = useUiDensity();
 
   useEffect(() => {
     void applyDesktopPrefs(prefs);
   }, [prefs.closeToTray, prefs.startWithWindows]);
+
+  const densityOpts: { id: UiDensity; label: string; hint: string }[] = [
+    { id: "comfortable", label: "Comfortable", hint: "Default spacing — roomy cards and rows" },
+    { id: "compact", label: "Compact", hint: "Tighter library, sidebar, toolbar, and inspector" },
+  ];
 
   return (
     <Dialog>
@@ -32,9 +39,32 @@ export function DesktopSettings() {
         <DialogHeader>
           <DialogTitle>Desktop</DialogTitle>
           <DialogDescription>
-            Tray and Windows startup. Quit from the tray still unloads session fonts so Word drops them.
+            Tray, Windows startup, and library density. Quit from the tray still unloads session fonts so Word drops them.
           </DialogDescription>
         </DialogHeader>
+        <div className="grid gap-2 rounded-md bg-secondary px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Density</p>
+            <p className="text-xs text-muted-foreground">
+              Comfortable or Compact for library grid/list, sidebar, preview toolbar, and inspector. Saved on this device.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2" role="group" aria-label="UI density">
+            {densityOpts.map((opt) => (
+              <Button
+                key={opt.id}
+                type="button"
+                size="sm"
+                variant={density === opt.id ? "default" : "outline"}
+                aria-pressed={density === opt.id}
+                title={opt.hint}
+                onClick={() => setDensity(opt.id)}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+        </div>
         <label className="flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2.5 text-sm">
           Close to tray
           <Switch

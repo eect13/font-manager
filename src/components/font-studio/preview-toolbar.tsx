@@ -38,7 +38,7 @@ export function PreviewToolbar() {
   const align = preview.align ?? "left";
 
   return (
-    <div className="flex flex-col gap-1.5 border-b border-border bg-background/90 px-3 py-1.5 backdrop-blur-sm md:px-4">
+    <div className="fm-preview-toolbar flex flex-col border-b border-border bg-background/90 backdrop-blur-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <div className="flex min-w-[180px] flex-1 items-center gap-1">
           <Input
