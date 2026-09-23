@@ -269,7 +269,12 @@ export function ActivateMenuItem({ ids, label }: { ids: string[]; label: string 
   const remaining = useFontStore((s) => activateQueueIds(ids, s).length);
   const total = ids.length;
   return (
-    <DropdownMenuItem disabled={!total} onSelect={() => activateSet(ids, label)}>
+    <DropdownMenuItem
+      disabled={!total}
+      aria-label="Activate All"
+      data-testid="activate-all"
+      onSelect={() => activateSet(ids, label)}
+    >
       <Power className="size-3.5" />
       {remaining && remaining < total
         ? `Activate remaining (${remaining.toLocaleString()})`
@@ -310,7 +315,12 @@ export function DeactivateMenuItem({ ids, label }: { ids: string[]; label: strin
     ),
   );
   return (
-    <DropdownMenuItem disabled={!anyOn} onSelect={() => deactivateSet(ids, label)}>
+    <DropdownMenuItem
+      disabled={!anyOn}
+      aria-label="Deactivate All"
+      data-testid="deactivate-all"
+      onSelect={() => deactivateSet(ids, label)}
+    >
       <Power className="size-3.5" />
       Deactivate all
     </DropdownMenuItem>
@@ -512,14 +522,24 @@ function CatalogActivateMenuItem({
   }
   return (
     <>
-      <DropdownMenuItem disabled={!count} onSelect={() => activateSet(ids(), label)}>
+      <DropdownMenuItem
+        disabled={!count}
+        aria-label="Activate All"
+        data-testid="activate-all"
+        onSelect={() => activateSet(ids(), label)}
+      >
         <Power className="size-3.5" />
         {remaining && remaining < count
           ? `Activate remaining (${remaining.toLocaleString()})`
           : "Activate all"}
       </DropdownMenuItem>
       <ActivateVisibleMenuItem ids={ids()} label={label} />
-      <DropdownMenuItem disabled={!anyOn} onSelect={() => deactivateSet(ids(), label)}>
+      <DropdownMenuItem
+        disabled={!anyOn}
+        aria-label="Deactivate All"
+        data-testid="deactivate-all"
+        onSelect={() => deactivateSet(ids(), label)}
+      >
         <Power className="size-3.5" />
         Deactivate all
       </DropdownMenuItem>
@@ -561,6 +581,8 @@ export function LibraryActivateMenuItem() {
     <>
       <DropdownMenuItem
         disabled={!count}
+        aria-label="Activate All"
+        data-testid="activate-all"
         onSelect={() => {
           const { googleFonts, localFonts } = useFontStore.getState();
           activateSet(
@@ -583,6 +605,8 @@ export function LibraryActivateMenuItem() {
       />
       <DropdownMenuItem
         disabled={!anyOn}
+        aria-label="Deactivate All"
+        data-testid="deactivate-all"
         onSelect={() => {
           const { googleFonts, localFonts } = useFontStore.getState();
           deactivateSet(
@@ -603,6 +627,8 @@ export function ActivatedDeactivateMenuItem() {
   return (
     <DropdownMenuItem
       disabled={!count}
+      aria-label="Deactivate All"
+      data-testid="deactivate-all"
       onSelect={() => {
         deactivateSet(useFontStore.getState().activated, "Activated");
       }}

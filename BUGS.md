@@ -1,3 +1,9 @@
+## Fixed in tip / 1.0.206s
+- **UIA smoke hooks (a11y attrs only):** Stable Windows UIA names for Skye live-test of density + Activate/Deactivate. Settings gear `aria-label="Settings"` + `data-testid="settings-open"`; density Comfortable/Compact `aria-label` + `data-testid="density-*"` (keep aria-pressed + title); Activate All / Deactivate All menu items `aria-label` + `data-testid`; download-bar Pause/Cancel (+Resume) `aria-label` + `data-testid="activate-bar-*"`.
+- **Scope:** a11y attrs ONLY — no store/os-activate edits, no activateSet/queue/Settled skip changes, no density CSS vars, no ProductVersion bump.
+- **Honesty locks kept:** Live=Add>0 · Settled=disk+Add=0 · Gidugu hard allowlist only · soft emoji try-Add · Google↔FS sep · no parallel Add · no Off-at-spawn · Pause % = done/total · ActivateVisible→activateQueueIds.
+- ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206r
 - **P2 density — dialogs / empty / settings:** Comfortable|Compact CSS vars `--fm-dialog-pad/gap/header-mb`, `--fm-sheet-pad`, `--fm-empty-py/px`, `--fm-settings-pad/gap/row-py` under `:root[data-ui-density]`. Wire `DialogContent`/`DialogHeader`, `SheetHeader`, library + glyph empty panes (`fm-empty-pane`), Desktop Settings rows (`fm-settings-*`), and font-studio dialog footers/bodies. Compact visibly tightens; Comfortable keeps prior feel. Persist key `font-manager:ui-density` unchanged.
 - **Docs honesty:** primary + secondary chrome now density-aware (library/sidebar/toolbar/inspector + bar+header + dialogs/empty/settings). Still out / OK untouched: toasts, chips, pickers, playground, duplicates. No “everywhere” overclaim.
@@ -406,5 +412,5 @@
 
 ## Notes
 
-- Tip is 1.0.206r (ProductVersion 1.0.206 amend-style). NSIS is Windows `deploy.bat` only — pack HOLD this tip.
+- Tip is 1.0.206s (ProductVersion 1.0.206 amend-style). NSIS is Windows `deploy.bat` only — pack HOLD this tip.
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

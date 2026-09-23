@@ -161,17 +161,17 @@ export function DownloadBar() {
         {job.running || job.paused ? (
           <>
             {job.paused ? (
-              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => resumeDownloadQueue()}>
+              <Button size="sm" variant="ghost" className="h-7 px-2" aria-label="Resume" data-testid="activate-bar-resume" onClick={() => resumeDownloadQueue()}>
                 <Play />
                 Resume
               </Button>
             ) : (
-              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => pauseDownloadQueue()}>
+              <Button size="sm" variant="ghost" className="h-7 px-2" aria-label="Pause" data-testid="activate-bar-pause" onClick={() => pauseDownloadQueue()}>
                 <Pause />
                 Pause
               </Button>
             )}
-            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
+            <Button size="sm" variant="ghost" className="h-7 px-2" aria-label="Cancel" data-testid="activate-bar-cancel" onClick={() => cancelDownloadQueue()}>
               <X />
               Cancel
             </Button>
