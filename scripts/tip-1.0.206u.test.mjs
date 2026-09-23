@@ -167,18 +167,22 @@ test("D/P2) Settings locked toast + Cancel mid-Refresh context toast", () => {
   );
   assert.match(desktopSettings, /sync-docs-vf-locked/);
   assert.match(activateToggle, /sync-docs-vf-locked/);
-  // Cancel mid-Refresh: docsVfSyncActive suppresses generic Download cancelled.
+  // Cancel mid-Refresh: sticky wasDocs owns Documents refresh cancelled (no Download cancelled).
   assert.match(osActivate, /docsVfSyncActive/);
-  assert.match(osActivate, /wasDocsVfSync/);
+  assert.match(osActivate, /docsVfSyncCancelPending|wasDocsVfSync/);
   assert.match(osActivate, /Documents refresh cancelled/);
   assert.match(activateToggle, /Documents refresh cancelled/);
-  // cancel path must early-return when wasDocsVfSync (no Download cancelled)
   const cancel = osActivate.slice(
     osActivate.indexOf("export function cancelDownloadQueue"),
     osActivate.indexOf("export function pauseDownloadQueue"),
   );
   assert.match(cancel, /wasDocsVfSync/);
+  // 1.0.206w: cancelDownloadQueue itself toasts Documents refresh cancelled, then returns.
+  assert.match(cancel, /Documents refresh cancelled/);
   assert.match(cancel, /if \(wasDocsVfSync\) \{\s*return;/);
+  const docsToastAt = cancel.indexOf("Documents refresh cancelled");
+  const downloadToastAt = cancel.indexOf('"Download cancelled"');
+  assert.ok(docsToastAt >= 0 && downloadToastAt > docsToastAt);
 });
 
 test("E) Activate remaining aria-label matches visible text", () => {

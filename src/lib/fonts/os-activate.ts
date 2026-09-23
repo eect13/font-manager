@@ -627,6 +627,8 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
     return null;
   }
   docsVfSyncActive = true;
+  docsVfSyncCancelPending = false;
+  docsVfSyncCancelToasted = false;
   startGooglePoll("download");
   try {
     const raw = await tauriInvoke<{
@@ -640,18 +642,27 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
       cancelled?: boolean;
     }>("sync_documents_vf_policy");
     if (!raw) return null;
-    return {
+    const result = {
       familiesSeen: raw.familiesSeen ?? raw.families_seen ?? 0,
       familiesPurged: raw.familiesPurged ?? raw.families_purged ?? 0,
       staticsDeleted: raw.staticsDeleted ?? raw.statics_deleted ?? 0,
       locked: raw.locked ?? 0,
       cancelled: Boolean(raw.cancelled),
     };
+    // Success path: drop sticky cancel ownership. Cancelled: leave toasted/pending for caller.
+    if (!result.cancelled) {
+      docsVfSyncCancelPending = false;
+      docsVfSyncCancelToasted = false;
+    }
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err ?? "sync failed");
     toast.error("Could not refresh Documents", { description: msg });
+    docsVfSyncCancelPending = false;
+    docsVfSyncCancelToasted = false;
     return null;
   } finally {
+    // Clear active only — sticky pending/toasted must outlive this so cancel toast stays owned.
     docsVfSyncActive = false;
     finishOwnedJob("download");
   }
@@ -1230,9 +1241,36 @@ let lastPaint = 0;
 let pollTimer = 0;
 let rustSeenRunning = false;
 let ignoreProgress = false;
-/** 1.0.206u: Refresh Documents owns cancel toast (not generic Download cancelled). */
+/** 1.0.206w: Refresh Documents owns cancel toast (sticky — survives finally clearing active). */
 let docsVfSyncActive = false;
+/** Set when Cancel hits while docs sync owns the bar; survives docsVfSyncActive=false in finally. */
+let docsVfSyncCancelPending = false;
+/** cancelDownloadQueue already toasted Documents refresh cancelled — callers must not double-toast. */
+let docsVfSyncCancelToasted = false;
 let expectKind: "" | "download" | "register" | "remove" = "";
+
+/** Progress current looks like Refresh Documents / docs VF sync (belt-and-suspenders vs flag race). */
+function isDocsRefreshJobCurrent(current: string): boolean {
+  return /scanning documents|syncing documents|sync cancelled|refresh(?:ing)? documents/i.test(
+    current ?? "",
+  );
+}
+
+/** True while Refresh Documents owns the progress bar (active or sticky cancel pending). */
+export function isDocsVfSyncJob(): boolean {
+  return (
+    docsVfSyncActive ||
+    docsVfSyncCancelPending ||
+    isDocsRefreshJobCurrent(job.current ?? "")
+  );
+}
+
+/** Caller: skip Documents refresh cancelled if cancelDownloadQueue already toasted it. */
+export function didDocsVfSyncCancelToast(): boolean {
+  if (!docsVfSyncCancelToasted) return false;
+  docsVfSyncCancelToasted = false;
+  return true;
+}
 
 function emitProgress(force = false) {
   if (force) {
@@ -1648,8 +1686,27 @@ async function pumpRemove(myBatch: number) {
 }
 
 export function cancelDownloadQueue() {
-  // Snapshot before syncDocumentsVfPolicy finally clears the flag.
-  const wasDocsVfSync = docsVfSyncActive;
+  // 1.0.206w: snapshot BEFORE clearing job / before sync finally races active→false.
+  const currentSnap = job.current ?? "";
+  const wasDocsVfSync =
+    docsVfSyncActive ||
+    docsVfSyncCancelPending ||
+    isDocsRefreshJobCurrent(currentSnap);
+  const wasRestore = !wasDocsVfSync && /restoring/i.test(currentSnap);
+  if (wasDocsVfSync) {
+    docsVfSyncCancelPending = true;
+  }
+  // Docs cancel toast must fire before any await (race-proof ownership).
+  if (wasDocsVfSync) {
+    toast.message("Documents refresh cancelled", {
+      id: "sync-docs-vf",
+      description:
+        "Folders checked / statics removed before cancel stay applied. Fonts already saved stay in Documents → Font Manager.",
+    });
+    docsVfSyncCancelToasted = true;
+    docsVfSyncCancelPending = false;
+    docsVfSyncActive = false;
+  }
   batchId += 1;
   installQueue.length = 0;
   const queuedRemove = removeQueue.splice(0, removeQueue.length);
@@ -1683,6 +1740,10 @@ export function cancelDownloadQueue() {
   }, 600);
   // Flush+mark any queued ready families before clearPending; reset timer/cumulative with that.
   void finalizeReadyAndClearPending();
+  // Docs path already toasted — never emit Download cancelled.
+  if (wasDocsVfSync) {
+    return;
+  }
   // 1.0.206j: Cancel Deactivate — confirm Off only for unloaded prefix; restore Live for remainder.
   // Toast must match store (no "stay Live" if already confirmDeactivated-all at spawn).
   // 1.0.206k: wasRemove always runs prefix confirm + restoreRemoveRemainderLive — independent of
@@ -1706,15 +1767,18 @@ export function cancelDownloadQueue() {
       }
     } else if (keepFailed.length) {
       description = `${keepFailed.length.toLocaleString()} failed still listed — Retry, Skip, or Open folder.`;
+    } else if (wasRestore) {
+      description = "Already-restored faces stay Live; Cancel stops further session Adds.";
     } else {
       description = "Fonts already saved stay in Documents → Font Manager.";
     }
-    // 1.0.206u Skye P2: mid-Refresh Cancel — caller toasts "Documents refresh cancelled";
-    // do not also fire generic Download cancelled (use snapshot — flag may already clear).
-    if (wasDocsVfSync) {
-      return;
-    }
-    toast.message(wasRemove ? "Deactivate cancelled" : "Download cancelled", {
+    // 1.0.206w: session GDI restore Cancel is not a download — honest title (optional honesty).
+    const title = wasRemove
+      ? "Deactivate cancelled"
+      : wasRestore
+        ? "Session restore cancelled"
+        : "Download cancelled";
+    toast.message(title, {
       description,
       action: { label: "Open folder", onClick: () => void openActivatedFolder() },
     });

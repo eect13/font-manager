@@ -1,3 +1,11 @@
+## Fixed in tip / 1.0.206w
+- **P0 Cancel mid-Refresh Documents toast ownership:** `cancelDownloadQueue` itself toasts **Documents refresh cancelled** (Documents-scoped description; no Open folder) when docs VF sync owns Cancel. Sticky `docsVfSyncCancelPending` + `wasDocsVfSync` snapshot (+ `job.current` match for Scanning/Syncing Documents / Sync cancelled / Refresh) so `finally { docsVfSyncActive = false }` cannot clear ownership before the toast. Docs path **never** emits title/body **Download cancelled**.
+- **No double-toast:** callers (`activate-toggle` / `desktop-settings`) skip via `didDocsVfSyncCancelToast()` when cancel already toasted.
+- **Smoke Cancel discoverability:** progress-bar Cancel keeps `data-testid="activate-bar-cancel"`; during docs sync aria-label **Cancel Documents refresh** + `id="fm-cancel-documents-refresh"` / `data-docs-cancel`; bar label **Refreshing Documents N/T** (not bare Downloading). Opening toast Cancel also hits the same cancel path.
+- **Optional honesty:** session GDI restore Cancel → **Session restore cancelled** (restore ≠ download). Deactivate cancelled / real Download cancelled unchanged.
+- **Kept:** 206v ACL for `sync_documents_vf_policy`; 206u VF-primary / Finlandica Text+Headline; Activate/Deactivate regression guards; TIP_SHA.
+- ProductVersion 1.0.206. No tip-install/pack. Smoke note: avoid ZZSmokeD-style library floods (hangs FM).
+
 ## Fixed in tip / 1.0.206v
 - **P0 Refresh Documents ACL:** add registered/invoked `sync_documents_vf_policy` to `src-tauri/permissions/font-activate.toml` `commands.allow`; fixes “Could not refresh Documents” / “not allowed by ACL”.
 - **ACL audit:** tip assert parses frontend Tauri invokes and requires every invoked command to be both registered in `generate_handler!` and allowed by `allow-font-activate`; registered handlers and this permission also stay in exact parity.
