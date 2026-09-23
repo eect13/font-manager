@@ -434,17 +434,15 @@ export function googlePreviewMayUseLocalDisk(font: FontRecord) {
 }
 
 function catalogCssHrefs(font: FontRecord, mode: FontLoadMode, italic = false): string[] {
-  const fontsource = fontsourceCssHrefs(font, mode, italic);
-  // Fontsource-exclusive families are not on fonts.googleapis.com — CSS2 404s
-  // plus a second Fontsource fetch froze the Fontsource drawer on desktop.
-  if (font.catalog === "other") return fontsource;
+  // Hard separation: Fontsource cards = Fontsource only; Google cards = Google only.
+  // Never dual Google+Fontsource hrefs on the same card (wrong face / hang risk).
+  if (font.catalog === "other") return fontsourceCssHrefs(font, mode, italic);
   // Catalog VF (42dot, etc.) must use CSS2 wght range even when badge `variable` is still false.
   if (mode === "preview" && !isSpecialPreviewFont(font)) {
-    return [googlePreviewCssHref(font, italic), ...fontsource];
+    return [googlePreviewCssHref(font, italic)];
   }
   const display = isSpecialPreviewFont(font) ? "block" : "swap";
-  const google = googleCssHref(previewFamilyParam(font, italic), display);
-  return [google, ...fontsource];
+  return [googleCssHref(previewFamilyParam(font, italic), display)];
 }
 
 function fontsourceCssHref(font: FontRecord, mode: FontLoadMode, italic = false): string {

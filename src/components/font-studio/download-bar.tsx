@@ -67,12 +67,12 @@ export function DownloadBar() {
     return () => window.clearTimeout(t);
   }, [settledIdle]);
 
-  if ((!job.running && !job.paused && job.mode === "idle" && !job.failedNames.length && !settledIdle) || empty) {
+  if ((!job.running && !job.paused && job.mode === "idle" && (job.owner === "idle" || !job.owner) && !job.failedNames.length && !settledIdle) || empty) {
     holdPct.current = 0;
     return null;
   }
   const scanning = /scanning/i.test(job.current);
-  const registering = /registering/i.test(job.current);
+  const registering = job.mode === "register" || job.owner === "register" || /registering/i.test(job.current);
   // 1.0.190: calm Restoring N/T — not download hang chrome.
   const restoring = /restoring/i.test(job.current);
   const pct = job.total > 0 || job.done > 0 ? clampPct((100 * processed) / total) : job.paused ? holdPct.current : 0;
@@ -160,25 +160,21 @@ export function DownloadBar() {
         ) : null}
         {job.running || job.paused ? (
           <>
-            {job.mode !== "remove" ? (
-              job.paused ? (
-                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => resumeDownloadQueue()}>
-                  <Play />
-                  Resume
-                </Button>
-              ) : (
-                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => pauseDownloadQueue()}>
-                  <Pause />
-                  Pause
-                </Button>
-              )
-            ) : null}
-            {job.mode !== "remove" ? (
-              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
-                <X />
-                Cancel
+            {job.paused ? (
+              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => resumeDownloadQueue()}>
+                <Play />
+                Resume
               </Button>
-            ) : null}
+            ) : (
+              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => pauseDownloadQueue()}>
+                <Pause />
+                Pause
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => cancelDownloadQueue()}>
+              <X />
+              Cancel
+            </Button>
           </>
         ) : null}
         {!job.running && !job.paused && job.failedNames.length ? (
