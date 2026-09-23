@@ -213,7 +213,7 @@ export function LibraryGrid() {
       <div ref={boxRef} className="flex flex-1 flex-col">
         {uploadedBar}
         {systemBar}
-        <div className="flex flex-1 flex-col items-center justify-center px-6 py-20 text-center">
+        <div className="fm-empty-pane flex flex-1 flex-col items-center justify-center text-center">
           <p className="font-heading text-3xl">
             {scope === "system" && (systemBusy || desktopShell) && !query.trim()
               ? systemBusy

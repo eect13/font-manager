@@ -45,8 +45,9 @@
   --width-inspector: 22rem;
 }
 
-/* UI density (1.0.206p/q) — Comfortable default; Compact tightens primary chrome
-   (library/sidebar/toolbar/inspector + download bar + shell header). */
+/* UI density (1.0.206p/q/r) — Comfortable default; Compact tightens primary + secondary
+   chrome (library/sidebar/toolbar/inspector + download bar + shell header +
+   dialogs/sheets + empty panes + Desktop Settings). */
 :root,
 :root[data-ui-density="comfortable"] {
   --fm-lib-gap: 0.5rem;
@@ -72,6 +73,15 @@
   --fm-shell-header-py: 0.375rem;
   --fm-shell-header-px: 0.5rem;
   --fm-shell-header-gap: 0.5rem;
+  --fm-dialog-pad: 1.5rem;
+  --fm-dialog-gap: 1rem;
+  --fm-dialog-header-mb: 1rem;
+  --fm-sheet-pad: 1.25rem;
+  --fm-empty-py: 5rem;
+  --fm-empty-px: 1.5rem;
+  --fm-settings-pad: 0.75rem;
+  --fm-settings-gap: 0.5rem;
+  --fm-settings-row-py: 0.625rem;
 }
 
 :root[data-ui-density="compact"] {
@@ -98,6 +108,15 @@
   --fm-shell-header-py: 0.25rem;
   --fm-shell-header-px: 0.375rem;
   --fm-shell-header-gap: 0.375rem;
+  --fm-dialog-pad: 1rem;
+  --fm-dialog-gap: 0.625rem;
+  --fm-dialog-header-mb: 0.625rem;
+  --fm-sheet-pad: 0.75rem;
+  --fm-empty-py: 2.5rem;
+  --fm-empty-px: 1rem;
+  --fm-settings-pad: 0.5rem;
+  --fm-settings-gap: 0.375rem;
+  --fm-settings-row-py: 0.375rem;
 }
 
 .fm-library-surface {
@@ -176,6 +195,41 @@
     padding-left: 0;
     padding-right: 0.75rem;
   }
+}
+
+.fm-dialog-content {
+  padding: var(--fm-dialog-pad);
+}
+.fm-dialog-header {
+  margin-bottom: var(--fm-dialog-header-mb);
+}
+.fm-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fm-dialog-gap);
+}
+.fm-dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--fm-dialog-gap);
+}
+.fm-sheet-header {
+  padding: var(--fm-sheet-pad);
+  padding-right: calc(var(--fm-sheet-pad) + 1.75rem);
+}
+.fm-empty-pane {
+  padding: var(--fm-empty-py) var(--fm-empty-px);
+}
+.fm-settings-stack {
+  display: grid;
+  gap: var(--fm-settings-gap);
+}
+.fm-settings-row {
+  padding: var(--fm-settings-row-py) var(--fm-settings-pad);
+}
+.fm-settings-opts {
+  gap: var(--fm-settings-gap);
 }
 
 html {

@@ -25,7 +25,7 @@ export function DesktopSettings() {
 
   const densityOpts: { id: UiDensity; label: string; hint: string }[] = [
     { id: "comfortable", label: "Comfortable", hint: "Default spacing — roomy cards and rows" },
-    { id: "compact", label: "Compact", hint: "Tighter library, sidebar, toolbar, and inspector" },
+    { id: "compact", label: "Compact", hint: "Tighter library, dialogs, empty panes, and settings" },
   ];
 
   return (
@@ -42,14 +42,14 @@ export function DesktopSettings() {
             Tray, Windows startup, and library density. Quit from the tray still unloads session fonts so Word drops them.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-2 rounded-md bg-secondary px-3 py-2.5">
+        <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary">
           <div className="min-w-0">
             <p className="text-sm font-medium">Density</p>
             <p className="text-xs text-muted-foreground">
-              Comfortable or Compact for library grid/list, sidebar, preview toolbar, and inspector. Saved on this device.
+              Comfortable or Compact for library, dialogs, empty panes, and Desktop Settings rows. Saved on this device.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2" role="group" aria-label="UI density">
+          <div className="fm-settings-opts flex flex-wrap" role="group" aria-label="UI density">
             {densityOpts.map((opt) => (
               <Button
                 key={opt.id}
@@ -65,7 +65,7 @@ export function DesktopSettings() {
             ))}
           </div>
         </div>
-        <label className="flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2.5 text-sm">
+        <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
           Close to tray
           <Switch
             checked={prefs.closeToTray}
@@ -75,7 +75,7 @@ export function DesktopSettings() {
         <p className="px-1 text-xs text-muted-foreground">
           X hides the window. Fonts stay live in Word until you Quit from the tray.
         </p>
-        <label className="flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2.5 text-sm">
+        <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
           Start with Windows
           <Switch
             checked={prefs.startWithWindows}

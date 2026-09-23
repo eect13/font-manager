@@ -36,7 +36,7 @@ export function ActivateConfirmDialog() {
               : ""}
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="fm-dialog-footer">
           <Button type="button" variant="ghost" onClick={() => resolveActivateConfirm("abort")}>
             Abort
           </Button>
