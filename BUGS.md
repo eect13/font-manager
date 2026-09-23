@@ -1,3 +1,129 @@
+## Fixed in tip / 1.0.206t
+- **P0 amend (Skye 7.2):** `LibraryActivateMenuItem` must not nest `libraryIds[]` inside `useShallow({...})` — nested `Object.is` always false → #185. Catalog-style: `libraryIds = useFontStore(useShallow(s => [...]))` array root + separate primitive selectors for `count` / `remaining` / `anyOn`.
+- **P0 React #185 (Maximum update depth) on Library / All typefaces overflow:** Unstable Zustand getSnapshot in `ActivateVisibleMenuItem` — selector returned a NEW `string[]` every call with no `useShallow` → React 19 + Zustand 5 max update depth when sidebar mounted Library (full google+local ids) or catalog overflow menus. Fix: subscribe to a **primitive count** only; resolve visible ids inside `onSelect` via `resolveVisibleActivateIds` (still `activateQueueIds` + visible intersect — 206q honesty kept). Also stop Library `ids={[...getState()...]}` amplifier — one shallow `libraryIds` / `catalogIds` snapshot.
+- **206s a11y kept:** Activate All / Deactivate All `aria-label` + `data-testid` unchanged.
+- **Install provenance stamp (no pack):** `scripts/write-tip-sha.mjs` writes `TIP_SHA.txt` (sha/short/branch/tip/stamped_at) next to install dir or exe; `tauri-before-build.mjs` stamps the UI bundle dir. After a tip copy, call write-tip-sha so smoke can trust binary SHA (Skye saw installed SHA ≠ tip SHA).
+- ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206s
+- **UIA smoke hooks (a11y attrs only):** Stable Windows UIA names for Skye live-test of density + Activate/Deactivate. Settings gear `aria-label="Settings"` + `data-testid="settings-open"`; density Comfortable/Compact `aria-label` + `data-testid="density-*"` (keep aria-pressed + title); Activate All / Deactivate All menu items `aria-label` + `data-testid`; download-bar Pause/Cancel (+Resume) `aria-label` + `data-testid="activate-bar-*"`.
+- **Scope:** a11y attrs ONLY — no store/os-activate edits, no activateSet/queue/Settled skip changes, no density CSS vars, no ProductVersion bump.
+- **Honesty locks kept:** Live=Add>0 · Settled=disk+Add=0 · Gidugu hard allowlist only · soft emoji try-Add · Google↔FS sep · no parallel Add · no Off-at-spawn · Pause % = done/total · ActivateVisible→activateQueueIds.
+- ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206r
+- **P2 density — dialogs / empty / settings:** Comfortable|Compact CSS vars `--fm-dialog-pad/gap/header-mb`, `--fm-sheet-pad`, `--fm-empty-py/px`, `--fm-settings-pad/gap/row-py` under `:root[data-ui-density]`. Wire `DialogContent`/`DialogHeader`, `SheetHeader`, library + glyph empty panes (`fm-empty-pane`), Desktop Settings rows (`fm-settings-*`), and font-studio dialog footers/bodies. Compact visibly tightens; Comfortable keeps prior feel. Persist key `font-manager:ui-density` unchanged.
+- **Docs honesty:** primary + secondary chrome now density-aware (library/sidebar/toolbar/inspector + bar+header + dialogs/empty/settings). Still out / OK untouched: toasts, chips, pickers, playground, duplicates. No “everywhere” overclaim.
+- **Honesty locks kept (density-only tip — no activate/unload path edits):** no Deactivate-all-at-once (UI Off at spawn) — desktop bulk remove still progressive `confirmRemoveUnloaded` / `ready_names` / done-prefix (206j); Cancel Deactivate restores never-unloaded Live; Live=Add>0; Settled=disk+Add=0; Gidugu-hard; soft emoji try-Add; Google↔FS; no FR_PRIVATE / parallel Add / GDI quota / fake Live; Pause toast done/total; ActivateVisible → activateQueueIds.
+- ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206q
+- **Pause toast % soft-lie (P0 honesty):** `pauseDownloadQueue` toast used `Math.max(job.done, job.skipped)/total` — could overstate % vs DownloadBar / rust `done`. Now **done/total** only (same numerator as bar).
+- **ActivateVisibleMenuItem dual filter (P0 honesty):** stop reimplementing Settled/hard skip; route through shared `activateQueueIds` then viewport-visible intersect.
+- **Hard-GDI SoT:** `activate-queue.mjs` no longer hardcodes lone `"gidugu"`; uses `isKnownGdiSessionIncapable` from `gdi-incapable.ts` (`KNOWN_GDI_SESSION_INCAPABLE` — Gidugu only). Tip parity assert.
+- **Density overclaim fix:** wire `--fm-download-py/px/gap` + `--fm-shell-header-py/px/gap` for Comfortable|Compact; Compact tightens download bar + shell header. Docs: primary chrome incl. bar+header (not “everywhere” — dialogs/empty/settings then still out; **landed 206r**). Tip soft-OR `/Landed 206p|Deferred compact density/` killed — require Landed 206p only; l/n/o Deferred asserts scoped to historical sections.
+- **Kept:** standing locks (Live=Add>0; Settled=disk+Add=0; Gidugu-hard only; soft emoji try-Add then Settled; Google↔FS; no FR_PRIVATE / GDI quota raise / parallel Add / fake Live). Prefer order unchanged.
+- ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206p
+- **Global compact density (P1):** Desktop Settings Comfortable | Compact toggle; persists via `font-manager:ui-density` + `data-ui-density` on `<html>` (boot before paint). Compact tightens primary library chrome: library grid + list cards (incl. virtualizer heights), sidebar rows, preview toolbar, inspector — gaps/padding/card heights via root CSS vars (not Grid-only). **1.0.206q** also wires download bar + shell header; **1.0.206r** wires dialogs/empty/settings. Tip asserts setting, both modes change CSS vars/classes, persist key.
+- **Cancel-label simplify when all visible (P3):** when `visibleIds.length > 0`, Cancel uses `cancelLabelActivateIds` — filter `ordered` by visible (all-visible → reuse `ordered`); no second `orderActivateIds` prefer pass. Keep Cancel semantics (keep prefer if wave0 queued else visible/first-page). Tip **runtime** fixture on fixture data.
+- **Docs:** Deferred compact density → **Landed 206p**.
+- **Kept:** Cancel-label preferBuckets reuse (206o); standing locks (Live=Add>0; Settled skip; Gidugu-hard; soft emoji try-Add; Google↔FS; no parallel Add / FR_PRIVATE / GDI quota / fake Live).
+- ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206o
+- **Cancel-label preferBuckets (P3 leftover):** when `visibleIds.length > 0`, Cancel-label path called `orderActivateIds(visibleIds, state)` without buckets → second `preferBuckets` / `visibleFamilySet`. Now passes shared `buckets` so Cancel-label reuses the single Activate All preferBuckets.
+- **Docs:** README tip/1.0.206l historical prefer membership no longer scramble-lists “visible + selected + favorites…” — aligned to `selected → favorites → viewport → first-page → recent`.
+- **Kept:** 206n tip hygiene + bulk confirm visibleIds reuse + wave0 comment order; standing locks (Live=Add>0; Settled skip; Gidugu-hard; soft emoji try-Add; Google↔FS; no parallel Add / FR_PRIVATE / GDI quota / fake Live). Compact density still OOS.
+- **Deferred (still):** compact density (Eric skipped). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206n
+- **Tip hygiene (Skye WITHDREW 206m):** `tip-1.0.206h` / `tip-1.0.206i` no longer soft-pass on “Deferred P1 (landed 1.0.206l)” — assert session restore prefer **landed 206l**. Progressive restore BUGS line says Landed (not Deferred P1).
+- **Bulk confirm opt:** reuse `buckets.visibleIds` (no second `visibleFamilySet` / visibleIds pass on Activate All confirm path).
+- **Prefer-order comment:** wave0 comment = `selected → favorites → viewport → first-page → recent` (matches real prefer-order).
+- **Chrome honesty sweep:** confirm + Activate toast keep selected/favorites/visible/first-page/recent; tip asserts no omit-list / no scramble order in wave0 comment.
+- **Wall-clock Activate:** win = prep/skip/prefer only — never imply FontBase-parallel Add. Standing locks: Live=Add>0; Settled skip; Gidugu-hard only; soft emoji try-Add; Google↔FS hard separation; no parallel Add / FR_PRIVATE / GDI quota / fake Live. Compact density still OOS.
+- **Deferred (still):** compact density (Eric skipped). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206m
+- **Prefer copy honesty (Skye WITHDREW APPROVE FOR PACK):** Confirm dialog + Activate wave0 toast listed visible/selected/favorites/recent (or Visible/favorites/recent) without **first-page** — soft-lie when wave0 is first-page-only. Copy now includes selected/favorites/visible/first-page/recent. Tip asserts lock honest strings.
+- **preferBuckets (nit):** single visible + `scopeFirstPageIds` call per Activate All (shared into order + split).
+- **Kept:** 206l prefer-order; no parallel Add; Live=Add>0; Gidugu-hard; Cancel wasRemove stack.
+- **Deferred (still):** compact density (Eric skipped). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206l
+- **Session restore prefer favorites + first-page (P1):** Cold-boot register order is selected → favorites → viewport-visible → first-page (current library scope, not only mounted viewport) → recent(~24) → remainder via shared `prefer-order.mjs`. Tip asserts favorites + first-page ids in early wave ahead of bulk.
+- **Safe Activate All throughput (P1 — NOT parallel GDI):** Wave0 prefer includes favorites (+ visible/selected/first-page/recent); keep skip Live/Settled/hard Gidugu; chunk+yield UI; prep parallelism (disk walk / gdi-maps copy) unchanged — **no** parallel `AddFontResourceEx`, **no** GDI quota raise, **no** FR_PRIVATE, **no** fake Live. Expected wall-clock improvement is prep/skip, not FontBase-matching parallel Add. Tip asserts prefer includes favorites; Settled/hard never queued; no new parallel-Add path.
+- **Kept:** Cancel wasRemove honesty (206k); Live=Add>0; Gidugu-hard; soft try-Add; provenance; Retry refuse-clear+race; activateQueueIds; modal/wave0; Google↔FS; finish activated.length.
+- **Deferred (still):** compact density (Eric skipped). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206k
+- **Cancel/Deactivate keepFailed soft-lie (Skye P0 HOLD):** `cancelDownloadQueue` ran `if (keepFailed.length)` first — stale Activate `lastFailedNames` skipped `confirmRemovePrefixByDone` + `restoreRemoveRemainderLive`, leaving Cancel mid-Deactivate remainder pending-off with download-failure toast. Fix: when `wasRemove`, always prefix-confirm + restore Live **independent of** `keepFailed` toast; `beginOwnedJob("remove")` clears `lastFailedNames`. Tip assert `wasRemove && keepFailed.length` still restores Live.
+- **Kept:** wired Pause/Cancel (206i); beginRemoveBatch; prefix Off; Cancel restore (206j); `activateQueueIds`; Live=Add>0; Gidugu-hard; soft/provenance/Retry/no-infer/modal/wave0/Google↔FS; finish `activated.length`.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206j
+- **Cancel/Deactivate Live soft-lie (Skye P1 HOLD):** `syncFontsOnSystem(off)` called `confirmDeactivated(all)` at `unload_font_families` invoke-accept (spawn) while GDI only unloads a prefix and Cancel `session_remove`s prefix — UI went all-Off; Cancel toast still claimed “remaining stay Live”. Fix: track remove batch; confirm Off only for unloaded `ready_names` / done prefix (Rust pushes names on each Remove); Cancel → `clearPendingDeactivate` for never-unloaded (stay Live); toast matches store (`liveRemain`). No all-Off early confirm. Tip assert Cancel path.
+- **Kept:** wired Pause/Cancel gate (206i); shared `activateQueueIds`; Live=Add>0; Gidugu-hard; soft/provenance/Retry/no-infer/modal/wave0/Google↔FS; finish toast `activated.length`.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206i
+- **Remove Pause/Cancel soft-lie (P1):** `unload_now` / bulk Deactivate All honor `bulk().cancel` + `bulk().pause` via `on_disk_register_gate` (same as on-disk register). Cancel stops further Removes (already-unloaded stay Off; session_remove prefix only); Pause waits, Resume continues. Fresh `unload_font_families` clears leftover cancel/pause. Tip assert wired (not hide).
+- **Catalog remaining via shared queue (P1):** `catalogMenuStats.remaining` calls `catalogMenuRemaining` → `activateQueueIds` (Settled + hard Gidugu + `pendingDeactivateSet` aligned). Tip **runtime** fixture: remaining === `activateQueueIds(...).length`.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206h
+- **Activate remaining count honesty (P1):** `ActivateMenuItem` / `catalogMenuStats` / `LibraryActivateMenuItem` share `activateQueueIds` with `activateSet` — skip Settled + hard Gidugu allowlist (not bare Live/pending-only). Tip assert remaining == queue filter.
+- **`start_google_downloads` no infer-after-None (P1):** explicit intent or disk/catalog resolve; if resolve is None and no explicit intent → **skip family** (never `infer_fetch_intent` after None — Google↔FS hard separation).
+- **Test hygiene (P1):** tip CI tip-1.0.206*; OG `grok-pwa-plugin` tests isolate cwd so repo `site.json`/`public/og.jpg` cannot stamp Font Manager into placeholder-card unit tests; write-atomic skill assert updated to direct `public/` writes (skill dropped write-atomic stage).
+- **P2:** `DeactivateMenuItem` `anyOn` includes `pendingDeactivateSet`; desktop Deactivate All one calm queue toast (remove bar kept); finish toast Live = `activated.length` only; short confirm Cancel labels; remove-mode Pause/Cancel on bar.
+- **Deferred (still):** compact density (session restore prefer landed 206l). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206g
+- **Soft Retry double-click race (Skye P2):** 206f awaited `clearSessionGdiRefused` after dropping Settled but *before* setting pending — a second Power click in that window skipped the Settled/one-try path and took normal Activate. Fix: set pending + drop Settled in the same synchronous `set()` before await clear; after clear, sync only if still pending (abort if Live / pending-off / pending cleared).
+- **GDI bar-clear tip hygiene (P2):** `gdi-incapable-no-fs-download-purge` tip assert updated from stale `p.current ?? ""` to idle ternary `active ? (p.current ?? "") : ""` (matches 1.0.204 / settled-idle-bar-clear). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206f
+- **Soft Power Retry Add (Skye P1 HOLD):** After soft Add=0, `note_session_gdi_refused` stayed set; UI Retry cleared Settled + queued Activate but Rust `family_early_skip_soft_session_refused` returned AddReturnedZero without Add. Fix: soft Retry awaits `clear_session_gdi_refused_family` before Activate so Add runs; refuse can re-note after another Add=0 (Activate All skip intact). Rust unit test asserts clear/bypass.
+- **Cancel/wave0 copy honesty:** When prefer is already wave0-queued, Cancel = keep first N (already queued) — not “visible only”. Prefer-empty Cancel label matches visible vs first-page enqueue.
+- **Soft Settled Power tooltip:** Retry Add once/process; after Retry used + Add=0 again, tooltip says Retry already used (not Live). ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206e
+- **Soft Settled provenance (P1):** Soft Settled only when `.settled-add-zero` written after real Add=0. Scan one-shot wipes soft bare `.complete` lacking provenance (hard-emoji tip upgrade). Soft + full-face size OK + no provenance ⇒ not Incomplete, excluded from Repair (no huge TTF re-download before try-Add).
+- **Soft session refuse + Power (P2):** `note_session_gdi_refused` covers soft after Add=0; Activate All skips soft via settled/session refuse (not bare `.complete`). Power: hard Settled no-op; soft Settled = Retry Add (one try/process); tooltips aligned.
+- **Activate All modal + wave0 (P2):** Replace `window.confirm` with in-app OK=all / Cancel=visible / Abort. Enqueue visible/selected/recent as wave0 immediately; remainder after confirm. Cancel offers first-page/selection when visible=0. Soften ETA copy. ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206d
+- **Scan soft Settled (P1):** `scan_disk_families` reports `settled:true` for soft emoji with intact + size OK + `.complete` (after Add=0) via soft class / `family_may_settle_add_zero` honesty — same badge path as hard Gidugu. Does **not** auto-stamp soft on Scan / does **not** early-skip Add (Activate still try-Add first). `applyDiskStatusHonesty` picks soft Settled from Scan rows so cold boot is not “Library complete” forever.
+- **Soft allowlist SoT (P1):** Rust `SOFT_GDI_TRY_ADD_FIRST` table mirrors TS; `is_emoji_session_family` lookups the table. Tip test asserts exact family-list parity.
+- **Soft confirm Cancel (P2):** Activate All N>50 Cancel = Activate visible only (not silent full abort when copy promises a visible path).
+- **Noto Emoji stub gate (P2):** ≥256KB reject applies to outline Noto Emoji settle/download (parity with color path) so stubs cannot `.complete` after Add=0.
+- **Toast helper (P2):** `firstSettledAllowlistedFamily` includes soft; finish toast preview prefers allowlisted settle names. Hard allowlist remains Gidugu only. ProductVersion 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206c
+- **Emoji Activate regression (Skye/Eric):** Noto Color Emoji / Noto Emoji were on hard `KNOWN_GDI_SESSION_INCAPABLE` → boot Settled seed + Activate All skip + `family_early_skip_known_incapable` never tried Add. Fix: hard allowlist = **Gidugu only**. Soft emoji try Add first; Settled + toast only after Add=0 (`family_may_settle_add_zero` / `stamp_settle_after_add_zero`). Activate All queues catalog (~2099) minus hard allowlist only. Completeness P0 kept (upstream color TTF, ≥256KB reject stubs, no fake Live). ProductVersion stays 1.0.206. No tip-install/pack.
+
+## Fixed in tip / 1.0.206b
+- **Completeness P0 (standing rule):** Noto Color Emoji Activate skips Google CSS latin/unicode-range stubs — planned = full upstream `NotoColorEmoji.ttf` only (reject <256KB). `pick_subsets` prefers emoji like CJK. TS `fontsourceTtfFiles` mirror matches. Live still Add>0 only; Settled honesty unchanged for Gidugu + emoji.
+- **UI Activate All pack-blocker:** hydrate seeds `KNOWN_GDI_SESSION_INCAPABLE` into `settledFamilySet`; `activateSet` / `setActivatedMany` / Activate visible also skip `isKnownGdiSessionIncapable` so Gidugu (hard) never queues pending if settled set is not hydrated yet. Soft emoji queue (206c). `applyDiskStatusHonesty` re-merges allowlist after disk replace. ProductVersion stays 1.0.206; Rust boot seed from 206 kept.
+
+## Fixed in tip / 1.0.206
+- **Seed allowlist Settled on boot:** `seed_known_gdi_incapable_settled` + early-skip stamps `.complete` / session-refused for intact Gidugu-class (hard allowlist) before first settle scan so Activate All never queues Gidugu. Soft emoji since 206c.
+- **Resume intent when store row missing:** never default `"google"`. Catalog lookup + `resolve_family_fetch_intent` (stamp → planned → official Google); ambiguous families skipped — never wrong-pipe Fontsource vs Google.
+- **Emoji P0:** `pull_emoji_upstream_color_ttf` prefers noto-emoji upstream full color TTF (reject latin stubs / no WOFF2). Soft try-Add (206c) — Live only if Add>0; else honest Settled. Not hard-allowlisted.
+- **CJK:** existing chinese-*/japanese/korean subset preference + tiny latin remnant purge / replace policy kept (incomplete ≠ Done).
+
+## Fixed in tip / 1.0.205
+- Resume + stamp migration: `resumeGoogleFamilies` passes parallel `intents` (same as Activate — never infer-only on mixed resume). Boot/scan stamps `.download-source` only when `.google-planned` is a usable key list, else fontsource when `.fontsource-planned` / latin-subset names dominate; ambiguous folders stay unset. Register still uses `face_allowed_for_register`.
+- Activate All speed (honesty kept): skip Settled / known Add=0 allowlist; already-Live `loaded()` this process short-circuits re-walk; visible+selected+recent first with remainder in waves (~40) + soft confirm when N>50; register progress owner separate from download. No fake Live / no skip Add after Quit / no FR_PRIVATE / no GDI quota raise.
+- Pending-off timeout: if unload not confirmed in ~8s (Word-locked), keep Live honest and surface “still unloading / retry” — never fake Off.
+- KEEP 204 feel + Google↔Fontsource hard separation.
+
+## Fixed in tip / 1.0.204
+- FontBase activate/deactivate feel: no exclusive Remove→Add thrash, pending-off, progress owners, count lanes, one Live per family, drop download on deactivate, visible-first restore.
+- Google↔Fontsource hard separation: Activate intent `google` | `fontsource` | `local`; Google path never Fontsource-fills; Fontsource path never Google CSS2/desktop fetch; `.download-source` + planned-key register filter; preview CSS no dual Google+Fontsource hrefs.
+
 # Font Manager — known issues / follow-ups
 
 ## Fixed in tip / 1.0.203
@@ -87,7 +213,7 @@
 - **Variable list lacking (P0 regression):** 1.0.176 accidentally reverted 1.0.170’s catalog Variable facet when landing Gidugu/Clear Sans. Sidebar / `variable` query again = **catalogVariable OR on-disk VF** (like Italic); card badge / axes stay on-disk `*-variable-*` only. Material Symbols* WOFF2-only excluded. Scan `has_variable` again accepts `VariableFont_` / bracket names. Activated `poolForScope` prefers store `googleFonts` so disk VF badge honesty is not wiped by static `FONT_BY_ID` (`variable:false`). Expected facet ≈ Google **558** + **9** Fontsource TTF VFs. Progressive session restore (1.0.190) kept. No tip-install/pack.
 
 ## Fixed in tip / 1.0.190
-- **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Deferred P1:** visible/favorites/first-page first.
+- **Progressive session restore (P0):** Hydrate flushes `session_boot.ready` to Activated as Adds succeed — UI can mark Live before `boot.done` (~2099). Calm **Restoring N/T** chrome (does not steal a user job); clears when done. Known-incapable Settled never queued for Add. `emit_progress` throttled (~350ms; idle/force always emit) so webview stays interactive. Heal/sanitize/index stay off Add critical path. **Landed 1.0.206l:** visible/favorites/first-page prefer waves (no longer deferred). **Landed 1.0.206p:** compact density (Comfortable|Compact). **1.0.206q:** bar+header density vars + Pause toast done/total honesty. **1.0.206r:** dialogs/empty/settings density vars.
 
 ## Fixed in tip / 1.0.189
 - **Quit kill mid-Remove (P0):** `quit_unload_budget_for` was hard-coded 4s for any path count — Activate All (~2k) quit watchdog `process::exit(0)` mid-Remove, leaving GDI-live faces and locked Documents folders. Restored **scaled** budget: `max(12s, min(180s, path_count × 15ms))` (~2k ≈ 31.5s, ~11k ≈ 165s). Watchdog is hung-GDI backstop only; worker still `exit(0)` when `session_end` completes. No FontCache restart on quit (Explorer hang). Hide-window + worker unload + next-boot recover kept.
@@ -293,5 +419,5 @@
 
 ## Notes
 
-- Tip is 1.0.197. NSIS is Windows `deploy.bat` only. `main` may still be 1.0.189 until the 197 tip is merged.
+- Tip is 1.0.206s (ProductVersion 1.0.206 amend-style). NSIS is Windows `deploy.bat` only — pack HOLD this tip.
 - `session_end` always clears maps: quit passes `&[]` as `still_locked` (no write-lock probe — was stalling quit), so `plan_session_end_cleanup` always gets empty still_locked → `clear_maps: true`. Next-boot recover relies on sidecars only when clear did not complete (crash/hung quit).

@@ -12,19 +12,26 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { applyDesktopPrefs } from "@/lib/desktop/prefs";
 import { useFontStore } from "@/lib/fonts/store";
+import { useUiDensity, type UiDensity } from "@/lib/ui-density";
 
 export function DesktopSettings() {
   const prefs = useFontStore((s) => s.desktopPrefs);
   const setDesktopPrefs = useFontStore((s) => s.setDesktopPrefs);
+  const { density, setDensity } = useUiDensity();
 
   useEffect(() => {
     void applyDesktopPrefs(prefs);
   }, [prefs.closeToTray, prefs.startWithWindows]);
 
+  const densityOpts: { id: UiDensity; label: string; hint: string }[] = [
+    { id: "comfortable", label: "Comfortable", hint: "Default spacing — roomy cards and rows" },
+    { id: "compact", label: "Compact", hint: "Tighter library, dialogs, empty panes, and settings" },
+  ];
+
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button size="icon-sm" variant="ghost" aria-label="Desktop settings">
+        <Button size="icon-sm" variant="ghost" aria-label="Settings" data-testid="settings-open">
           <Settings />
         </Button>
       </DialogTrigger>
@@ -32,10 +39,35 @@ export function DesktopSettings() {
         <DialogHeader>
           <DialogTitle>Desktop</DialogTitle>
           <DialogDescription>
-            Tray and Windows startup. Quit from the tray still unloads session fonts so Word drops them.
+            Tray, Windows startup, and library density. Quit from the tray still unloads session fonts so Word drops them.
           </DialogDescription>
         </DialogHeader>
-        <label className="flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2.5 text-sm">
+        <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Density</p>
+            <p className="text-xs text-muted-foreground">
+              Comfortable or Compact for library, dialogs, empty panes, and Desktop Settings rows. Saved on this device.
+            </p>
+          </div>
+          <div className="fm-settings-opts flex flex-wrap" role="group" aria-label="UI density">
+            {densityOpts.map((opt) => (
+              <Button
+                key={opt.id}
+                type="button"
+                size="sm"
+                variant={density === opt.id ? "default" : "outline"}
+                aria-label={opt.label}
+                aria-pressed={density === opt.id}
+                title={opt.hint}
+                data-testid={`density-${opt.id}`}
+                onClick={() => setDensity(opt.id)}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
           Close to tray
           <Switch
             checked={prefs.closeToTray}
@@ -45,7 +77,7 @@ export function DesktopSettings() {
         <p className="px-1 text-xs text-muted-foreground">
           X hides the window. Fonts stay live in Word until you Quit from the tray.
         </p>
-        <label className="flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2.5 text-sm">
+        <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
           Start with Windows
           <Switch
             checked={prefs.startWithWindows}
