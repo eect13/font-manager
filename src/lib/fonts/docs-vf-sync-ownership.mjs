@@ -1,5 +1,5 @@
 /**
- * Docs VF sync / Refresh Documents cancel ownership (1.0.206w amend + 1.0.206x latch).
+ * Docs VF sync / Refresh Documents cancel ownership (1.0.206w amend + 1.0.206x latch + 1.0.206y a11y tree).
  * Pure ESM so tip tests can assert the Scanning Documents collision matrix
  * and docs Cancel chrome ≥1s UIA stability without React.
  *
@@ -157,4 +157,17 @@ export function cancelChromeA11y({
     "aria-label": "Cancel",
     "data-cancel-kind": "download",
   };
+}
+
+/**
+ * 1.0.206y — hide library/main (thousands of font cards) from the a11y tree while
+ * docs sync owns the job so UIA FindFirst(Name/Id) for Cancel resolves in ≤300ms
+ * without walking Descendants through ~2100 library nodes.
+ * DownloadBar must stay *outside* the aria-hidden / inert subtree (app-shell).
+ */
+export function shouldHideLibraryFromA11yDuringDocsJob({
+  docsOwns = false,
+  cancelChromeEligible = true,
+} = {}) {
+  return Boolean(docsOwns) && Boolean(cancelChromeEligible);
 }

@@ -199,7 +199,7 @@ export function DownloadBar() {
         </p>
         <span
           className="shrink-0 tabular-nums font-medium text-foreground"
-          aria-live="polite"
+          aria-live={docsChrome || holdDismissChrome ? undefined : "polite"}
           aria-label={`${shownPct} percent`}
         >
           {shownPct}%
@@ -246,7 +246,7 @@ export function DownloadBar() {
               size="sm"
               variant="ghost"
               className="h-7 px-2"
-              /* 1.0.206x: stable key + latched docs Cancel ≥1s while cancellable; a11y from cancelChromeA11y. */
+              /* 1.0.206x/y: stable key + latched docs Cancel; a11y from cancelChromeA11y spreads id onto this <button> (WebView2 AutomationId). */
               data-testid="activate-bar-cancel"
               {...cancelChromeA11y({
                 showDocsCancelIdentity: docsChrome,

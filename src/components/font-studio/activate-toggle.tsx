@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { armDocsVfSyncOwnership, cancelDownloadQueue, didDocsVfSyncCancelToast, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
@@ -478,10 +479,7 @@ export function RefreshDocumentsMenuItem() {
             description:
               "Removes redundant statics when a variable font is present. Keeps static-only families. Cancel from the progress bar.",
             duration: 8_000,
-            action: {
-              label: "Cancel",
-              onClick: () => void cancelDownloadQueue(),
-            },
+            action: docsCancelToastAction(),
           });
           const result = await syncDocumentsVfPolicy();
           if (!result) {
