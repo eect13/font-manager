@@ -17,6 +17,8 @@
           var r = document.documentElement;
           r.setAttribute("data-theme", t);
           r.style.colorScheme = t;
+          var d = localStorage.getItem("font-manager:ui-density");
+          r.setAttribute("data-ui-density", d === "compact" ? "compact" : "comfortable");
         } catch (e) {
           document.documentElement.setAttribute("data-theme", "dark");
         }

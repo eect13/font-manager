@@ -8,15 +8,13 @@ import { primeGooglePreview } from "@/lib/fonts/loader";
 import { loadSystemFonts } from "@/lib/fonts/system-fonts";
 import { filterLibrary, poolForScope, sortLibrary, useFontStore } from "@/lib/fonts/store";
 import type { Collection, FontRecord } from "@/lib/fonts/types";
+import { useUiDensity } from "@/lib/ui-density";
 
 const EMPTY_IDS: string[] = [];
 const EMPTY_COLS: Collection[] = [];
 const EMPTY_FONTS: FontRecord[] = [];
 
 const COL_MIN = 280;
-const GAP = 8;
-const GRID_H = 232;
-const LIST_H = 152;
 
 function scopeNeedsActivated(scope: string) {
   return scope === "activated";
@@ -82,6 +80,10 @@ export function LibraryGrid() {
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [desktopShell, setDesktopShell] = useState(isDesktopShellSync);
   const list = preview.view === "list";
+  const { layout: densityLayout } = useUiDensity();
+  const GAP = densityLayout.gap;
+  const GRID_H = densityLayout.gridH;
+  const LIST_H = densityLayout.listH;
   const sortMode =
     scope === "system" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
 
@@ -211,7 +213,7 @@ export function LibraryGrid() {
       <div ref={boxRef} className="flex flex-1 flex-col">
         {uploadedBar}
         {systemBar}
-        <div className="flex flex-1 flex-col items-center justify-center px-6 py-20 text-center">
+        <div className="fm-empty-pane flex flex-1 flex-col items-center justify-center text-center">
           <p className="font-heading text-3xl">
             {scope === "system" && (systemBusy || desktopShell) && !query.trim()
               ? systemBusy
@@ -248,7 +250,7 @@ export function LibraryGrid() {
       {systemBar}
       <div className="relative w-full" style={{ height: totalH }}>
         <div
-          className={list ? "flex flex-col gap-2 p-2.5 md:p-3" : "grid gap-2 p-2.5 md:p-3"}
+          className={list ? "fm-library-surface flex flex-col" : "fm-library-surface grid"}
           style={
             list
               ? { transform: `translateY(${offsetY}px)` }
