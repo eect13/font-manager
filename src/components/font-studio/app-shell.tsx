@@ -10,6 +10,7 @@ import { CssExportDialog } from "./css-export-dialog";
 import { DownloadBar } from "./download-bar";
 import {
   getDownloadJob,
+  cancelDocsVfSyncFromShortcut,
   isDocsVfSyncJob,
   subscribeDownloadJob,
 } from "@/lib/fonts/os-activate";
@@ -86,6 +87,13 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
       if (e.key === "/" && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
         e.preventDefault();
         searchRef.current?.focus();
+        return;
+      }
+      // 1.0.206ae P1: Escape cancels docs refresh without needing UIA/mouse hit on Cancel.
+      if (e.key === "Escape") {
+        if (cancelDocsVfSyncFromShortcut()) {
+          e.preventDefault();
+        }
       }
     }
     window.addEventListener("keydown", onKey);

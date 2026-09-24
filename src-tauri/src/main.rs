@@ -101,8 +101,16 @@ fn main() {
 
             let show = MenuItem::with_id(app, "show", "Show Font Manager", true, None::<&str>)?;
             let folder = MenuItem::with_id(app, "folder", "Open Documents folder", true, None::<&str>)?;
+            // 1.0.206ae P1: native cancel hatch when WebView is busy / UIA-blind.
+            let cancel_docs = MenuItem::with_id(
+                app,
+                "cancel_docs_refresh",
+                "Cancel Documents refresh",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &folder, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
 
             let icon = app
                 .default_window_icon()
@@ -118,6 +126,12 @@ fn main() {
                     "show" => show_main(app),
                     "folder" => {
                         let _ = activate::open_activation_folder(app.clone());
+                    }
+                    "cancel_docs_refresh" => {
+                        // Sets bulk().cancel only — works even if WebView pump is starved.
+                        tauri::async_runtime::spawn(async move {
+                            let _ = activate::cancel_google_downloads().await;
+                        });
                     }
                     "quit" => quit_gracefully(app),
                     _ => {}

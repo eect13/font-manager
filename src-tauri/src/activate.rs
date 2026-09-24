@@ -6993,6 +6993,17 @@ fn emit_progress_throttle_ms() -> u64 {
     350
 }
 
+/// 1.0.206ae: docs VF purge must not flood WebView (~2k dirs).
+/// Harder than Activate's 350ms so Cancel stays hittable (no Not Responding).
+fn docs_vf_emit_progress_throttle_ms() -> u64 {
+    900
+}
+
+/// Also emit at most every N dirs even if wall-clock fires sooner after a stall.
+fn docs_vf_emit_every_n_dirs() -> u32 {
+    48
+}
+
 fn emit_progress_throttled(app: &AppHandle, force: bool) {
     static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
     let last = LAST.get_or_init(|| Mutex::new(None));
@@ -9194,6 +9205,9 @@ fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, Strin
     emit_progress_force(&app);
 
     let total_cap = total;
+    // 1.0.206ae: throttle docs progress emits (time + every-N) — skip per-family text churn.
+    let last_docs_emit = std::sync::Mutex::new(Instant::now() - Duration::from_secs(10));
+    let dirs_since_emit = std::sync::atomic::AtomicU32::new(0);
     let result = docs_vf_sync_execute(
         dirs,
         &state.cancel,
@@ -9208,21 +9222,41 @@ fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, Strin
             if state.cancel.load(Ordering::SeqCst) {
                 return (del, lock);
             }
-            if let Ok(mut p) = state.progress.lock() {
-                p.done = p.done.saturating_add(1);
-                p.total = total_cap.max(p.done);
-                p.running = true;
-                p.kind = "download".into();
-                p.current = if del > 0 {
-                    format!("Synced {name} (−{del} static)")
+            let done_now = {
+                let mut done_now = 0u32;
+                if let Ok(mut p) = state.progress.lock() {
+                    p.done = p.done.saturating_add(1);
+                    p.total = total_cap.max(p.done);
+                    p.running = true;
+                    p.kind = "download".into();
+                    if lock > 0 {
+                        p.failed = p.failed.saturating_add(lock as u32);
+                    }
+                    done_now = p.done;
+                }
+                done_now
+            };
+            let n = dirs_since_emit.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            let due_n = n >= docs_vf_emit_every_n_dirs() || done_now <= 1 || done_now >= total_cap;
+            let due_t = last_docs_emit
+                .lock()
+                .map(|t| t.elapsed() >= Duration::from_millis(docs_vf_emit_progress_throttle_ms()))
+                .unwrap_or(true);
+            if due_n || due_t {
+                if let Ok(mut p) = state.progress.lock() {
+                    // Stable label — no per-family Name churn for UIA / React.
+                    p.current = format!("Refreshing Documents ({done_now}/{total_cap})");
+                }
+                if done_now <= 1 || done_now >= total_cap {
+                    emit_progress_force(&app);
                 } else {
-                    format!("Syncing {name}")
-                };
-                if lock > 0 {
-                    p.failed = p.failed.saturating_add(lock as u32);
+                    emit_progress(&app);
+                }
+                dirs_since_emit.store(0, Ordering::SeqCst);
+                if let Ok(mut t) = last_docs_emit.lock() {
+                    *t = Instant::now();
                 }
             }
-            emit_progress(&app);
             (del, lock)
         },
     );
@@ -10557,6 +10591,14 @@ mod install_path_tests {
         assert_eq!(result.statics_deleted, 0);
         assert_eq!(result.families_purged, 0);
         assert_eq!(result.families_seen, 12);
+    }
+
+    #[test]
+    fn docs_vf_emit_throttle_keeps_webview_responsive_contract() {
+        // 1.0.206ae Gate D: ≥800ms docs emit; every-N dirs; Activate stays 350ms.
+        assert!(docs_vf_emit_progress_throttle_ms() >= 800);
+        assert!(docs_vf_emit_progress_throttle_ms() >= emit_progress_throttle_ms());
+        assert!(docs_vf_emit_every_n_dirs() >= 16);
     }
 
     #[test]

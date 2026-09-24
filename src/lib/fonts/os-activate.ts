@@ -1354,6 +1354,20 @@ export function peekDocsVfSyncCancelPending(): boolean {
   return docsVfSyncCancelPending;
 }
 
+/** 1.0.206ae P1: Escape hatch — arm docs Cancel without needing UIA hit-test. */
+export function cancelDocsVfSyncFromShortcut(): boolean {
+  if (
+    !docsCancelChromePresented &&
+    !docsVfSyncActive &&
+    !docsVfSyncCancelPending &&
+    !isDocsVfSyncJob()
+  ) {
+    return false;
+  }
+  cancelDownloadQueue({ fromDocsCancelChrome: true });
+  return true;
+}
+
 /** download-bar: docs Cancel Name/id is currently painted (cancellable). */
 export function setDocsCancelChromePresented(presented: boolean) {
   docsCancelChromePresented = Boolean(presented);
@@ -1383,8 +1397,8 @@ function bumpDocsCancelSeqInDom() {
     }
     const chrome = document.querySelector("[data-fm-shell-chrome]");
     if (chrome) {
+      // 1.0.206ae: stamp seq on chrome for probes — do NOT set title (HelpText/Name steal).
       chrome.setAttribute("data-fm-cancel-seq", seq);
-      chrome.setAttribute("title", `fm-cancel-seq=${seq}`);
       chrome.setAttribute("aria-valuenow", seq);
     }
   } catch {
@@ -1665,13 +1679,18 @@ export async function bindDownloadEvents() {
   }
 }
 
+function docsProgressPollMs() {
+  // 1.0.206ae: slower poll while docs VF owns the bar — pairs with Rust ≥900ms emit.
+  return isDocsVfSyncJob() ? 1000 : 400;
+}
+
 function ensureGooglePoll() {
   void bindDownloadEvents();
   ignoreProgress = false;
   unlockUi();
   if (pollTimer) return;
   rustSeenRunning = rustSeenRunning || job.running || job.paused;
-  pollTimer = window.setInterval(() => void pollRustProgress(), 400);
+  pollTimer = window.setInterval(() => void pollRustProgress(), docsProgressPollMs());
   void pollRustProgress();
 }
 

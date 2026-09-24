@@ -248,8 +248,8 @@ export function DownloadBar() {
         ) : job.running || job.paused ? (
           <>
             {docsChrome ? (
-              /* 1.0.206ad: pointerdown/mousedown arms cancel (mouse must win without Invoke);
-                 click no-ops if already armed; keyboard/Invoke still use onClick. */
+              /* 1.0.206ae: arm on pointerdown/mousedown WITHOUT preventDefault (206ad
+                 preventDefault correlated with UIA FromPoint blind). Click no-ops if armed. */
               <button
                 type="button"
                 key="activate-bar-cancel"
@@ -266,12 +266,10 @@ export function DownloadBar() {
                 {...cancelChromeA11y({ showDocsCancelIdentity: true })}
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
-                  e.preventDefault();
                   cancelDownloadQueue({ fromDocsCancelChrome: true });
                 }}
                 onMouseDown={(e) => {
                   if (e.button !== 0) return;
-                  e.preventDefault();
                   cancelDownloadQueue({ fromDocsCancelChrome: true });
                 }}
                 onClick={(e) => {

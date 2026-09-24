@@ -1,3 +1,11 @@
+## Fixed in tip / 1.0.206ae
+- **P0 WebView Not Responding mid-Refresh (206ad Gate D):** UIA FromPoint/FindFirst blind (`chrome=[]`); bitmap mouse → success **Documents refreshed — 18…**; Inter static=0. Progress emits ~350ms during ~2k-folder purge starved message pump.
+- **Throttle:** `docs_vf_emit_progress_throttle_ms()=900` + every `48` dirs; stable `Refreshing Documents (done/total)` (no per-family `Syncing {name}` churn). Activate throttle stays 350ms. JS poll 1000ms while docs owns job.
+- **UIA:** drop `preventDefault` on pointerdown/mousedown (restore hit-testing); keep Name `Cancel Documents refresh` + id `fm-cancel-documents-refresh`; do not put `title` on shell chrome.
+- **P1 Escape / tray:** Escape → `cancelDocsVfSyncFromShortcut`; tray menu **Cancel Documents refresh** → `cancel_google_downloads` (native, no WV click).
+- Keep 206ad: immediate cancel IPC, deferred teardown, cancelable purge, honesty (`raw.cancelled` only).
+- ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206ad
 - **P0 mouse Cancel lost race (206ac Gate D):** Invoke FAIL mid-job; mouse fallback ~8s → success **Documents refreshed — 18…** or late-cancel; Inter static=0 (fully purged). Hang fix kept (`responding=True`).
 - **pointerdown arm:** `onPointerDown`/`onMouseDown` call `armDocsCancelFromChrome` — sticky pending + Cancelling toast + **immediate** cancel IPC; `setTimeout(0)` only for bar teardown (206ac hang fix). Click no-ops if `isDocsCancelArmed()`.
