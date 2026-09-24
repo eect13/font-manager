@@ -468,6 +468,9 @@ pub struct FontIndexOut {
     pub glyph_count: u16,
     #[serde(rename = "otFeatures")]
     pub ot_features: Vec<String>,
+    /// File modified time, unix ms. 0 if the OS did not report one.
+    #[serde(rename = "modifiedMs")]
+    pub modified_ms: u64,
 }
 
 fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
@@ -481,6 +484,12 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
     }
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let file_size = meta.len();
+    let modified_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(0))
+        .unwrap_or(0);
     let file_name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -506,23 +515,29 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
             checksum: checksum.clone(),
             glyph_count: layout.glyph_count,
             ot_features: layout.ot_features,
+            modified_ms,
         }
     })
 }
 
 /// Watch-folder / 20k local: parse on disk, no File bytes into JS. WOFF2 skipped.
+/// Off the UI thread — a sync command here froze Close while a folder was indexing.
 /// Sequential per path — JS already batches 256-path waves. Do not rayon without a profiler.
 #[tauri::command]
-pub fn index_font_paths(paths: Vec<String>) -> Vec<FontIndexOut> {
-    let mut out = Vec::new();
-    for path in paths {
-        let p = Path::new(&path);
-        match index_one_path(p) {
-            Ok(mut faces) => out.append(&mut faces),
-            Err(_) => continue,
+pub async fn index_font_paths(paths: Vec<String>) -> Vec<FontIndexOut> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for path in paths {
+            let p = Path::new(&path);
+            match index_one_path(p) {
+                Ok(mut faces) => out.append(&mut faces),
+                Err(_) => continue,
+            }
         }
-    }
-    out
+        out
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]

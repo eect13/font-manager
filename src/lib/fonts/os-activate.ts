@@ -1766,7 +1766,10 @@ async function pumpInstall(myBatch: number) {
     if (myBatch !== batchId) break;
     const next = installQueue.shift();
     if (!next) break;
-    job = { ...job, current: next.font.family, running: true, mode: "download", owner: job.owner === "idle" ? "download" : job.owner };
+    const localFile = next.font.source === "local";
+    const owner = job.owner === "idle" ? (localFile ? "register" : "download") : job.owner;
+    const mode = localFile && owner !== "download" ? "register" : owner === "register" ? "register" : "download";
+    job = { ...job, current: next.font.family, running: true, mode, owner };
     paint();
     try {
       await installOne(next.font, next.lean);
@@ -2150,7 +2153,10 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     await queueGoogleFamilyDownload(font.family, fetchIntentFor(font));
     return true;
   }
-  bumpDownloadJobForFamily(font.family);
+  // Already on this PC (folder or upload). Register for other apps — do not say Downloading.
+  if (!(job.running || job.paused)) {
+    beginOwnedJob("register", { total: 1, current: font.family });
+  }
   void startActivateOnDisk([font.family]);
   installQueue.push({ font, lean: false });
   kickInstall();
@@ -2357,8 +2363,8 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   }
   if (local.length) {
     if (!(job.running && (job.mode === "download" || job.owner === "download") && google.length)) {
-      const merge = job.running && (job.mode === "download" || job.owner === "download");
-      beginOwnedJob("download", {
+      const merge = job.running && (job.mode === "register" || job.owner === "register");
+      beginOwnedJob("register", {
         total: (merge ? job.total : 0) + local.length,
         current: local[0]?.family ?? "",
       });

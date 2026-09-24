@@ -157,7 +157,7 @@ export function DownloadBar() {
                   : restoring && job.running
                     ? `Restoring ${processed.toLocaleString()} / ${total.toLocaleString()}`
                     : registering && job.running
-                      ? `Registering ${processed.toLocaleString()} / ${total.toLocaleString()}`
+                      ? `Activating ${processed.toLocaleString()} / ${total.toLocaleString()}`
                       : skipped && remaining === 0 && job.running
                         ? `Registering ${skipped.toLocaleString()} already on disk`
                         : skipped && job.running

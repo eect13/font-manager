@@ -155,7 +155,17 @@ export function PreviewToolbar() {
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Sort</DropdownMenuLabel>
               {SORTS.map((id) => (
-                <DropdownMenuItem key={id} onSelect={() => setPreview({ sort: id })}>
+                <DropdownMenuItem
+                  key={id}
+                  title={
+                    id === "recent"
+                      ? "Newest file date. Same date keeps folder order, not A–Z."
+                      : id === "popular"
+                        ? "Catalog rank. Your files have no rank, so they stay together."
+                        : undefined
+                  }
+                  onSelect={() => setPreview({ sort: id })}
+                >
                   <span className="flex-1">{SORT_LABEL[id]}</span>
                   {sort === id && <Check className="size-3.5" />}
                 </DropdownMenuItem>

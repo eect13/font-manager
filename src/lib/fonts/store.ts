@@ -1092,7 +1092,7 @@ export const useFontStore = create<FontState>()(
                   version: parsed.version,
                   glyphCount: parsed.glyphCount,
                   cssFamily: parsed.family,
-                  addedAt: Date.now(),
+                  addedAt: file && file.lastModified > 0 ? file.lastModified : Date.now(),
                   license: parsed.license,
                   licenseName: parsed.licenseName || undefined,
                   kerningKey: parsed.kerningKey,
@@ -1262,7 +1262,7 @@ export const useFontStore = create<FontState>()(
                 checksum: row.checksum,
                 glyphCount: row.glyphCount,
                 cssFamily: row.family,
-                addedAt: Date.now(),
+                addedAt: row.modifiedMs && row.modifiedMs > 0 ? row.modifiedMs : Date.now(),
                 license: "unknown",
                 originPath: row.path,
                 metrics: layoutMetrics,
@@ -1826,24 +1826,34 @@ export function filterLibrary(
   return list;
 }
 
-const collator = new Intl.Collator(undefined, { sensitivity: "base" });
+const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
 export function sortLibrary(fonts: FontRecord[], sort: LibrarySort = "name-asc"): FontRecord[] {
-  const copy = [...fonts];
-  copy.sort((a, b) => {
-    switch (sort) {
-      case "name-desc":
-        return collator.compare(b.family, a.family) || a.id.localeCompare(b.id);
-      case "popular":
-        return a.popularity - b.popularity || collator.compare(a.family, b.family);
-      case "recent":
-        return (b.addedAt ?? 0) - (a.addedAt ?? 0) || collator.compare(a.family, b.family);
-      case "name-asc":
-      default:
-        return collator.compare(a.family, b.family) || a.id.localeCompare(b.id);
-    }
+  if (sort === "recent") {
+    // Equal addedAt must stay in library order. A name tie-break made a whole
+    // folder import look alphabetical (every file stamped in the same millisecond).
+    return fonts
+      .map((font, index) => ({ font, index, at: font.addedAt ?? 0 }))
+      .sort((a, b) => b.at - a.at || a.index - b.index)
+      .map((row) => row.font);
+  }
+  if (sort === "popular") {
+    const keyed = fonts.map((font, index) => ({
+      font,
+      index,
+      pop: font.popularity ?? 9999,
+      name: font.family,
+    }));
+    keyed.sort((a, b) => a.pop - b.pop || collator.compare(a.name, b.name) || a.index - b.index);
+    return keyed.map((row) => row.font);
+  }
+  const desc = sort === "name-desc";
+  const keyed = fonts.map((font, index) => ({ font, index, name: font.family }));
+  keyed.sort((a, b) => {
+    const c = collator.compare(a.name, b.name);
+    return (desc ? -c : c) || a.index - b.index;
   });
-  return copy;
+  return keyed.map((row) => row.font);
 }
 
 export function collectionIsWatched(collections: Collection[], id: string): boolean {

@@ -30,14 +30,32 @@ export function previewFallbackSample(
   return scriptSample(font) ?? sample;
 }
 
-export function cssFamilyStack(font: Pick<FontRecord, "family" | "cssFamily" | "category" | "tags">): string {
-  const family = font.cssFamily || font.family;
+/** CSS family for the specimen. Local files get a private name so sibling cuts
+ *  (Helvetica Light vs Narrow Bold) cannot steal each other's glyphs. */
+export function previewFaceName(font: {
+  id?: string;
+  source?: string;
+  cssFamily?: string;
+  family: string;
+}): string {
+  if (font.source === "local" && font.id) return `fm-${font.id}`;
+  return font.cssFamily || font.family;
+}
+
+export function cssFamilyStack(
+  font: Pick<FontRecord, "family" | "cssFamily" | "category" | "tags"> & {
+    id?: string;
+    source?: string;
+  },
+): string {
+  const face = previewFaceName(font);
+  const named = font.family;
   if (isEmoji(font)) {
-    return `"${family}", "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", sans-serif`;
+    return `"${face}", "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", sans-serif`;
   }
-  const script = scriptStack(family);
-  if (script && scriptOf(family) !== "latin") {
-    return `"${family}", ${script}`;
+  const script = scriptStack(named);
+  if (script && scriptOf(named) !== "latin") {
+    return `"${face}", ${script}`;
   }
-  return `"${family}", ${STACK[font.category] ?? STACK.sans}`;
+  return `"${face}", ${STACK[font.category] ?? STACK.sans}`;
 }

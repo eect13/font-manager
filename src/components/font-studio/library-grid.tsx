@@ -29,14 +29,22 @@ function useScroller() {
     if (!boxEl) return;
     const scroller = (boxEl.closest("[data-library-scroll]") as HTMLElement | null) ?? boxEl;
     let raf = 0;
+    let last = { width: 0, height: 0, scrollTop: -1 };
     const measure = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        setBox({
-          width: scroller.clientWidth || window.innerWidth,
-          height: scroller.clientHeight || Math.max(320, window.innerHeight - 220),
-          scrollTop: scroller.scrollTop,
-        });
+        const width = scroller.clientWidth || window.innerWidth;
+        const height = scroller.clientHeight || Math.max(320, window.innerHeight - 220);
+        const scrollTop = scroller.scrollTop;
+        if (
+          width === last.width &&
+          height === last.height &&
+          Math.abs(scrollTop - last.scrollTop) < 12
+        ) {
+          return;
+        }
+        last = { width, height, scrollTop };
+        setBox({ width, height, scrollTop });
       });
     };
     measure();

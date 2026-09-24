@@ -7732,8 +7732,16 @@ pub fn remove_library_file(app: AppHandle, family: String, file_name: String) ->
     Ok(())
 }
 
+/// Add one on-disk file for this session. Off the UI thread so Activate / Close
+/// are not stuck behind GDI.
 #[tauri::command]
-pub fn register_font_path(path: String) -> Result<(), String> {
+pub async fn register_font_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || register_font_path_blocking(path))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn register_font_path_blocking(path: String) -> Result<(), String> {
     let p = PathBuf::from(path);
     let lower = p.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
     if lower.contains("\\windows\\fonts") {

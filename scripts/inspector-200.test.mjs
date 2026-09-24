@@ -35,7 +35,7 @@ test("CSS cache vf3 + pin visible cards; rust folder index", () => {
   assert.match(loader, /css:vf3:/);
   assert.match(loader, /export function pinCss/);
   assert.match(card, /pinCss\(cssKey\)/);
-  assert.match(rust, /pub fn index_font_paths/);
+  assert.match(rust, /pub async fn index_font_paths/);
   assert.match(store, /importOriginPaths:/);
   assert.match(sfnt, /function readStatAxisNames/);
   assert.match(sfnt, /flags & 1 && t !== "ital"/);

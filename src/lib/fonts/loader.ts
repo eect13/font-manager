@@ -3,7 +3,7 @@ import { idbGet, idbPutPreview, previewCacheId } from "./idb";
 import { isEmojiFamily } from "./emoji";
 import { axesForFont, previewWghtAxis } from "./axes";
 import { isSpecialPreviewFont, notifyIfUnusual } from "./color-font";
-import { cssFamilyStack as stackFor } from "./fallback";
+import { cssFamilyStack as stackFor, previewFaceName } from "./fallback";
 import { scriptProbe, scriptSampleText, scriptSubset } from "./scripts";
 import { toast } from "sonner";
 
@@ -883,7 +883,7 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
     const copy = buffer.slice(0);
     const probed = await rememberFileAxes(font, copy);
     const isVf = probed === true || (probed === null && font.variable);
-    const family = font.cssFamily || font.family;
+    const family = previewFaceName(font);
     const weight = isVf ? vfWeight(font) : String(font.weights[0] ?? 400);
     const style = font.italic && !isVf ? "italic" : "normal";
     const opts: FontFaceDescriptors = {
@@ -948,7 +948,7 @@ async function loadPathFont(font: FontRecord): Promise<void> {
   const promise = (async () => {
     const { convertFileSrc } = await import("@tauri-apps/api/core");
     const url = convertFileSrc(font.originPath!);
-    const family = font.cssFamily || font.family;
+    const family = previewFaceName(font);
     const isVf = font.variable;
     const face = new FontFace(family, `url(${JSON.stringify(url)})`, {
       display: isSpecialPreviewFont(font) ? "block" : "swap",
@@ -1028,7 +1028,7 @@ export async function loadFontWeight(font: FontRecord, weight: number, italic = 
     );
   }
   if (typeof document !== "undefined" && document.fonts?.load) {
-    const family = font.cssFamily || font.family;
+    const family = previewFaceName(font);
     try {
       await document.fonts.load(`${weight} ${italic ? "italic" : "normal"} 48px "${family}"`);
     } catch {

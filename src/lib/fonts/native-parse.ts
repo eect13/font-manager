@@ -113,6 +113,8 @@ export type NativeIndexFace = {
   checksum: string;
   glyphCount: number;
   otFeatures: string[];
+  /** File mtime in ms. 0 when the OS did not report one. */
+  modifiedMs?: number;
 };
 
 /** Desktop watch/20k: ttf-parser on disk. No File buffers in JS. WOFF2 omitted. */
