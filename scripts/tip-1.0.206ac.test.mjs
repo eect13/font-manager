@@ -34,19 +34,15 @@ test("206ac keeps ProductVersion 1.0.206", () => {
 test("P0: docs Cancel defers teardown off Invoke stack (no sync hang)", () => {
   assert.match(osActivate, /finishDocsCancelTeardown/);
   assert.match(osActivate, /setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown\(\),\s*0\s*\)/);
-  const cancelFn = osActivate.slice(
+  assert.match(osActivate, /armDocsCancelFromChrome|docsVfSyncCancelPending = true/);
+  assert.match(osActivate, /Cancelling Documents refresh/);
+  // 206ad: cancel IPC fires immediately on arm (beat purge); only bar teardown is deferred.
+  const arm = osActivate.slice(
+    osActivate.indexOf("function armDocsCancelFromChrome"),
     osActivate.indexOf("export function cancelDownloadQueue"),
-    osActivate.indexOf("export function pauseDownloadQueue"),
   );
-  // Sync path sets pending + replaces toast; teardown deferred.
-  assert.match(cancelFn, /docsVfSyncCancelPending = true/);
-  assert.match(cancelFn, /replaceDocsRefreshingToastWithCancelling|Cancelling Documents refresh/);
-  assert.match(cancelFn, /setTimeout/);
-  // cancel IPC lives in deferred teardown, not sync Invoke path before return
-  const docsReturn = cancelFn.indexOf("window.setTimeout(() => finishDocsCancelTeardown()");
-  assert.ok(docsReturn > 0);
-  const syncBeforeDefer = cancelFn.slice(0, docsReturn);
-  assert.doesNotMatch(syncBeforeDefer, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(arm, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(arm, /setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown/);
 });
 
 test("P0: stuck Refreshing toast replaced on cancel; cancelled toast after Rust", () => {

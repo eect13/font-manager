@@ -4785,6 +4785,18 @@ fn is_compat_sidecar_filename(name: &str) -> bool {
 /// Also drops matching `%LOCALAPPDATA%\Font Manager\gdi-maps` stage copies.
 /// Returns `(deleted, locked)`.
 fn purge_redundant_statics_in_dir(dir: &Path, family: &str) -> (usize, usize) {
+    purge_redundant_statics_in_dir_cancelable(dir, family, None)
+}
+
+/// 1.0.206ad: check cancel between file deletes so mid-dir mouse Cancel can abort.
+fn purge_redundant_statics_in_dir_cancelable(
+    dir: &Path,
+    family: &str,
+    cancel: Option<&AtomicBool>,
+) -> (usize, usize) {
+    if cancel.map(|c| c.load(Ordering::SeqCst)).unwrap_or(false) {
+        return (0, 0);
+    }
     if !dir_vf_primary_ready(dir, family) {
         return (0, 0);
     }
@@ -4793,6 +4805,9 @@ fn purge_redundant_statics_in_dir(dir: &Path, family: &str) -> (usize, usize) {
     let mut files = Vec::new();
     walk_font_files(dir, &mut files);
     for path in files {
+        if cancel.map(|c| c.load(Ordering::SeqCst)).unwrap_or(false) {
+            break;
+        }
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
@@ -9129,8 +9144,10 @@ where
             cancelled: true,
         };
     }
-    let (cancelled, families_purged, statics_deleted, locked, _done) =
+    let (loop_cancelled, families_purged, statics_deleted, locked, _done) =
         run_docs_vf_sync_purge_loop(&dirs, cancel, prepare, purge);
+    // If cancel arrived as the last dir finished, still report cancelled:true (206ad mouse race).
+    let cancelled = loop_cancelled || cancel.load(Ordering::SeqCst);
     SyncDocsResult {
         families_seen,
         families_purged,
@@ -9184,7 +9201,8 @@ fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, Strin
             migrate_download_source_stamp(dir);
         },
         |dir, name| {
-            let (del, lock) = purge_redundant_statics_in_dir(dir, name);
+            let (del, lock) =
+                purge_redundant_statics_in_dir_cancelable(dir, name, Some(&state.cancel));
             // 1.0.206ac: after cancel, skip progress emits so the WebView is not flooded
             // while Invoke/JS is settling (Gate D 206ab hang).
             if state.cancel.load(Ordering::SeqCst) {
@@ -10539,6 +10557,32 @@ mod install_path_tests {
         assert_eq!(result.statics_deleted, 0);
         assert_eq!(result.families_purged, 0);
         assert_eq!(result.families_seen, 12);
+    }
+
+    #[test]
+    fn docs_vf_sync_execute_cancel_flag_after_last_purge_still_cancelled() {
+        // 1.0.206ad: cancel set as final purge returns — must still be cancelled:true (not success).
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let dirs: Vec<PathBuf> = (0..3).map(|i| PathBuf::from(format!("end-{i}"))).collect();
+        let cancel = AtomicBool::new(false);
+        let purge_calls = AtomicUsize::new(0);
+        let result = docs_vf_sync_execute(
+            dirs,
+            &cancel,
+            |_, _| {},
+            |_, _| {
+                let n = purge_calls.fetch_add(1, Ordering::SeqCst);
+                if n + 1 == 3 {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+                (1usize, 0usize)
+            },
+        );
+        assert!(result.cancelled, "flag after last purge must yield cancelled:true");
+        assert_eq!(purge_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(result.statics_deleted, 3);
     }
 
     #[test]

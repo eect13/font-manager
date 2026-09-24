@@ -2,7 +2,7 @@ import { Power, RefreshCw, ScanSearch } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, didDocsVfSyncCancelToast, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, didDocsVfSyncCancelToast, peekDocsVfSyncCancelPending, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
@@ -545,6 +545,21 @@ export function RefreshDocumentsMenuItem() {
                   duration: 24_000,
                 },
               );
+            }
+            // 1.0.206ad: cancel armed after await classified success — never success toast.
+            if (peekDocsVfSyncCancelPending()) {
+              didDocsVfSyncCancelToast();
+              const n = result.staticsDeleted;
+              toast.message(
+                n === 0
+                  ? "Cancel arrived after Documents refresh finished — no redundant statics removed"
+                  : `Cancel arrived after Documents refresh finished — ${n.toLocaleString()} redundant statics removed`,
+                {
+                  id: "sync-docs-vf",
+                  description: `${result.familiesSeen.toLocaleString()} folders checked before Cancel landed.`,
+                },
+              );
+              return;
             }
             const lockBit = result.locked
               ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`

@@ -1,3 +1,12 @@
+## Fixed in tip / 1.0.206ad
+- **P0 mouse Cancel lost race (206ac Gate D):** Invoke FAIL mid-job; mouse fallback ~8s → success **Documents refreshed — 18…** or late-cancel; Inter static=0 (fully purged). Hang fix kept (`responding=True`).
+- **pointerdown arm:** `onPointerDown`/`onMouseDown` call `armDocsCancelFromChrome` — sticky pending + Cancelling toast + **immediate** cancel IPC; `setTimeout(0)` only for bar teardown (206ac hang fix). Click no-ops if `isDocsCancelArmed()`.
+- **Rust:** `purge_redundant_statics_in_dir_cancelable` checks cancel between files; `docs_vf_sync_execute` ORs cancel flag after loop → `cancelled: true`.
+- **Success race:** yield + re-read pending after await; callers `peekDocsVfSyncCancelPending()` before success toast.
+- **P1 seq:** `title`/`aria-description` = `fm-cancel-seq=N` (HelpText); keep aria-valuenow.
+- Honesty: only `raw.cancelled` → Documents refresh cancelled (no soft-lie OR).
+- ProductVersion 1.0.206. No tip-install/pack. Smoke-aid only — no pack / tip-install / NSIS / gh release.
+
 ## Fixed in tip / 1.0.206ac
 - **P0 WebView hang after Invoke (206ab Gate D):** InvokePattern SUCCESS + purge interrupted (statics kept), but `hung=True` / toast stuck on **Refreshing Documents folder…** — never **Documents refresh cancelled**. Sync teardown during Invoke blocked the UI thread so `await syncDocumentsVfPolicy()` never settled.
 - **Fix:** docs `cancelDownloadQueue` sets pending + bumps seq + replaces Refreshing→**Cancelling Documents refresh…**, then `setTimeout(0)` → `finishDocsCancelTeardown` (clear bar, cancel IPC). Toast decision **before** `syncManagedDocumentsRoot` (try/catch). Rust skips `emit_progress` after cancel flag.

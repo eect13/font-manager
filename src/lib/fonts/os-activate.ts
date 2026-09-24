@@ -683,8 +683,11 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
       cancelled?: boolean;
     }>("sync_documents_vf_policy");
     if (!raw) return null;
-    // 1.0.206aa amend (Skye HOLD): only raw.cancelled may mean "Documents refresh cancelled".
-    // Sticky pending + finished Rust → cancelArrivedLate (honest late toast), never soft-lie cancelled.
+    // 1.0.206ad: yield so a concurrent pointerdown can arm pending before we classify
+    // (settle-then-click race → never toast success when cancel already queued).
+    await Promise.resolve();
+    // 1.0.206aa amend: only raw.cancelled may mean "Documents refresh cancelled".
+    // Sticky pending + finished Rust → cancelArrivedLate (honest late toast), never soft-lie OR.
     const cancelled = Boolean(raw.cancelled);
     const cancelArrivedLate = !cancelled && docsVfSyncCancelPending;
     const result = {
@@ -695,8 +698,8 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
       cancelled,
       cancelArrivedLate,
     };
-    // Clean success: drop sticky. Cancelled / late-cancel: leave pending for caller toast helpers.
-    if (!cancelled && !cancelArrivedLate) {
+    // Never clear sticky on a path that looks like success if pending is set.
+    if (!cancelled && !cancelArrivedLate && !docsVfSyncCancelPending) {
       docsVfSyncCancelPending = false;
       docsVfSyncCancelToasted = false;
     }
@@ -1300,6 +1303,10 @@ let docsVfSyncCancelToasted = false;
 let docsCancelChromePresented = false;
 /** Increments only on docs cancel path — Gate D reads `data-fm-cancel-seq`. */
 let docsCancelSeq = 0;
+/** Teardown scheduled once per arm (pointerdown + click must not double-schedule). */
+let docsCancelTeardownScheduled = false;
+/** Cancel IPC already fired for this arm (pointerdown beats purge; teardown must not re-fire). */
+let docsCancelIpcFired = false;
 let expectKind: "" | "download" | "register" | "remove" = "";
 
 /** Arm sticky docs ownership before opening Refreshing Documents toast Cancel (Should). */
@@ -1334,6 +1341,17 @@ export function didDocsVfSyncCancelToast(): boolean {
 export function clearDocsVfSyncCancelPending() {
   docsVfSyncCancelPending = false;
   docsVfSyncCancelToasted = false;
+  docsCancelTeardownScheduled = false;
+  docsCancelIpcFired = false;
+}
+
+/** True after pointerdown/click armed docs cancel (click may no-op). */
+export function isDocsCancelArmed(): boolean {
+  return docsVfSyncCancelPending && docsCancelTeardownScheduled;
+}
+
+export function peekDocsVfSyncCancelPending(): boolean {
+  return docsVfSyncCancelPending;
 }
 
 /** download-bar: docs Cancel Name/id is currently painted (cancellable). */
@@ -1357,13 +1375,16 @@ function bumpDocsCancelSeqInDom() {
       );
     if (btn) {
       btn.setAttribute("data-fm-cancel-seq", seq);
-      // P2: UIA-readable (aria-valuenow) without DOM scrape.
+      // 206ad: WebView2 HelpText often follows `title`; aria-valuenow alone was unreadable.
+      btn.setAttribute("title", `fm-cancel-seq=${seq}`);
+      btn.setAttribute("aria-description", `fm-cancel-seq=${seq}`);
       btn.setAttribute("aria-valuenow", seq);
       btn.setAttribute("aria-valuetext", `cancel-seq ${seq}`);
     }
     const chrome = document.querySelector("[data-fm-shell-chrome]");
     if (chrome) {
       chrome.setAttribute("data-fm-cancel-seq", seq);
+      chrome.setAttribute("title", `fm-cancel-seq=${seq}`);
       chrome.setAttribute("aria-valuenow", seq);
     }
   } catch {
@@ -1388,7 +1409,7 @@ function replaceDocsRefreshingToastWithCancelling() {
 }
 
 export type CancelDownloadOpts = {
-  /** True when bar docs Cancel button invoked — always docs path (P0 sticky). */
+  /** True when bar docs Cancel chrome (pointerdown/click/keyboard) — always docs path. */
   fromDocsCancelChrome?: boolean;
 };
 
@@ -1806,9 +1827,8 @@ async function pumpRemove(myBatch: number) {
 }
 
 /**
- * Tear down progress bar / poll / IPC for docs Cancel.
- * Must run *off* the UIA Invoke stack (see cancelDownloadQueue setTimeout) — sync emit+IPC
- * during InvokePattern hung the WebView on 206ab so syncDocumentsVfPolicy never settled.
+ * Tear down progress bar / poll for docs Cancel (IPC already fired in armDocsCancelFromChrome).
+ * Deferred off Invoke stack — sync emit during Invoke hung WebView on 206ab.
  */
 function finishDocsCancelTeardown() {
   batchId += 1;
@@ -1838,9 +1858,37 @@ function finishDocsCancelTeardown() {
     ignoreProgress = false;
   }, 600);
   void finalizeReadyAndClearPending();
-  void tauriInvoke("cancel_google_downloads").catch(() => {
-    /* web / ACL — pending drives late-cancel toast if Rust already finished */
-  });
+  if (!docsCancelIpcFired) {
+    docsCancelIpcFired = true;
+    void tauriInvoke("cancel_google_downloads").catch(() => undefined);
+  }
+}
+
+/**
+ * 1.0.206ad: arm docs Cancel once (pointerdown preferred).
+ * Sync: sticky pending + seq + Cancelling toast + **immediate** cancel IPC (beat purge).
+ * Deferred: bar teardown via setTimeout(0) (keep 206ac Invoke hang fix).
+ * Second call (click after pointerdown) is a no-op aside from seq bump.
+ */
+function armDocsCancelFromChrome(): boolean {
+  if (docsVfSyncCancelPending && docsCancelTeardownScheduled) {
+    bumpDocsCancelSeqInDom();
+    return false;
+  }
+  docsVfSyncCancelPending = true;
+  docsVfSyncActive = false;
+  bumpDocsCancelSeqInDom();
+  replaceDocsRefreshingToastWithCancelling();
+  // Fire cancel IPC NOW — do not wait for setTimeout (206ac deferred IPC lost the mouse race).
+  if (!docsCancelIpcFired) {
+    docsCancelIpcFired = true;
+    void tauriInvoke("cancel_google_downloads").catch(() => undefined);
+  }
+  if (!docsCancelTeardownScheduled) {
+    docsCancelTeardownScheduled = true;
+    window.setTimeout(() => finishDocsCancelTeardown(), 0);
+  }
+  return true;
 }
 
 export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
@@ -1865,6 +1913,11 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
       docsVfSyncCancelPending,
       current: currentSnap,
     });
+  // Idempotent: already armed (pointerdown) — click/Invoke must not double IPC/teardown.
+  if (wasDocsVfSync && docsVfSyncCancelPending && docsCancelTeardownScheduled) {
+    bumpDocsCancelSeqInDom();
+    return;
+  }
   // Idempotent second docs Cancel when bar already torn down (job idle + pending).
   if (!job.running && !job.paused && docsVfSyncCancelPending && wasDocsVfSync) {
     bumpDocsCancelSeqInDom();
@@ -1873,15 +1926,7 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
   }
   const wasRestore = !wasDocsVfSync && /restoring/i.test(currentSnap);
   if (wasDocsVfSync) {
-    // Sticky pending → suppress Download cancelled. Callers toast when Rust confirms (or late-cancel).
-    docsVfSyncCancelPending = true;
-    docsVfSyncActive = false;
-    bumpDocsCancelSeqInDom();
-    // 1.0.206ac: never leave "Refreshing Documents folder…" stuck (Gate D hang left it forever).
-    replaceDocsRefreshingToastWithCancelling();
-    // Defer teardown + cancel IPC off InvokePattern stack so WebView stays responsive and
-    // `await syncDocumentsVfPolicy()` can settle when Rust returns cancelled:true.
-    window.setTimeout(() => finishDocsCancelTeardown(), 0);
+    armDocsCancelFromChrome();
     return;
   }
   batchId += 1;

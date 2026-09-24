@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { applyDesktopPrefs } from "@/lib/desktop/prefs";
-import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, didDocsVfSyncCancelToast, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, didDocsVfSyncCancelToast, peekDocsVfSyncCancelPending, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { useFontStore } from "@/lib/fonts/store";
 import { toast } from "sonner";
@@ -135,6 +135,20 @@ export function DesktopSettings() {
                     toast.error("Documents refreshed but library rescan failed", {
                       id: "sync-docs-vf",
                     });
+                    return;
+                  }
+                  if (peekDocsVfSyncCancelPending()) {
+                    didDocsVfSyncCancelToast();
+                    const n = result.staticsDeleted;
+                    toast.message(
+                      n === 0
+                        ? "Cancel arrived after Documents refresh finished — no redundant statics removed"
+                        : `Cancel arrived after Documents refresh finished — ${n.toLocaleString()} redundant statics removed`,
+                      {
+                        id: "sync-docs-vf",
+                        description: `${result.familiesSeen.toLocaleString()} folders checked before Cancel landed.`,
+                      },
+                    );
                     return;
                   }
                   if (result.locked > 0) {

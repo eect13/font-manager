@@ -115,22 +115,25 @@ test("P1-4: docs Cancel onClick only; cancelDownloadQueue docs-idempotent", () =
   const native = downloadBar.match(/docsChrome \? \([\s\S]*?<button[\s\S]*?<\/button>/);
   assert.ok(native, "docsChrome native button");
   assert.match(native[0], /onClick/);
-  assert.doesNotMatch(native[0], /onPointerDown/);
+  // 206ad: pointerdown is required for mouse Gate D (idempotent with click).
+  assert.match(native[0], /onPointerDown/);
   assert.doesNotMatch(native[0], /active:not-disabled:scale/);
   assert.match(native[0], /cancelDownloadQueue\(/);
   const cancelFn = osActivate.slice(
     osActivate.indexOf("export function cancelDownloadQueue"),
     osActivate.indexOf("export function pauseDownloadQueue"),
   );
-  // Guard conditioned on job state (not bare wasDocs&&pending).
+  // Guard conditioned on job state (idle + pending).
   assert.match(
     cancelFn,
     /!job\.running && !job\.paused && docsVfSyncCancelPending/,
   );
-  assert.doesNotMatch(
+  // 206ad: also idempotent when already armed (pending + teardownScheduled).
+  assert.match(
     cancelFn,
-    /wasDocsVfSync && docsVfSyncCancelPending/,
+    /wasDocsVfSync && docsVfSyncCancelPending && docsCancelTeardownScheduled/,
   );
+  assert.match(cancelFn, /armDocsCancelFromChrome\(\)/);
 });
 
 test("nit: finally clears docsVfSyncCancelPending in both Refresh callers", () => {

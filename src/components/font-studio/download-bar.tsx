@@ -7,6 +7,7 @@ import {
   getDocsCancelSeq,
   getDownloadJob,
   getJobClock,
+  isDocsCancelArmed,
   isDocsVfSyncJob,
   openActivatedFolder,
   pauseDownloadQueue,
@@ -247,9 +248,8 @@ export function DownloadBar() {
         ) : job.running || job.paused ? (
           <>
             {docsChrome ? (
-              /* 1.0.206ab: native button FIRST in chrome (FindFirst walks early); InvokePattern via
-                 type=button + onClick; fromDocsCancelChrome forces sticky pending; data-fm-cancel-seq
-                 bumps only inside docs cancelDownloadQueue path for Gate D proof. */
+              /* 1.0.206ad: pointerdown/mousedown arms cancel (mouse must win without Invoke);
+                 click no-ops if already armed; keyboard/Invoke still use onClick. */
               <button
                 type="button"
                 key="activate-bar-cancel"
@@ -259,11 +259,26 @@ export function DownloadBar() {
                 data-testid="activate-bar-cancel"
                 data-fm-cancel-seq={String(getDocsCancelSeq())}
                 aria-valuenow={getDocsCancelSeq() || undefined}
+                title={getDocsCancelSeq() ? `fm-cancel-seq=${getDocsCancelSeq()}` : undefined}
+                aria-description={
+                  getDocsCancelSeq() ? `fm-cancel-seq=${getDocsCancelSeq()}` : undefined
+                }
                 {...cancelChromeA11y({ showDocsCancelIdentity: true })}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  cancelDownloadQueue({ fromDocsCancelChrome: true });
+                }}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  cancelDownloadQueue({ fromDocsCancelChrome: true });
+                }}
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  // Return from InvokePattern ASAP — cancelDownloadQueue defers teardown (206ac).
+                  // Idempotent if pointerdown already armed (no double IPC).
+                  if (isDocsCancelArmed()) return;
                   cancelDownloadQueue({ fromDocsCancelChrome: true });
                 }}
                 onKeyDown={(e) => {

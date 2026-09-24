@@ -141,13 +141,14 @@ test("ownership helper drops bare scanning documents from docs belt", () => {
 test("cancelDownloadQueue suppresses Download cancelled on docs path (no early Documents toast)", () => {
   const cancel = cancelFn();
   assert.match(cancel, /wasDocsVfSync/);
-  assert.match(cancel, /docsVfSyncCancelPending = true/);
+  assert.match(cancel, /armDocsCancelFromChrome\(\)/);
+  assert.match(osActivate, /docsVfSyncCancelPending = true/);
   assert.match(cancel, /docsVfSyncOwnsJob/);
   // Amend: Documents refresh cancelled toast deferred to Rust-confirmed cancelled (callers).
   assert.doesNotMatch(cancel, /Documents refresh cancelled/);
-  // 206aa amend: fire-and-forget cancel IPC (async cmds; not queued behind purge on main thread)
+  // 206ad: docs path arms via armDocsCancelFromChrome (immediate IPC there).
   assert.match(cancel, /if \(wasDocsVfSync\)/);
-  assert.match(cancel, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(osActivate, /tauriInvoke\("cancel_google_downloads"\)/);
   const earlyReturn = cancel.search(/if \(wasDocsVfSync\)/);
   const titleAssign = cancel.indexOf('"Download cancelled"');
   assert.ok(earlyReturn >= 0 && titleAssign > earlyReturn);

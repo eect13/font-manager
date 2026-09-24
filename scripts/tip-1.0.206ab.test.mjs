@@ -43,7 +43,9 @@ test("P0: cancelDownloadQueue docs path bumps data-fm-cancel-seq", () => {
   );
   assert.match(cancelFn, /fromDocsCancelChrome|docsCancelChromePresented/);
   assert.match(cancelFn, /bumpDocsCancelSeqInDom/);
-  assert.match(cancelFn, /docsVfSyncCancelPending = true/);
+  // 206ad: pending set inside armDocsCancelFromChrome (called from docs path).
+  assert.match(cancelFn, /armDocsCancelFromChrome\(\)/);
+  assert.match(osActivate, /docsVfSyncCancelPending = true/);
 });
 
 test("P0: bar docs Cancel passes fromDocsCancelChrome + native InvokePattern button", () => {
