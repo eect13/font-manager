@@ -12,8 +12,8 @@ const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 test("206b keep ProductVersion 1.0.206 (completeness amend-style tip)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("Completeness P0: .complete only when planned faces intact", () => {

@@ -22,7 +22,7 @@ const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 
 /** Extract cancelDownloadQueue body for structural asserts. */
 function cancelBody() {
-  const start = osActivate.indexOf("export function cancelDownloadQueue()");
+  const start = osActivate.indexOf("export function cancelDownloadQueue(");
   assert.ok(start >= 0, "cancelDownloadQueue missing");
   const end = osActivate.indexOf("\nexport function pauseDownloadQueue()", start);
   assert.ok(end > start, "pauseDownloadQueue after cancel missing");
@@ -56,8 +56,8 @@ function settleCancelRemoveWithKeepFailed(activated, pendingDeactivate, batchIds
 }
 
 test("206k keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P0 beginOwnedJob(remove) clears lastFailedNames", () => {

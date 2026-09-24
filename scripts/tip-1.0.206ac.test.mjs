@@ -26,9 +26,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ac keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P0: docs Cancel defers teardown off Invoke stack (no sync hang)", () => {
@@ -41,7 +41,7 @@ test("P0: docs Cancel defers teardown off Invoke stack (no sync hang)", () => {
     osActivate.indexOf("function armDocsCancelFromChrome"),
     osActivate.indexOf("export function cancelDownloadQueue"),
   );
-  assert.match(arm, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(arm, /tauriInvoke\("cancel_documents_refresh"\)/);
   assert.match(arm, /setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown/);
 });
 
@@ -89,11 +89,8 @@ test("P0: Rust cancel IPC is flag-only; work returns cancelled; skip emit after 
   assert.doesNotMatch(cancelCmd, /spawn_blocking/);
 });
 
-test("P2: cancel-seq exposed via data-fm-cancel-seq (206af: no aria-valuenow Name steal)", () => {
-  assert.match(osActivate, /data-fm-cancel-seq/);
-  assert.match(downloadBar, /data-fm-cancel-seq/);
-  // 206af removed mid-job aria-valuenow/title from Cancel button (UIA FromPoint blind).
-  assert.doesNotMatch(downloadBar, /aria-valuenow=\{getDocsCancelSeq/);
+test("P2: no cancel-seq HelpText on the button", () => {
+  assert.doesNotMatch(downloadBar, /data-fm-cancel-seq|aria-labelledby|aria-valuenow=\{getDocsCancelSeq/);
 });
 
 test("206ab keepers still present", () => {

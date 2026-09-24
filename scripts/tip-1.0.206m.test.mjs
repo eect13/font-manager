@@ -22,8 +22,8 @@ const HONEST_PREFER =
   "selected/favorites/visible/first-page/recent";
 
 test("206m keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("docs mark 206m; prefer copy honesty; no tip-install", () => {

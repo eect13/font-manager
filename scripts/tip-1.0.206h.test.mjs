@@ -27,8 +27,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 
 test("206h keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P1 remaining count uses same filter as activateSet queue", () => {
@@ -98,8 +98,8 @@ test("P2 short confirm Cancel labels; OK/Abort semantics kept", () => {
 });
 
 test("P2 remove-mode Pause/Cancel on download bar", () => {
-  const start = downloadBar.indexOf("{job.running || job.paused ? (");
-  const body = downloadBar.slice(start, start + 900);
+  const start = downloadBar.indexOf("job.running || job.paused ? (");
+  const body = downloadBar.slice(start, start + 1800);
   assert.match(body, /pauseDownloadQueue/);
   assert.match(body, /cancelDownloadQueue/);
   assert.doesNotMatch(body, /job\.mode !== "remove"/);

@@ -27,9 +27,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ae keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P0: docs VF emit throttle ≥800ms + every-N dirs", () => {
@@ -51,22 +51,10 @@ test("P0: docs VF emit throttle ≥800ms + every-N dirs", () => {
   );
 });
 
-test("P0: pointerdown arms without preventDefault; UIA Name/id kept", () => {
-  const native = downloadBar.match(/docsChrome \? \([\s\S]*?<button[\s\S]*?<\/button>/);
-  assert.ok(native, "docsChrome native button");
-  const ptr = native[0].slice(
-    native[0].indexOf("onPointerDown"),
-    native[0].indexOf("onMouseDown"),
-  );
-  assert.doesNotMatch(ptr, /preventDefault/);
-  const md = native[0].slice(
-    native[0].indexOf("onMouseDown"),
-    native[0].indexOf("onClick"),
-  );
-  assert.doesNotMatch(md, /preventDefault/);
+test("P0: one Cancel button, no pointerdown race", () => {
+  assert.doesNotMatch(downloadBar, /onPointerDown|docsChrome \? \(/);
+  assert.match(downloadBar, /aria-label=\{docsChrome \? "Cancel Documents refresh"/);
   assert.match(ownership, /Cancel Documents refresh/);
-  assert.match(ownership, /fm-cancel-documents-refresh/);
-  assert.match(downloadBar, /showDocsCancelIdentity:\s*true/);
 });
 
 test("P0: 206ad keepers — immediate IPC, deferred teardown, honesty", () => {
@@ -74,7 +62,7 @@ test("P0: 206ad keepers — immediate IPC, deferred teardown, honesty", () => {
     osActivate.indexOf("function armDocsCancelFromChrome"),
     osActivate.indexOf("export function cancelDownloadQueue"),
   );
-  assert.match(arm, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(arm, /tauriInvoke\("cancel_documents_refresh"\)/);
   assert.match(arm, /setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown/);
   const sync = osActivate.slice(
     osActivate.indexOf("export async function syncDocumentsVfPolicy"),

@@ -4,10 +4,8 @@ import { Button } from "@/components/ui/button";
 import {
   cancelDownloadQueue,
   dismissDownloadBar,
-  getDocsCancelSeq,
   getDownloadJob,
   getJobClock,
-  isDocsCancelArmed,
   isDocsVfSyncJob,
   openActivatedFolder,
   pauseDownloadQueue,
@@ -247,46 +245,6 @@ export function DownloadBar() {
           </Button>
         ) : job.running || job.paused ? (
           <>
-            {docsChrome ? (
-              /* 1.0.206af: UIA Name = visible label only (no title/valuenow/description steal).
-                 pointerdown/mousedown arm WITHOUT preventDefault; click no-ops if armed. */
-              <button
-                type="button"
-                key="activate-bar-cancel"
-                tabIndex={0}
-                className="inline-flex h-7 min-w-[7.5rem] items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 text-xs font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                data-testid="activate-bar-cancel"
-                data-fm-cancel-seq={String(getDocsCancelSeq())}
-                aria-labelledby="fm-cancel-documents-refresh-label"
-                {...cancelChromeA11y({ showDocsCancelIdentity: true })}
-                onPointerDown={(e) => {
-                  if (e.button !== 0) return;
-                  cancelDownloadQueue({ fromDocsCancelChrome: true });
-                }}
-                onMouseDown={(e) => {
-                  if (e.button !== 0) return;
-                  cancelDownloadQueue({ fromDocsCancelChrome: true });
-                }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  // Idempotent if pointerdown already armed (no double IPC).
-                  if (isDocsCancelArmed()) return;
-                  cancelDownloadQueue({ fromDocsCancelChrome: true });
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    cancelDownloadQueue({ fromDocsCancelChrome: true });
-                  }
-                }}
-              >
-                <X aria-hidden="true" className="size-4 shrink-0" />
-                <span id="fm-cancel-documents-refresh-label">
-                  {cancelChromeVisibleLabel({ showDocsCancelIdentity: true })}
-                </span>
-              </button>
-            ) : null}
             {job.paused ? (
               <Button
                 size="sm"
@@ -294,8 +252,6 @@ export function DownloadBar() {
                 className="h-7 px-2"
                 aria-label="Resume"
                 data-testid="activate-bar-resume"
-                aria-hidden={docsChrome || undefined}
-                tabIndex={docsChrome ? -1 : undefined}
                 onClick={() => resumeDownloadQueue()}
               >
                 <Play />
@@ -308,34 +264,26 @@ export function DownloadBar() {
                 className="h-7 px-2"
                 aria-label="Pause"
                 data-testid="activate-bar-pause"
-                aria-hidden={docsChrome || undefined}
-                tabIndex={docsChrome ? -1 : undefined}
                 onClick={() => pauseDownloadQueue()}
               >
                 <Pause />
                 Pause
               </Button>
             )}
-            {!docsChrome ? (
-              <Button
-                key="activate-bar-cancel"
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2"
-                data-testid="activate-bar-cancel"
-                {...cancelChromeA11y({
-                  showDocsCancelIdentity: docsChrome,
-                  restoring,
-                })}
-                onClick={() => cancelDownloadQueue()}
-              >
-                <X aria-hidden="true" />
-                {cancelChromeVisibleLabel({
-                  showDocsCancelIdentity: docsChrome,
-                  restoring,
-                })}
-              </Button>
-            ) : null}
+            <Button
+              key="activate-bar-cancel"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2"
+              data-testid="activate-bar-cancel"
+              aria-label={docsChrome ? "Cancel Documents refresh" : restoring ? "Cancel session restore" : "Cancel"}
+              onClick={() =>
+                cancelDownloadQueue(docsChrome ? { fromDocsCancelChrome: true } : undefined)
+              }
+            >
+              <X aria-hidden="true" />
+              Cancel
+            </Button>
           </>
         ) : null}
         {!job.running && !job.paused && job.failedNames.length ? (

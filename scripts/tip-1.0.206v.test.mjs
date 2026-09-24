@@ -76,9 +76,9 @@ function frontendInvokeCommands() {
 }
 
 test("206v keeps ProductVersion 1.0.206 and TIP_SHA path", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
   assert.match(writeTipSha, /TIP_SHA\.txt/);
   assert.match(beforeBuild, /write-tip-sha\.mjs|TIP_SHA/);
 });
@@ -87,7 +87,7 @@ test("P0: Refresh Documents command is registered, invoked, and ACL-allowed", ()
   const allowed = commandAllowList();
   const handlers = invokeHandlers();
   const frontend = frontendInvokeCommands();
-  assert.match(activateRs, /#\[tauri::command\][\s\S]{0,120}pub fn sync_documents_vf_policy/);
+  assert.match(activateRs, /#\[tauri::command\][\s\S]{0,160}pub async fn sync_documents_vf_policy/);
   assert.match(osActivate, /tauriInvoke<[\s\S]{0,500}>\("sync_documents_vf_policy"\)/);
   assert.ok(handlers.has("sync_documents_vf_policy"), "sync command not registered");
   assert.ok(frontend.has("sync_documents_vf_policy"), "sync command not invoked by frontend");

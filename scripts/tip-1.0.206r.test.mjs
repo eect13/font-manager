@@ -80,12 +80,12 @@ function remToNum(v) {
 }
 
 test("206r keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "1.0.206");
+  assert.equal(tauri.version, "1.0.207");
 });
 
 test("docs mark 206r Fixed; primary+secondary; no tip-install; no everywhere overclaim", () => {

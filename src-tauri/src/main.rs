@@ -93,21 +93,6 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, shortcut, event| {
-                    use tauri_plugin_global_shortcut::{Code, Shortcut, ShortcutState};
-                    if event.state != ShortcutState::Pressed {
-                        return;
-                    }
-                    let esc = Shortcut::new(None, Code::Escape);
-                    if shortcut == &esc {
-                        // 1.0.206ag: native Escape bypasses WebView SendKeys — docs session only.
-                        activate::request_docs_vf_cancel_native(app.clone());
-                    }
-                })
-                .build(),
-        )
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -116,13 +101,13 @@ fn main() {
 
             let show = MenuItem::with_id(app, "show", "Show Font Manager", true, None::<&str>)?;
             let folder = MenuItem::with_id(app, "folder", "Open Documents folder", true, None::<&str>)?;
-            // 1.0.206ae P1: native cancel hatch when WebView is busy / UIA-blind.
+            // In-app Cancel for Documents refresh. No system-wide Escape accelerator.
             let cancel_docs = MenuItem::with_id(
                 app,
                 "cancel_docs_refresh",
                 "Cancel Documents refresh",
                 true,
-                Some("Esc"),
+                None::<&str>,
             )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
@@ -143,7 +128,6 @@ fn main() {
                         let _ = activate::open_activation_folder(app.clone());
                     }
                     "cancel_docs_refresh" => {
-                        // 1.0.206ag: same native path as Escape (session-live gated + immediate flag).
                         activate::request_docs_vf_cancel_native(app.clone());
                     }
                     "quit" => quit_gracefully(app),
@@ -185,6 +169,7 @@ fn main() {
             activate::repair_incomplete_families,
             activate::skip_google_failures,
             activate::cancel_google_downloads,
+            activate::cancel_documents_refresh,
             activate::drop_google_download_families,
             activate::pause_google_downloads,
             activate::resume_google_downloads,

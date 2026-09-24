@@ -28,9 +28,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206x keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("DOCS_CANCEL_MIN_DISPLAY_MS is 1000", () => {
@@ -212,7 +212,7 @@ test("download-bar latches docs Cancel ≥1s; stable key; no tree storm", () => 
   assert.match(downloadBar, /key="activate-bar-cancel"/);
   assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
   assert.match(downloadBar, /cancelChromeA11y/);
-  assert.match(downloadBar, /showDocsCancelIdentity:\s*docsChrome/);
+  assert.match(downloadBar, /aria-label=\{docsChrome \? "Cancel Documents refresh"/);
   assert.match(downloadBar, /const docsSync = isDocsVfSyncJob\(\)/);
   assert.match(downloadBar, /Refreshing Documents/);
   // cancelChromeEligible must be running/paused only — not latched OR (would imply Cancel mid-hold)

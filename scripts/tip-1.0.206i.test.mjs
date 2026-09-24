@@ -49,8 +49,8 @@ function emptyState(over = {}) {
 }
 
 test("206i keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P1 unload_now wires Pause+Cancel (not soft-lie / not hide-only)", () => {
@@ -64,8 +64,8 @@ test("P1 unload_now wires Pause+Cancel (not soft-lie / not hide-only)", () => {
   // Fresh remove job clears leftover cancel/pause
   assert.match(activateRs, /Fresh remove job — clear leftover cancel\/pause/);
   // Bar still shows Pause/Cancel on remove (wired, not hidden)
-  const barStart = downloadBar.indexOf("{job.running || job.paused ? (");
-  const bar = downloadBar.slice(barStart, barStart + 900);
+  const barStart = downloadBar.indexOf("job.running || job.paused ? (");
+  const bar = downloadBar.slice(barStart, barStart + 1800);
   assert.match(bar, /pauseDownloadQueue/);
   assert.match(bar, /cancelDownloadQueue/);
   assert.doesNotMatch(bar, /job\.mode !== ["']remove["']/);

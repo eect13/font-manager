@@ -89,8 +89,17 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
         searchRef.current?.focus();
         return;
       }
-      // 1.0.206ae P1: Escape cancels docs refresh without needing UIA/mouse hit on Cancel.
+      // In-window Escape only. Do not steal Escape from a text field, and do not
+      // register a system-wide shortcut (that hid other apps' Escape).
       if (e.key === "Escape") {
+        const t = e.target;
+        if (
+          t instanceof HTMLInputElement ||
+          t instanceof HTMLTextAreaElement ||
+          (t instanceof HTMLElement && t.isContentEditable)
+        ) {
+          return;
+        }
         if (cancelDocsVfSyncFromShortcut()) {
           e.preventDefault();
         }

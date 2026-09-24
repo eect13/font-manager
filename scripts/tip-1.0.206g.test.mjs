@@ -27,8 +27,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 
 test("206g keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P2 race: soft Retry sets pending before/with Settled-drop around clearSessionGdiRefused", () => {

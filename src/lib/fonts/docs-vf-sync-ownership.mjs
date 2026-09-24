@@ -181,16 +181,11 @@ export function cancelChromeA11y({
 }
 
 /**
- * 1.0.206y — hide library/main (thousands of font cards) from the a11y tree while
- * docs sync owns the job so UIA FindFirst(Name/Id) for Cancel resolves in ≤300ms
- * without walking Descendants through ~2100 library nodes.
- * DownloadBar / toast Cancel must stay *outside* the aria-hidden / inert subtree (app-shell).
+ * 1.0.207: never hide the library. Hiding ~2100 cards made UIA GetClickablePoint hang
+ * and was only there so a smoke test could FindFirst faster.
  */
-export function shouldHideLibraryFromA11yDuringDocsJob({
-  docsOwns = false,
-  cancelChromeEligible = true,
-} = {}) {
-  return Boolean(docsOwns) && Boolean(cancelChromeEligible);
+export function shouldHideLibraryFromA11yDuringDocsJob(_opts = {}) {
+  return false;
 }
 
 /**

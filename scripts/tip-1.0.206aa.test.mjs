@@ -30,9 +30,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206aa keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P0-1: sync_documents_vf_policy and cancel_google_downloads are async commands", () => {
@@ -108,27 +108,18 @@ test("P1-3: docs cancel IPC is fire-and-forget (accurate; async cmds free main t
   );
 });
 
-test("P1-4: docs Cancel onClick only; cancelDownloadQueue docs-idempotent", () => {
-  assert.match(downloadBar, /docsChrome \? \(/);
-  assert.match(downloadBar, /type="button"/);
-  assert.match(downloadBar, /key="activate-bar-cancel"/);
-  const native = downloadBar.match(/docsChrome \? \([\s\S]*?<button[\s\S]*?<\/button>/);
-  assert.ok(native, "docsChrome native button");
-  assert.match(native[0], /onClick/);
-  // 206ad: pointerdown is required for mouse Gate D (idempotent with click).
-  assert.match(native[0], /onPointerDown/);
-  assert.doesNotMatch(native[0], /active:not-disabled:scale/);
-  assert.match(native[0], /cancelDownloadQueue\(/);
+test("P1-4: docs Cancel is one click; cancelDownloadQueue stays idempotent", () => {
+  assert.match(downloadBar, /fromDocsCancelChrome:\s*true/);
+  assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
+  assert.doesNotMatch(downloadBar, /onPointerDown|onMouseDown|data-fm-cancel-seq/);
   const cancelFn = osActivate.slice(
     osActivate.indexOf("export function cancelDownloadQueue"),
     osActivate.indexOf("export function pauseDownloadQueue"),
   );
-  // Guard conditioned on job state (idle + pending).
   assert.match(
     cancelFn,
     /!job\.running && !job\.paused && docsVfSyncCancelPending/,
   );
-  // 206ad: also idempotent when already armed (pending + teardownScheduled).
   assert.match(
     cancelFn,
     /wasDocsVfSync && docsVfSyncCancelPending && docsCancelTeardownScheduled/,

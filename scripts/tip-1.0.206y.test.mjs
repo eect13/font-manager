@@ -44,26 +44,18 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206y keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
-test("shouldHideLibraryFromA11yDuringDocsJob — docs+cancellable only", () => {
+test("shouldHideLibraryFromA11yDuringDocsJob is always false", () => {
   assert.equal(
     shouldHideLibraryFromA11yDuringDocsJob({
       docsOwns: true,
       cancelChromeEligible: true,
     }),
-    true,
-  );
-  assert.equal(
-    shouldHideLibraryFromA11yDuringDocsJob({
-      docsOwns: true,
-      cancelChromeEligible: false,
-    }),
     false,
-    "post-end / idle must not keep library aria-hidden",
   );
   assert.equal(
     shouldHideLibraryFromA11yDuringDocsJob({
@@ -71,9 +63,8 @@ test("shouldHideLibraryFromA11yDuringDocsJob — docs+cancellable only", () => {
       cancelChromeEligible: true,
     }),
     false,
-    "Activate scan must not hide library",
   );
-  assert.match(ownership, /shouldHideLibraryFromA11yDuringDocsJob/);
+  assert.match(ownership, /return false/);
 });
 
 test("app-shell hides route/library during docs; DownloadBar outside inert", () => {
@@ -95,7 +86,7 @@ test("app-shell hides route/library during docs; DownloadBar outside inert", () 
 
 test("download-bar Cancel spreads cancelChromeA11y id onto Button (real <button>)", () => {
   assert.match(downloadBar, /cancelChromeA11y\(/);
-  assert.match(downloadBar, /showDocsCancelIdentity:\s*docsChrome/);
+  assert.match(downloadBar, /aria-label=\{docsChrome \? "Cancel Documents refresh"/);
   assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
   // id comes from helper spread — not hardcoded wrapper
   assert.match(ownership, /id:\s*"fm-cancel-documents-refresh"/);

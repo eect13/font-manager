@@ -46,9 +46,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206z keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("bar Gate D visible Name via cancelChromeVisibleLabel", () => {
@@ -63,25 +63,14 @@ test("bar Gate D visible Name via cancelChromeVisibleLabel", () => {
   assert.match(downloadBar, /cancelChromeVisibleLabel/);
 });
 
-test("download-bar docs Cancel uses Gate D visible Name + cancelChromeA11y id", () => {
-  assert.match(downloadBar, /cancelChromeVisibleLabel\(\{/);
-  assert.match(downloadBar, /showDocsCancelIdentity:\s*docsChrome/);
-  assert.match(downloadBar, /cancelChromeA11y\(/);
+test("download-bar docs Cancel uses an aria-label, visible word is Cancel", () => {
+  assert.match(downloadBar, /aria-label=\{docsChrome \? "Cancel Documents refresh"/);
   const cancelBtn = downloadBar.match(
     /key="activate-bar-cancel"[\s\S]*?<\/Button>/,
   );
   assert.ok(cancelBtn, "activate-bar-cancel Button present");
-  assert.match(cancelBtn[0], /cancelChromeVisibleLabel/);
-  assert.doesNotMatch(
-    cancelBtn[0],
-    />\s*Cancel\s*</,
-    "bare Cancel text node would make UIA Name miss Gate D",
-  );
-  assert.match(cancelBtn[0], /X aria-hidden/);
-  const barDocs = cancelChromeA11y({ showDocsCancelIdentity: true });
-  assert.equal(barDocs.id, "fm-cancel-documents-refresh");
-  assert.equal(barDocs["aria-label"], "Cancel Documents refresh");
-  assert.equal(barDocs["data-automation-id"], "fm-cancel-documents-refresh");
+  assert.match(cancelBtn[0], />\s*Cancel\s*</);
+  assert.doesNotMatch(cancelBtn[0], /onPointerDown|data-fm-cancel-seq/);
 });
 
 test("toast Cancel is short Cancel only — no Gate D Name/id/data-automation-id", () => {

@@ -22,23 +22,15 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ad keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
-test("P0: pointerdown/mousedown arms docs cancel; click no-ops if armed", () => {
-  assert.match(downloadBar, /onPointerDown/);
-  assert.match(downloadBar, /onMouseDown/);
-  assert.match(downloadBar, /isDocsCancelArmed\(\)/);
+test("P0: Cancel is a click, not pointerdown", () => {
+  assert.doesNotMatch(downloadBar, /onPointerDown|onMouseDown|isDocsCancelArmed\(\)/);
   assert.match(downloadBar, /fromDocsCancelChrome:\s*true/);
-  const clickBlock = downloadBar.slice(
-    downloadBar.indexOf("onClick={(e) => {"),
-    downloadBar.indexOf("onKeyDown="),
-  );
-  assert.match(clickBlock, /isDocsCancelArmed/);
   assert.match(osActivate, /armDocsCancelFromChrome/);
-  assert.match(osActivate, /isDocsCancelArmed/);
 });
 
 test("P0: arm fires cancel IPC immediately; teardown still deferred (hang fix)", () => {
@@ -46,10 +38,9 @@ test("P0: arm fires cancel IPC immediately; teardown still deferred (hang fix)",
     osActivate.indexOf("function armDocsCancelFromChrome"),
     osActivate.indexOf("export function cancelDownloadQueue"),
   );
-  assert.match(arm, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(arm, /tauriInvoke\("cancel_documents_refresh"\)/);
   assert.match(arm, /setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown\(\),\s*0\s*\)/);
-  // IPC before setTimeout in arm body
-  const ipcAt = arm.indexOf('tauriInvoke("cancel_google_downloads")');
+  const ipcAt = arm.indexOf('tauriInvoke("cancel_documents_refresh")');
   const deferAt = arm.indexOf("setTimeout(() => finishDocsCancelTeardown()");
   assert.ok(ipcAt >= 0 && deferAt > ipcAt, "IPC before deferred teardown");
   assert.match(osActivate, /finishDocsCancelTeardown/);
@@ -88,14 +79,8 @@ test("P0: Rust cancelable purge + cancelled if flag after last purge", () => {
   );
 });
 
-test("P1: seq exposed via data-fm-cancel-seq / aria-valuetext (no title steal)", () => {
-  // 206af: title/aria-description stole WV2 UIA Name — seq via data-* + valuetext only.
-  assert.match(osActivate, /data-fm-cancel-seq/);
-  assert.match(osActivate, /aria-valuetext.*fm-cancel-seq=/);
-  assert.match(osActivate, /removeAttribute\("title"\)/);
-  assert.match(downloadBar, /fm-cancel-seq=/);
-  assert.doesNotMatch(downloadBar, /aria-valuenow=\{getDocsCancelSeq/);
-  assert.doesNotMatch(downloadBar, /title=\{getDocsCancelSeq/);
+test("P1: no cancel-seq on the bar", () => {
+  assert.doesNotMatch(downloadBar, /fm-cancel-seq=|aria-valuenow=\{getDocsCancelSeq|title=\{getDocsCancelSeq/);
 });
 
 test("206ac hang deferral kept", () => {

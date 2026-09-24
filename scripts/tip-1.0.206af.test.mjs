@@ -31,9 +31,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206af keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P0: sessionLive from Refresh arm until sync finally", () => {
@@ -71,21 +71,24 @@ test("P0: Escape mid-session arms; after settle sessionLive gates false", () => 
 
 test("P0: tray cancel emits docs-vf-cancel-requested for JS toast path", () => {
   assert.match(activateRs, /docs-vf-cancel-requested/);
-  assert.match(activateRs, /pub async fn cancel_google_downloads\(app: AppHandle\)/);
+  const docsCancel = activateRs.slice(
+    activateRs.indexOf("pub fn request_docs_vf_cancel_native"),
+    activateRs.indexOf("pub async fn cancel_documents_refresh"),
+  );
+  assert.match(docsCancel, /docs-vf-cancel-requested/);
+  const activateCancel = activateRs.slice(
+    activateRs.indexOf("pub async fn cancel_google_downloads"),
+    activateRs.indexOf("pub fn drop_google_download_families"),
+  );
+  assert.doesNotMatch(activateCancel, /docs-vf-cancel-requested/);
   assert.match(mainRs, /cancel_docs_refresh/);
   assert.match(osActivate, /docs-vf-cancel-requested/);
   assert.match(osActivate, /cancelDocsVfSyncFromShortcut/);
 });
 
-test("P0: UIA Cancel Name/id — no title/valuenow steal; labelledby", () => {
-  assert.match(downloadBar, /fm-cancel-documents-refresh-label/);
-  assert.match(downloadBar, /aria-labelledby/);
-  assert.doesNotMatch(downloadBar, /aria-valuenow=\{getDocsCancelSeq/);
-  assert.doesNotMatch(downloadBar, /title=\{getDocsCancelSeq/);
-  assert.match(ownership, /Cancel Documents refresh/);
-  assert.match(ownership, /fm-cancel-documents-refresh/);
-  assert.match(osActivate, /removeAttribute\("title"\)/);
-  // shell chrome must not be a named region
+test("P0: Cancel name is aria-label, not labelledby", () => {
+  assert.doesNotMatch(downloadBar, /fm-cancel-documents-refresh-label|aria-labelledby/);
+  assert.match(downloadBar, /Cancel Documents refresh/);
   assert.doesNotMatch(appShell, /aria-label=\{hideLibraryA11y/);
 });
 
@@ -128,7 +131,7 @@ test("P0: 206ae throttle + 206ad keepers", () => {
     osActivate.indexOf("function armDocsCancelFromChrome"),
     osActivate.indexOf("export function cancelDownloadQueue"),
   );
-  assert.match(arm, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(arm, /tauriInvoke\("cancel_documents_refresh"\)/);
   assert.match(arm, /setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown/);
   assert.match(activateRs, /purge_redundant_statics_in_dir_cancelable/);
 });

@@ -43,8 +43,8 @@ function settleCancelRemove(activated, pendingDeactivate, batchIds, done) {
 }
 
 test("206j keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P1 no confirmDeactivated(all) at unload_font_families spawn", () => {

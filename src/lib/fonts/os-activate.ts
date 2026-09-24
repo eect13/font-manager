@@ -1911,7 +1911,7 @@ function finishDocsCancelTeardown() {
   void finalizeReadyAndClearPending();
   if (!docsCancelIpcFired) {
     docsCancelIpcFired = true;
-    void tauriInvoke("cancel_google_downloads").catch(() => undefined);
+    void tauriInvoke("cancel_documents_refresh").catch(() => undefined);
   }
 }
 
@@ -1934,7 +1934,7 @@ function armDocsCancelFromChrome(): boolean {
   // Fire cancel IPC NOW — do not wait for setTimeout (206ac deferred IPC lost the mouse race).
   if (!docsCancelIpcFired) {
     docsCancelIpcFired = true;
-    void tauriInvoke("cancel_google_downloads").catch(() => undefined);
+    void tauriInvoke("cancel_documents_refresh").catch(() => undefined);
   }
   if (!docsCancelTeardownScheduled) {
     docsCancelTeardownScheduled = true;

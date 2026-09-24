@@ -1,4 +1,6 @@
-# Font Manager **1.0.206**
+# Font Manager **1.0.207**
+
+**1.0.207.** Documents refresh cancel is its own flag (`docs_cancel`), not Activate’s `cancel` / “Stopping…”. The walk stays async and checks that flag between folders, so Cancel stops the next delete. Progress stays about once a second (`Refreshing Documents (n/N)`). Cancel is a normal in-app button (and tray). Escape works only while this window is focused and you are not typing — it is not a system-wide shortcut. The library stays visible. Toast follows Rust `cancelled`, not a regex on the progress label.
 
 **1.0.206ag (Eric GO via Skye — native Escape must abort mid-Refresh).** Live 206af: Escape SendKeys into WebView never armed cancel; UIA often blind; job finished → Anti-PASS refreshed toast. Fix: **`tauri-plugin-global-shortcut` Escape** registered only while Rust `docs_vf_session_live` (bypass WV); tray Cancel + Esc accel → `request_docs_vf_cancel_native`; immediate `bulk().cancel`; keep HOLD (no bare Stopping); UIA labelledby + unnamed chrome. ProductVersion **1.0.206**. No tip-install/pack.
 

@@ -34,25 +34,19 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ag keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
-test("P0: native Escape via tauri-plugin-global-shortcut (bypass WebView)", () => {
-  assert.match(cargo, /tauri-plugin-global-shortcut/);
-  assert.match(caps, /global-shortcut:allow-register/);
-  assert.match(mainRs, /tauri_plugin_global_shortcut/);
-  assert.match(mainRs, /Code::Escape/);
+test("1.0.207 removed the system-wide Escape shortcut", () => {
+  assert.doesNotMatch(cargo, /tauri-plugin-global-shortcut/);
+  assert.doesNotMatch(caps, /global-shortcut:allow-register/);
+  assert.doesNotMatch(mainRs, /tauri_plugin_global_shortcut|Code::Escape|Some\("Esc"\)/);
   assert.match(mainRs, /request_docs_vf_cancel_native/);
-  assert.match(activateRs, /docs_vf_session_begin/);
-  assert.match(activateRs, /docs_vf_register_escape/);
-  assert.match(activateRs, /docs_vf_unregister_escape/);
-  assert.match(activateRs, /request_docs_vf_cancel_native/);
-  assert.match(activateRs, /docs_vf_session_is_live/);
-  // Tray Cancel Documents refresh also Esc accelerator + native path
-  assert.match(mainRs, /Some\("Esc"\)/);
   assert.match(mainRs, /cancel_docs_refresh/);
+  assert.doesNotMatch(activateRs, /docs_vf_register_escape|global_shortcut/);
+  assert.match(activateRs, /docs_cancel/);
 });
 
 test("P0: Gate D cancelled toast ownership — Activate Stopping ≠ documents-refresh", () => {
@@ -89,14 +83,12 @@ test("P0: Gate D cancelled toast ownership — Activate Stopping ≠ documents-r
   );
 });
 
-test("P0: UIA Cancel always addressable mid-refresh", () => {
-  assert.match(downloadBar, /fm-cancel-documents-refresh/);
-  assert.match(downloadBar, /fm-cancel-documents-refresh-label/);
-  assert.match(downloadBar, /aria-labelledby/);
-  assert.match(ownership, /Cancel Documents refresh/);
-  assert.doesNotMatch(appShell, /aria-label=\{hideLibraryA11y/);
+test("P0: in-window Cancel, library stays visible", () => {
+  assert.match(downloadBar, /Cancel Documents refresh/);
+  assert.doesNotMatch(downloadBar, /aria-labelledby|fm-cancel-documents-refresh-label/);
+  assert.match(ownership, /return false/);
+  assert.match(appShell, /HTMLInputElement/);
   assert.match(osActivate, /docsVfSyncSessionLive/);
-  assert.match(osActivate, /docsVfSyncSessionLive \|\|/);
 });
 
 test("P0: keep 206af sessionLive + tray emit + 206ae throttle + 206ad IPC", () => {
@@ -108,7 +100,7 @@ test("P0: keep 206af sessionLive + tray emit + 206ae throttle + 206ad IPC", () =
     osActivate.indexOf("function armDocsCancelFromChrome"),
     osActivate.indexOf("export function cancelDownloadQueue"),
   );
-  assert.match(arm, /tauriInvoke\("cancel_google_downloads"\)/);
+  assert.match(arm, /tauriInvoke\("cancel_documents_refresh"\)/);
   assert.match(arm, /setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown/);
 });
 

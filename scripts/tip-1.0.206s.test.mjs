@@ -35,12 +35,12 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 
 test("206s keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "1.0.206");
+  assert.equal(tauri.version, "1.0.207");
 });
 
 test("docs mark 206s Fixed; UIA smoke hooks; no tip-install/pack", () => {
@@ -102,7 +102,7 @@ test("Deactivate All menu items: aria-label Deactivate All + data-testid deactiv
 test("Download bar Pause/Cancel (+Resume) stable UIA hooks", () => {
   assert.match(downloadBar, /aria-label="Pause"/);
   assert.match(downloadBar, /data-testid="activate-bar-pause"/);
-  assert.match(downloadBar, /aria-label="Cancel"/);
+  assert.match(downloadBar, /aria-label=\{docsChrome \? "Cancel Documents refresh" : restoring \? "Cancel session restore" : "Cancel"\}/);
   assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
   assert.match(downloadBar, /aria-label="Resume"/);
   assert.match(downloadBar, /data-testid="activate-bar-resume"/);

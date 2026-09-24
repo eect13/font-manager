@@ -26,9 +26,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ab keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P0: cancelDownloadQueue docs path bumps data-fm-cancel-seq", () => {
@@ -48,18 +48,11 @@ test("P0: cancelDownloadQueue docs path bumps data-fm-cancel-seq", () => {
   assert.match(osActivate, /docsVfSyncCancelPending = true/);
 });
 
-test("P0: bar docs Cancel passes fromDocsCancelChrome + native InvokePattern button", () => {
+test("P0: bar docs Cancel passes fromDocsCancelChrome", () => {
   assert.match(downloadBar, /fromDocsCancelChrome:\s*true/);
   assert.match(downloadBar, /setDocsCancelChromePresented/);
-  assert.match(downloadBar, /type="button"/);
-  // 206af: native <button type="button"> — omit redundant role="button" (UIA Name).
-  assert.match(downloadBar, /type="button"/);
-  assert.match(downloadBar, /data-fm-cancel-seq/);
-  assert.match(downloadBar, /onKeyDown/);
-  // Cancel rendered before Pause when docsChrome (FindFirst walks early)
-  const docsBtn = downloadBar.indexOf("fromDocsCancelChrome: true");
-  const pauseAt = downloadBar.indexOf('data-testid="activate-bar-pause"');
-  assert.ok(docsBtn > 0 && pauseAt > docsBtn, "docs Cancel before Pause in source");
+  assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
+  assert.doesNotMatch(downloadBar, /data-fm-cancel-seq|onPointerDown/);
 });
 
 test("P0: late-cancel honesty kept; no soft-lie OR", () => {

@@ -41,9 +41,9 @@ function cancelFn() {
 }
 
 test("206w keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.equal(tauri.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.equal(tauri.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("P0 assert matrix: Scanning Documents is not docs-owned without sticky", () => {
@@ -193,7 +193,7 @@ test("callers toast Documents refresh cancelled on Rust cancelled; skip via didD
 test("Cancel chrome discoverable during docs sync (stable Name + testid)", () => {
   // Name/id SoT is cancelChromeA11y — download-bar must wire it for docs Cancel
   assert.match(downloadBar, /cancelChromeA11y/);
-  assert.match(downloadBar, /showDocsCancelIdentity:\s*docsChrome/);
+  assert.match(downloadBar, /aria-label=\{docsChrome \? "Cancel Documents refresh"/);
   assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
   assert.match(downloadBar, /isDocsVfSyncJob/);
   assert.match(downloadBar, /Refreshing Documents/);

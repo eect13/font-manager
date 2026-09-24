@@ -24,8 +24,8 @@ const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 const HONEST_PREFER = "selected/favorites/visible/first-page/recent";
 
 test("206o keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("docs mark 206o; Cancel-label buckets + 206l prefer align; no tip-install", () => {

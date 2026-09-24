@@ -159,7 +159,15 @@ fn for_family_dirs(app: &AppHandle, mut visit: impl FnMut(&Path)) {
         return;
     };
     for dir in [root.clone(), root.join("Activated"), root.join("Library")] {
+        // Activate's `cancel` always stops a shared walk. `docs_cancel` only
+        // stops a walk while a Documents refresh is actually live — a leftover
+        // flag must not hide families from the next Activate/scan.
         if bulk().cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        if bulk().docs_vf_session_live.load(Ordering::SeqCst)
+            && bulk().docs_cancel.load(Ordering::SeqCst)
+        {
             return;
         }
         let Ok(rd) = fs::read_dir(&dir) else {
@@ -167,6 +175,11 @@ fn for_family_dirs(app: &AppHandle, mut visit: impl FnMut(&Path)) {
         };
         for entry in rd.flatten() {
             if bulk().cancel.load(Ordering::SeqCst) {
+                return;
+            }
+            if bulk().docs_vf_session_live.load(Ordering::SeqCst)
+                && bulk().docs_cancel.load(Ordering::SeqCst)
+            {
                 return;
             }
             let path = entry.path();
@@ -6921,9 +6934,11 @@ pub struct GoogleDlProgress {
 
 struct Bulk {
     cancel: AtomicBool,
+    /// Documents refresh only. Never shared with Activate (`cancel` / "Stopping…").
+    docs_cancel: AtomicBool,
     pause: AtomicBool,
     running: AtomicBool,
-    /// 1.0.206ag: true while sync_documents_vf_policy session is live (Scanning→finish).
+    /// 1.0.207: true while sync_documents_vf_policy is in scan/purge. Not an Escape hook.
     docs_vf_session_live: AtomicBool,
     bust: AtomicBool,
     progress: Mutex<GoogleDlProgress>,
@@ -6939,6 +6954,7 @@ fn bulk() -> &'static Bulk {
     static BULK: OnceLock<Bulk> = OnceLock::new();
     BULK.get_or_init(|| Bulk {
         cancel: AtomicBool::new(false),
+        docs_cancel: AtomicBool::new(false),
         pause: AtomicBool::new(false),
         running: AtomicBool::new(false),
         docs_vf_session_live: AtomicBool::new(false),
@@ -9049,61 +9065,46 @@ pub struct SyncDocsResult {
 /// folders to VF-primary policy (remove redundant statics when intact VF present).
 /// Does **not** surprise-download the full catalog. Progress on `font-download`.
 ///
-/// Cancel via `cancel_google_downloads` (shared `bulk().cancel` AtomicBool).
-/// 1.0.206aa amend (Skye HOLD): **async** command + `spawn_blocking` so the main
-/// thread is free to run `cancel_google_downloads` while purge work runs. Sync
-/// `fn` + `rx.recv()` still held the main thread (Tauri v2 runs sync commands there).
-/// 1.0.206ac: cancel IPC only sets `bulk().cancel` (no spawn_blocking); work checks the
-/// flag between dirs and returns `cancelled: true` so this `.await` resolves promptly.
-/// 1.0.206ag: native Escape/tray only cancel docs while this is true.
+/// Cancel via `cancel_documents_refresh` (`docs_cancel` only).
+/// Async command + `spawn_blocking` so Cancel is not queued behind the walk.
+/// Activate keeps its own `cancel` flag and the "Stopping…" label.
 pub fn docs_vf_session_is_live() -> bool {
     bulk().docs_vf_session_live.load(Ordering::SeqCst)
 }
 
-fn docs_vf_escape_shortcut() -> tauri_plugin_global_shortcut::Shortcut {
-    use tauri_plugin_global_shortcut::{Code, Shortcut};
-    Shortcut::new(None, Code::Escape)
-}
-
-/// Register Escape as a *native* global shortcut for the docs session (bypasses WebView SendKeys).
-fn docs_vf_register_escape(app: &AppHandle) {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    let esc = docs_vf_escape_shortcut();
-    if !app.global_shortcut().is_registered(esc) {
-        if let Err(e) = app.global_shortcut().register(esc) {
-            eprintln!("docs_vf Escape register failed: {e}");
-        }
-    }
-}
-
-fn docs_vf_unregister_escape(app: &AppHandle) {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    let esc = docs_vf_escape_shortcut();
-    let _ = app.global_shortcut().unregister(esc);
-}
-
-/// Begin docs VF session: sticky live flag + native Escape hatch.
-pub fn docs_vf_session_begin(app: &AppHandle) {
+/// Begin docs VF session. Does not register a global shortcut.
+pub fn docs_vf_session_begin() {
+    bulk().docs_cancel.store(false, Ordering::SeqCst);
     bulk().docs_vf_session_live.store(true, Ordering::SeqCst);
-    docs_vf_register_escape(app);
 }
 
-/// End docs VF session: clear live + drop Escape so it does not steal keys when idle.
-pub fn docs_vf_session_end(app: &AppHandle) {
-    bulk().docs_vf_session_live.store(false, Ordering::SeqCst);
-    docs_vf_unregister_escape(app);
+/// End docs VF session. Escape must not keep cancelling after the job settles.
+pub fn docs_vf_session_end() {
+    let state = bulk();
+    state.docs_vf_session_live.store(false, Ordering::SeqCst);
+    state.docs_cancel.store(false, Ordering::SeqCst);
 }
 
-/// Native Escape / tray: abort docs refresh if session live (same path as cancel IPC).
+/// Tray / in-app Cancel: abort Documents refresh only.
+/// Does not set Activate's `cancel` and does not emit "Stopping…".
 pub fn request_docs_vf_cancel_native(app: AppHandle) {
     if !docs_vf_session_is_live() {
         return;
     }
-    // Set cancel flag immediately (before async) so purge/scan abort without waiting for JS.
-    bulk().cancel.store(true, Ordering::SeqCst);
-    tauri::async_runtime::spawn(async move {
-        let _ = cancel_google_downloads(app).await;
-    });
+    bulk().docs_cancel.store(true, Ordering::SeqCst);
+    if let Ok(mut p) = bulk().progress.lock() {
+        if p.running {
+            p.current = "Cancelling Documents refresh…".into();
+        }
+    }
+    let _ = app.emit("docs-vf-cancel-requested", ());
+    emit_progress_force(&app);
+}
+
+#[tauri::command]
+pub async fn cancel_documents_refresh(app: AppHandle) -> Result<(), String> {
+    request_docs_vf_cancel_native(app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -9114,11 +9115,11 @@ pub async fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, 
             "Activate or download already running — wait or Cancel first".into(),
         );
     }
+    // Leftover Activate cancel must not abort this walk. Docs uses docs_cancel only.
     state.cancel.store(false, Ordering::SeqCst);
     state.pause.store(false, Ordering::SeqCst);
     state.running.store(true, Ordering::SeqCst);
-    // 1.0.206ag: session live + native Escape BEFORE scan/purge (SendKeys into WV failed).
-    docs_vf_session_begin(&app);
+    docs_vf_session_begin();
     if let Ok(mut p) = state.progress.lock() {
         *p = GoogleDlProgress {
             running: true,
@@ -9236,16 +9237,16 @@ fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, Strin
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut scan_cancelled = false;
     for_family_dirs(&app, |dir| {
-        if state.cancel.load(Ordering::SeqCst) {
+        if state.docs_cancel.load(Ordering::SeqCst) {
             scan_cancelled = true;
             return;
         }
         dirs.push(dir.to_path_buf());
     });
-    if scan_cancelled || state.cancel.load(Ordering::SeqCst) {
+    if scan_cancelled || state.docs_cancel.load(Ordering::SeqCst) {
         let result = docs_vf_sync_execute(
             dirs,
-            &state.cancel,
+            &state.docs_cancel,
             |_, _| {},
             |_, _| (0, 0),
         );
@@ -9272,16 +9273,15 @@ fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, Strin
     let dirs_since_emit = std::sync::atomic::AtomicU32::new(0);
     let result = docs_vf_sync_execute(
         dirs,
-        &state.cancel,
+        &state.docs_cancel,
         |dir, _name| {
             migrate_download_source_stamp(dir);
         },
         |dir, name| {
             let (del, lock) =
-                purge_redundant_statics_in_dir_cancelable(dir, name, Some(&state.cancel));
-            // 1.0.206ac: after cancel, skip progress emits so the WebView is not flooded
-            // while Invoke/JS is settling (Gate D 206ab hang).
-            if state.cancel.load(Ordering::SeqCst) {
+                purge_redundant_statics_in_dir_cancelable(dir, name, Some(&state.docs_cancel));
+            // After docs_cancel, skip progress emits so the WebView is not flooded.
+            if state.docs_cancel.load(Ordering::SeqCst) {
                 return (del, lock);
             }
             let done_now = {
@@ -9343,8 +9343,7 @@ fn finish_docs_vf_sync(
 ) -> SyncDocsResult {
     let state = bulk();
     state.running.store(false, Ordering::SeqCst);
-    // Drop native Escape hatch when session ends (cancelled or success).
-    docs_vf_session_end(app);
+    docs_vf_session_end();
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
         p.paused = false;
@@ -9596,8 +9595,8 @@ pub fn resume_google_downloads(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 1.0.206aa amend: async so Cancel is never queued behind a sync main-thread command.
-/// 1.0.206af: emit `docs-vf-cancel-requested` so tray/native cancel joins the JS toast path.
+/// Activate / download cancel. Does not abort a Documents refresh (`docs_cancel`)
+/// and does not emit `docs-vf-cancel-requested` (that mis-labeled Activate as refresh).
 #[tauri::command]
 pub async fn cancel_google_downloads(app: AppHandle) -> Result<(), String> {
     let state = bulk();
@@ -9611,9 +9610,12 @@ pub async fn cancel_google_downloads(app: AppHandle) -> Result<(), String> {
     }
     if let Ok(mut p) = state.progress.lock() {
         p.paused = false;
-        p.current = "Stopping…".into();
+        // Docs refresh has its own label. Only stamp Stopping… when this flag owns the bar.
+        if !state.docs_vf_session_live.load(Ordering::SeqCst) {
+            p.current = "Stopping…".into();
+        }
     }
-    let _ = app.emit("docs-vf-cancel-requested", ());
+    let _ = app;
     Ok(())
 }
 

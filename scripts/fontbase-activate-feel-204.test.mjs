@@ -174,8 +174,8 @@ function countLanes({ live, settled, google, fontsource, disk }) {
 }
 
 test("1.0.206 version bump (204 feel kept)", () => {
-  assert.equal(pkg.version, "1.0.206");
-  assert.match(version, /1\.0\.206/);
+  assert.equal(pkg.version, "1.0.207");
+  assert.match(version, /1\.0\.207/);
 });
 
 test("exclusive Activate: no GDI evict / no Remove→Add chain", () => {
@@ -299,9 +299,9 @@ test("deactivate while download drops family slot", () => {
 });
 
 test("visible-first / already-Live short-circuit on restore", () => {
-  assert.match(hydrateTs, /Visible-first/);
   assert.match(hydrateTs, /already-Live this session/);
-  assert.match(hydrateTs, /needRegister = \[\.\.\.head, \.\.\.tail\]/);
+  assert.match(hydrateTs, /needRegister = wantNames\.filter/);
+  assert.match(hydrateTs, /orderPreferKeys\(needRegister/);
 });
 
 test("count lanes stay separate in chrome", () => {
