@@ -188,12 +188,16 @@ test("callers toast Documents refresh cancelled on Rust cancelled; skip via didD
 });
 
 test("Cancel chrome discoverable during docs sync (stable Name + testid)", () => {
-  assert.match(downloadBar, /Cancel Documents refresh/);
+  // Name/id SoT is cancelChromeA11y — download-bar must wire it for docs Cancel
+  assert.match(downloadBar, /cancelChromeA11y/);
+  assert.match(downloadBar, /showDocsCancelIdentity:\s*docsChrome/);
   assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
-  assert.match(downloadBar, /activate-bar-cancel-docs|fm-cancel-documents-refresh/);
   assert.match(downloadBar, /isDocsVfSyncJob/);
   assert.match(downloadBar, /Refreshing Documents/);
   assert.match(downloadBar, /const docsSync = isDocsVfSyncJob\(\)/);
+  // Helper still exports Cancel Documents refresh identity for cancellable docs
+  assert.match(ownership, /Cancel Documents refresh/);
+  assert.match(ownership, /fm-cancel-documents-refresh/);
 });
 
 test("docs mark 206w; Scanning collision note; no tip-install/pack", () => {
