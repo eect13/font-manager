@@ -159,10 +159,16 @@ fn for_family_dirs(app: &AppHandle, mut visit: impl FnMut(&Path)) {
         return;
     };
     for dir in [root.clone(), root.join("Activated"), root.join("Library")] {
+        if bulk().cancel.load(Ordering::SeqCst) {
+            return;
+        }
         let Ok(rd) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in rd.flatten() {
+            if bulk().cancel.load(Ordering::SeqCst) {
+                return;
+            }
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -6917,6 +6923,8 @@ struct Bulk {
     cancel: AtomicBool,
     pause: AtomicBool,
     running: AtomicBool,
+    /// 1.0.206ag: true while sync_documents_vf_policy session is live (Scanning→finish).
+    docs_vf_session_live: AtomicBool,
     bust: AtomicBool,
     progress: Mutex<GoogleDlProgress>,
     pending: Mutex<VecDeque<String>>,
@@ -6933,6 +6941,7 @@ fn bulk() -> &'static Bulk {
         cancel: AtomicBool::new(false),
         pause: AtomicBool::new(false),
         running: AtomicBool::new(false),
+        docs_vf_session_live: AtomicBool::new(false),
         bust: AtomicBool::new(false),
         progress: Mutex::new(GoogleDlProgress {
             running: false,
@@ -9046,6 +9055,57 @@ pub struct SyncDocsResult {
 /// `fn` + `rx.recv()` still held the main thread (Tauri v2 runs sync commands there).
 /// 1.0.206ac: cancel IPC only sets `bulk().cancel` (no spawn_blocking); work checks the
 /// flag between dirs and returns `cancelled: true` so this `.await` resolves promptly.
+/// 1.0.206ag: native Escape/tray only cancel docs while this is true.
+pub fn docs_vf_session_is_live() -> bool {
+    bulk().docs_vf_session_live.load(Ordering::SeqCst)
+}
+
+fn docs_vf_escape_shortcut() -> tauri_plugin_global_shortcut::Shortcut {
+    use tauri_plugin_global_shortcut::{Code, Shortcut};
+    Shortcut::new(None, Code::Escape)
+}
+
+/// Register Escape as a *native* global shortcut for the docs session (bypasses WebView SendKeys).
+fn docs_vf_register_escape(app: &AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let esc = docs_vf_escape_shortcut();
+    if !app.global_shortcut().is_registered(esc) {
+        if let Err(e) = app.global_shortcut().register(esc) {
+            eprintln!("docs_vf Escape register failed: {e}");
+        }
+    }
+}
+
+fn docs_vf_unregister_escape(app: &AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let esc = docs_vf_escape_shortcut();
+    let _ = app.global_shortcut().unregister(esc);
+}
+
+/// Begin docs VF session: sticky live flag + native Escape hatch.
+pub fn docs_vf_session_begin(app: &AppHandle) {
+    bulk().docs_vf_session_live.store(true, Ordering::SeqCst);
+    docs_vf_register_escape(app);
+}
+
+/// End docs VF session: clear live + drop Escape so it does not steal keys when idle.
+pub fn docs_vf_session_end(app: &AppHandle) {
+    bulk().docs_vf_session_live.store(false, Ordering::SeqCst);
+    docs_vf_unregister_escape(app);
+}
+
+/// Native Escape / tray: abort docs refresh if session live (same path as cancel IPC).
+pub fn request_docs_vf_cancel_native(app: AppHandle) {
+    if !docs_vf_session_is_live() {
+        return;
+    }
+    // Set cancel flag immediately (before async) so purge/scan abort without waiting for JS.
+    bulk().cancel.store(true, Ordering::SeqCst);
+    tauri::async_runtime::spawn(async move {
+        let _ = cancel_google_downloads(app).await;
+    });
+}
+
 #[tauri::command]
 pub async fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String> {
     let state = bulk();
@@ -9057,6 +9117,8 @@ pub async fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, 
     state.cancel.store(false, Ordering::SeqCst);
     state.pause.store(false, Ordering::SeqCst);
     state.running.store(true, Ordering::SeqCst);
+    // 1.0.206ag: session live + native Escape BEFORE scan/purge (SendKeys into WV failed).
+    docs_vf_session_begin(&app);
     if let Ok(mut p) = state.progress.lock() {
         *p = GoogleDlProgress {
             running: true,
@@ -9281,6 +9343,8 @@ fn finish_docs_vf_sync(
 ) -> SyncDocsResult {
     let state = bulk();
     state.running.store(false, Ordering::SeqCst);
+    // Drop native Escape hatch when session ends (cancelled or success).
+    docs_vf_session_end(app);
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
         p.paused = false;
@@ -10593,6 +10657,12 @@ mod install_path_tests {
         assert_eq!(result.statics_deleted, 0);
         assert_eq!(result.families_purged, 0);
         assert_eq!(result.families_seen, 12);
+    }
+
+    #[test]
+    fn docs_vf_session_live_flag_defaults_false() {
+        // 1.0.206ag: Escape hatch gated on docs_vf_session_live (not bare Stopping…).
+        assert!(!docs_vf_session_is_live());
     }
 
     #[test]

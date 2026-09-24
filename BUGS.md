@@ -1,3 +1,12 @@
+## Fixed in tip / 1.0.206ag
+- **P0 Escape SendKeys into WebView failed (206af Gate D):** mid-job Escape did not arm cancel; Inter static 18→0; success **Documents refreshed — N…**. UIA FindFirst often never HIT Cancel.
+- **Native Escape:** `tauri-plugin-global-shortcut` registers **Escape** only while Rust `docs_vf_session_live` (set at sync start, cleared in finish). Handler → `request_docs_vf_cancel_native` (immediate `bulk().cancel` + `cancel_google_downloads` emit). Bypasses WebView keydown/SendKeys.
+- **Tray:** Cancel Documents refresh + **Esc** accelerator → same native path (session-live gated).
+- **Scan:** `for_family_dirs` checks cancel between entries.
+- **HOLD kept:** no bare `|stopping` in docs current belt; Activate Stopping… → download toast kind.
+- **UIA:** visible label + `aria-labelledby` / `fm-cancel-documents-refresh`; chrome host unnamed; `isDocsVfSyncJob` ORs `sessionLive`.
+- Keep 206ae throttle + 206ad IPC/teardown/honesty. ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206af
 - **HOLD soft-lie amend:** reverted `|stopping` from `isDocsRefreshJobCurrent` — bare `Stopping…` is shared by Activate cancel IPC; without sticky must NOT → documents-refresh toast. Docs mid-abort stays via `docsVfSyncCancelPending` + `docsVfSyncSessionLive`.
 - **P0 Escape after settle / cancel window too short (206ae Gate D):** Escape at +5409ms after Inter static already 0 → success **Documents refreshed — 18…**; `cancelDocsVfSyncFromShortcut` false when chrome/active/pending/job all false. UIA FromPoint still blind (`chrome=[]`).

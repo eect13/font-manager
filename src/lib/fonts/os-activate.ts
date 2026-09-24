@@ -1331,11 +1331,15 @@ export function armDocsVfSyncOwnership() {
 
 /** True while Refresh Documents owns the progress bar (sticky primary; docs-only current belt). */
 export function isDocsVfSyncJob(): boolean {
-  return docsVfSyncOwnsJob({
-    docsVfSyncActive,
-    docsVfSyncCancelPending,
-    current: job.current ?? "",
-  });
+  // 1.0.206ag: sessionLive keeps Cancel chrome / ownership during Scanning before latch.
+  return (
+    docsVfSyncSessionLive ||
+    docsVfSyncOwnsJob({
+      docsVfSyncActive,
+      docsVfSyncCancelPending,
+      current: job.current ?? "",
+    })
+  );
 }
 
 /**

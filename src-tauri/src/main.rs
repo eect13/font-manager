@@ -93,6 +93,21 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, Shortcut, ShortcutState};
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let esc = Shortcut::new(None, Code::Escape);
+                    if shortcut == &esc {
+                        // 1.0.206ag: native Escape bypasses WebView SendKeys — docs session only.
+                        activate::request_docs_vf_cancel_native(app.clone());
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -107,7 +122,7 @@ fn main() {
                 "cancel_docs_refresh",
                 "Cancel Documents refresh",
                 true,
-                None::<&str>,
+                Some("Esc"),
             )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
@@ -128,11 +143,8 @@ fn main() {
                         let _ = activate::open_activation_folder(app.clone());
                     }
                     "cancel_docs_refresh" => {
-                        // Sets bulk().cancel + emits docs-vf-cancel-requested for JS toast path.
-                        let handle = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = activate::cancel_google_downloads(handle).await;
-                        });
+                        // 1.0.206ag: same native path as Escape (session-live gated + immediate flag).
+                        activate::request_docs_vf_cancel_native(app.clone());
                     }
                     "quit" => quit_gracefully(app),
                     _ => {}
