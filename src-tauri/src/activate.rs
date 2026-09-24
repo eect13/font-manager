@@ -1178,9 +1178,7 @@ fn register_family_path(family: &str, path: &Path) -> bool {
     }
     // Known-incapable Add=0: settle later — never auto-chase 2015 pin / Fontsource
     // on the Activate critical path (honesty: Activated only when Add>0).
-    if fail == Some(RegisterFailKind::AddReturnedZero)
-        && family_known_gdi_session_incapable(family)
-    {
+    if fail == Some(RegisterFailKind::AddReturnedZero) && family_may_settle_add_zero(family) {
         note_session_gdi_refused(family);
     }
     #[cfg(not(windows))]
@@ -1454,7 +1452,7 @@ fn family_may_claim_session_activated(_known_incapable: bool, gdi_faces_added: u
 
 fn suppress_fail_toast_known_incapable(app: &AppHandle, family: &str) -> bool {
     family_toast_exempt_known_gdi_incapable(
-        family_known_gdi_session_incapable(family),
+        family_may_settle_add_zero(family),
         family_has_intact(app, family),
     )
 }
@@ -1481,6 +1479,52 @@ fn register_intact_family_detailed(
     if family_early_skip_known_incapable(app, family) {
         return (0, RegisterFailKind::AddReturnedZero);
     }
+    // Soft emoji: after this-session Add=0 refuse, skip re-Add (not bare .complete).
+    if family_early_skip_soft_session_refused(app, family) {
+        return (0, RegisterFailKind::AddReturnedZero);
+    }
+    // 1.0.206u VF-primary (Skye amend): when intact VF present (dual-VF italic
+    // respected), Add only *-variable-* first. Purge statics **only after**
+    // VarsOnly Add>0 — never before register (fallback needs statics on disk).
+    let vf_primary = family_any_dir_vf_primary(app, family);
+    if vf_primary {
+        let (n, fail) = register_intact_family_pass(app, family, RegisterFaceMode::VarsOnly);
+        if n > 0 {
+            let (_del, lock) = commit_vf_primary_after_successful_add(app, family);
+            if lock > 0 {
+                if let Ok(mut p) = bulk().progress.lock() {
+                    p.failed = p.failed.saturating_add(lock as u32);
+                    let detail = format!(
+                        "{family}: {lock} static(s) locked — deactivate fonts or quit Adobe/Word, then Repair"
+                    );
+                    if !p.failed_details.iter().any(|d| d == &detail) {
+                        p.failed_details.push(detail);
+                    }
+                }
+            }
+            return (n, fail);
+        }
+        // Fallback: VF Add returned 0 — keep statics, register all intact faces.
+        return register_intact_family_pass(app, family, RegisterFaceMode::AllIntactFallback);
+    }
+    register_intact_family_pass(app, family, RegisterFaceMode::RespectPlan)
+}
+
+#[derive(Clone, Copy)]
+enum RegisterFaceMode {
+    /// Honor `.google-planned` / Fontsource plan via `face_allowed_for_register`.
+    RespectPlan,
+    /// Only `*-variable-*` faces (VF-primary Activate).
+    VarsOnly,
+    /// After VF Add=0: every intact non-latin face (statics allowed even if plan is vars-only).
+    AllIntactFallback,
+}
+
+fn register_intact_family_pass(
+    app: &AppHandle,
+    family: &str,
+    mode: RegisterFaceMode,
+) -> (usize, RegisterFailKind) {
     let mut n = 0usize;
     let mut fail = RegisterFailKind::NoneTried;
     for dir in family_locations(app, family) {
@@ -1491,6 +1535,32 @@ fn register_intact_family_detailed(
             if !ttf_intact(&path) {
                 continue;
             }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let is_var = is_variable_face_filename(name);
+            match mode {
+                RegisterFaceMode::VarsOnly => {
+                    if !is_var {
+                        continue;
+                    }
+                }
+                RegisterFaceMode::RespectPlan => {
+                    if !face_allowed_for_register(&dir, &path, family) {
+                        continue;
+                    }
+                }
+                RegisterFaceMode::AllIntactFallback => {
+                    // Skip Fontsource latin leftovers; allow statics even if plan is vars-only.
+                    let slug = slug_family(family);
+                    if !slug.is_empty() && filename_has_latin_subset(name, &slug) {
+                        continue;
+                    }
+                    if is_compat_sidecar_filename(name) {
+                        continue;
+                    }
+                }
+            }
             let _ = sanitize_on_disk_for_gdi(&path);
             match register_path_detailed(&path) {
                 None => {
@@ -1500,7 +1570,7 @@ fn register_intact_family_detailed(
                 }
                 Some(kind) => {
                     if matches!(kind, RegisterFailKind::AddReturnedZero)
-                        && family_known_gdi_session_incapable(family)
+                        && family_may_settle_add_zero(family)
                     {
                         note_session_gdi_refused(family);
                     }
@@ -1528,6 +1598,76 @@ fn stamp_known_incapable_disk_settled(app: &AppHandle, family: &str) {
     for dir in family_locations(app, family) {
         stamp_known_incapable_dir_settled(&dir, family);
     }
+}
+
+/// After a real Add attempt returned 0: Settled honesty for hard allowlist OR soft emoji.
+/// Boot seed / early-skip stay Gidugu-hard only. Soft stamps `.complete` **and**
+/// `.settled-add-zero` provenance (Scan must not trust bare `.complete` from hard-emoji tips).
+fn stamp_settle_after_add_zero(app: &AppHandle, family: &str) {
+    // Session refuse bit so Activate All / soft early-skip do not re-Add this process.
+    note_session_gdi_refused(family);
+    if family_known_gdi_session_incapable(family) {
+        stamp_known_incapable_disk_settled(app, family);
+        return;
+    }
+    if !family_soft_try_add_then_settle(family) {
+        return;
+    }
+    for dir in family_locations(app, family) {
+        stamp_soft_settle_dir_after_add_zero(&dir, family);
+    }
+}
+
+fn soft_emoji_full_face_ok(dir: &Path, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return true;
+    }
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    // Soft emoji (color + outline): never settle a latin/CSS stub as "works".
+    files.iter().any(|p| {
+        ttf_intact(p) && fs::metadata(p).map(|m| m.len() >= 256 * 1024).unwrap_or(false)
+    })
+}
+
+fn stamp_soft_settle_dir_after_add_zero(dir: &Path, family: &str) {
+    if !family_soft_try_add_then_settle(family) {
+        return;
+    }
+    if !dir_has_intact(dir) {
+        return;
+    }
+    if !soft_emoji_full_face_ok(dir, family) {
+        return;
+    }
+    if read_google_planned_keys(dir).is_none() {
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        let keys: Vec<String> = files
+            .iter()
+            .filter(|p| ttf_intact(p))
+            .filter_map(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        if !keys.is_empty() {
+            write_google_planned(dir, &keys);
+        }
+    }
+    let expected = if let Some(keys) = read_google_planned_keys(dir) {
+        let intact = count_intact_planned_keys(dir, &keys);
+        if intact == 0 || intact < keys.len() {
+            return;
+        }
+        keys.len()
+    } else {
+        count_intact_faces(dir).max(1)
+    };
+    mark_family_complete(dir, expected);
+    // Provenance: Soft Settled only after real Add=0 (never bare .complete from hard-emoji tips).
+    stamp_settled_add_zero_provenance(dir);
 }
 
 fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
@@ -1569,6 +1709,30 @@ fn stamp_known_incapable_dir_settled(dir: &Path, family: &str) {
         count_intact_faces(dir).max(1)
     };
     mark_family_complete(dir, expected);
+}
+
+
+/// 1.0.206c: on boot, seed hard-allowlist GDI-incapable (Gidugu-class) already on
+/// disk into Settled (`.complete` + session refused) so Activate All / restore
+/// never queues them. Soft emoji are not seeded — they must queue and try Add.
+fn seed_known_gdi_incapable_settled(app: &AppHandle) {
+    for entry in KNOWN_GDI_SESSION_INCAPABLE {
+        let family = entry.family;
+        if !family_has_intact(app, family) {
+            continue;
+        }
+        let undersized = family_locations(app, family)
+            .iter()
+            .any(|d| dir_has_undersized_google_static(d, family));
+        if undersized {
+            continue;
+        }
+        stamp_known_incapable_disk_settled(app, family);
+        if family_has_complete_settled(app, family) {
+            note_session_gdi_refused(family);
+            note_settled_quiet(family);
+        }
+    }
 }
 
 fn unregister_family_session(family: &str) -> u32 {
@@ -2515,6 +2679,8 @@ pub fn session_begin(app: &AppHandle) {
         // 1.0.156 leftover: session copies under the per-user Fonts tree.
         // Remove + delete that folder only — never C:\Windows\Fonts.
         purge_legacy_fontmanager_user_fonts_stage();
+        // 1.0.206: seed allowlist Settled before restore / Activate All can queue Add.
+        seed_known_gdi_incapable_settled(app);
         // Do NOT hydrate loaded() from gdi-maps — maps skip copy only; always Add
         // after drain / new process (session-active + maps = toast exemption only).
         // Targeted dirs only — do not walk all of Documents before the UI is up.
@@ -2582,6 +2748,9 @@ pub fn session_begin(app: &AppHandle) {
         if ready.len() != families.len() {
             save_session_families(app, &ready);
         }
+        // Restore may have cleared settled_names; re-seed allowlist on disk
+        // (Gidugu hard-allowlist not in last-session list still skip Activate All).
+        seed_known_gdi_incapable_settled(app);
         session_boot_finish(&ready);
         emit_gdi_pressure_if_high(app);
         let handle = app.clone();
@@ -3031,9 +3200,10 @@ fn os2_fstype_restricted(path: &Path) -> bool {
     }
 }
 
-/// Shared allowlist of families known to refuse session GDI Add (Add=0) despite intact TTF.
-/// Settled / early-skip / disk `.complete` / toast-exempt / Fontsource offer — all keyed here.
-/// Append a row (+ optional FS slug override + subset plan) to extend UX without new hardcodes.
+/// Hard allowlist of families known to refuse session GDI Add (Add=0) despite intact TTF.
+/// Seed Settled / early-skip / disk `.complete` / toast-exempt / Fontsource offer — keyed here.
+/// Soft emoji are NOT listed: try Add first; settle only after Add=0 (`family_may_settle_add_zero`).
+/// Append a row (+ optional FS slug override + subset plan) for the next true Add=0 class.
 #[derive(Clone, Copy)]
 struct KnownGdiIncapableEntry {
     family: &'static str,
@@ -3043,11 +3213,15 @@ struct KnownGdiIncapableEntry {
     subsets: &'static [&'static str],
 }
 
-const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[KnownGdiIncapableEntry {
-    family: "Gidugu",
-    fs_slug: Some("gidugu"),
-    subsets: &["telugu", "latin"],
-}];
+/// Hard allowlist only: true Add=0 class (Gidugu). Seed Settled + early-skip + Activate All skip.
+/// Soft emoji (`SOFT_GDI_TRY_ADD_FIRST`) try Add first; Settled only after Add=0 — never hard-skip.
+const KNOWN_GDI_SESSION_INCAPABLE: &[KnownGdiIncapableEntry] = &[
+    KnownGdiIncapableEntry {
+        family: "Gidugu",
+        fs_slug: Some("gidugu"),
+        subsets: &["telugu", "latin"],
+    },
+];
 
 fn known_gdi_incapable_entry(family: &str) -> Option<&'static KnownGdiIncapableEntry> {
     let key = family.trim();
@@ -3061,6 +3235,41 @@ fn known_gdi_incapable_entry(family: &str) -> Option<&'static KnownGdiIncapableE
 
 fn family_known_gdi_session_incapable(family: &str) -> bool {
     known_gdi_incapable_entry(family).is_some()
+}
+
+/// Soft emoji allowlist — try Add first; Settled only after Add=0.
+/// Mirror of TS `SOFT_GDI_TRY_ADD_FIRST` (same shape as hard table). Tip tests assert parity.
+const SOFT_GDI_TRY_ADD_FIRST: &[KnownGdiIncapableEntry] = &[
+    KnownGdiIncapableEntry {
+        family: "Noto Color Emoji",
+        fs_slug: Some("noto-color-emoji"),
+        subsets: &["emoji"],
+    },
+    KnownGdiIncapableEntry {
+        family: "Noto Emoji",
+        fs_slug: Some("noto-emoji"),
+        subsets: &["emoji"],
+    },
+];
+
+fn soft_gdi_try_add_entry(family: &str) -> Option<&'static KnownGdiIncapableEntry> {
+    let key = family.trim();
+    if key.is_empty() {
+        return None;
+    }
+    SOFT_GDI_TRY_ADD_FIRST
+        .iter()
+        .find(|e| e.family.eq_ignore_ascii_case(key))
+}
+
+/// Soft (emoji): try Add first; Settled honesty only after Add=0 — never boot-seed / early-skip.
+fn family_soft_try_add_then_settle(family: &str) -> bool {
+    soft_gdi_try_add_entry(family).is_some()
+}
+
+/// Hard allowlist OR soft emoji after an Add attempt — Settled / toast-exempt, never fake Live.
+fn family_may_settle_add_zero(family: &str) -> bool {
+    family_known_gdi_session_incapable(family) || family_soft_try_add_then_settle(family)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -3089,7 +3298,8 @@ fn session_gdi_refused() -> &'static Mutex<HashSet<String>> {
 }
 
 fn note_session_gdi_refused(family: &str) {
-    if !family_known_gdi_session_incapable(family) {
+    // Hard Gidugu OR soft emoji after Add=0 — Activate All / early-skip via session refuse.
+    if !family_may_settle_add_zero(family) {
         return;
     }
     if let Ok(mut g) = session_gdi_refused().lock() {
@@ -3102,6 +3312,26 @@ fn family_session_gdi_refused(family: &str) -> bool {
         .lock()
         .map(|g| g.contains(&family.trim().to_ascii_lowercase()))
         .unwrap_or(false)
+}
+
+/// Soft Power Retry: drop this-session Add=0 refuse so Add runs again.
+/// Activate All leaves refuse set (soft early-skip still holds). Hard disk-settle skip unchanged.
+fn clear_session_gdi_refused(family: &str) {
+    if let Ok(mut g) = session_gdi_refused().lock() {
+        g.remove(&family.trim().to_ascii_lowercase());
+    }
+}
+
+/// Soft early-skip gate (no AppHandle): soft + this-session refuse + intact full-face.
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_early_skip_from_session_refuse(soft: bool, refused: bool, intact_full: bool) -> bool {
+    soft && refused && intact_full
+}
+
+/// Soft Retry clears refuse ⇒ Add may run (early-skip soft no longer blocks).
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_retry_allows_add_after_clear(refused_before: bool, cleared_by_retry: bool) -> bool {
+    !(refused_before && !cleared_by_retry)
 }
 
 fn family_has_complete_settled(app: &AppHandle, family: &str) -> bool {
@@ -3128,7 +3358,37 @@ fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
     if undersized {
         return false;
     }
-    family_session_gdi_refused(family) || family_has_complete_settled(app, family)
+    // 1.0.206c: stamp Settled before first settle scan so Activate All never queues
+    // hard-allowlist (Gidugu-class) faces already intact on disk — not soft emoji.
+    stamp_known_incapable_disk_settled(app, family);
+    if family_has_complete_settled(app, family) {
+        note_session_gdi_refused(family);
+        return true;
+    }
+    family_session_gdi_refused(family)
+}
+
+/// Soft emoji: skip re-Add only after this-session refuse (never trust bare `.complete`).
+fn family_early_skip_soft_session_refused(app: &AppHandle, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return false;
+    }
+    if !family_session_gdi_refused(family) {
+        return false;
+    }
+    let intact = family_has_intact(app, family);
+    if !intact {
+        return false;
+    }
+    let undersized = family_locations(app, family)
+        .iter()
+        .any(|d| dir_has_undersized_google_static(d, family));
+    if undersized {
+        return false;
+    }
+    family_locations(app, family)
+        .iter()
+        .any(|d| soft_emoji_full_face_ok(d, family))
 }
 
 /// Settled (disk OK, Add=0) must never equal Activated.
@@ -3333,12 +3593,20 @@ fn is_cjk_subset(name: &str) -> bool {
     s.starts_with("chinese") || s == "japanese" || s == "korean" || s == "japanese-latin"
 }
 
-/// Prefer CJK / script subsets when metadata lists them. Latin-only is wrong for
-/// Chiron / Noto CJK and must not be stamped `.complete`.
+/// Prefer CJK / emoji / script subsets when metadata lists them. Latin-only is
+/// wrong for Chiron / Noto CJK / emoji packs and must not be stamped `.complete`.
 fn pick_subsets(all: &[String]) -> Vec<String> {
     let cjk: Vec<String> = all.iter().filter(|s| is_cjk_subset(s)).cloned().collect();
     if !cjk.is_empty() {
         return cjk;
+    }
+    let emoji: Vec<String> = all
+        .iter()
+        .filter(|s| s.eq_ignore_ascii_case("emoji"))
+        .cloned()
+        .collect();
+    if !emoji.is_empty() {
+        return emoji;
     }
     if all.iter().any(|s| s == "latin") {
         vec!["latin".into()]
@@ -3695,6 +3963,234 @@ fn is_official_google_family(family: &str) -> bool {
     by_lower.contains(&key) || by_slug.contains(&slug_family(family))
 }
 
+
+/// Activate fetch pipe: Google card = Google faces only; Fontsource card = FS only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FetchIntent {
+    Google,
+    Fontsource,
+    Local,
+}
+
+fn parse_fetch_intent(s: &str) -> Option<FetchIntent> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "google" => Some(FetchIntent::Google),
+        "fontsource" | "other" => Some(FetchIntent::Fontsource),
+        "local" => Some(FetchIntent::Local),
+        _ => None,
+    }
+}
+
+fn fetch_intent_label(intent: FetchIntent) -> &'static str {
+    match intent {
+        FetchIntent::Google => "google",
+        FetchIntent::Fontsource => "fontsource",
+        FetchIntent::Local => "local",
+    }
+}
+
+fn infer_fetch_intent(family: &str) -> FetchIntent {
+    if is_official_google_family(family) {
+        FetchIntent::Google
+    } else {
+        FetchIntent::Fontsource
+    }
+}
+
+fn remember_fetch_intent(family: &str, intent: FetchIntent) {
+    let key = family.trim().to_lowercase();
+    if key.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = bulk().intents.lock() {
+        map.insert(key, intent);
+    }
+}
+
+fn forget_fetch_intent(family: &str) {
+    let key = family.trim().to_lowercase();
+    if let Ok(mut map) = bulk().intents.lock() {
+        map.remove(&key);
+    }
+}
+
+fn intent_for_family(family: &str) -> FetchIntent {
+    let key = family.trim().to_lowercase();
+    if let Ok(map) = bulk().intents.lock() {
+        if let Some(i) = map.get(&key) {
+            return *i;
+        }
+    }
+    infer_fetch_intent(family)
+}
+
+/// Resume / missing-store intent: stamp → planned markers → official Google catalog.
+/// Returns None when ambiguous — never blind-default to Google (wrong-pipes Fontsource).
+fn resolve_fetch_intent_from_disk(app: &AppHandle, family: &str) -> Option<FetchIntent> {
+    let family = family.trim();
+    if family.is_empty() {
+        return None;
+    }
+    let key = family.to_lowercase();
+    if let Ok(map) = bulk().intents.lock() {
+        if let Some(i) = map.get(&key) {
+            return Some(*i);
+        }
+    }
+    for dir in family_locations(app, family) {
+        migrate_download_source_stamp(&dir);
+        if let Some(i) = read_download_source(&dir) {
+            return Some(i);
+        }
+        if read_google_planned_keys(&dir).is_some() {
+            return Some(FetchIntent::Google);
+        }
+        if read_fontsource_planned_keys(&dir).is_some() {
+            return Some(FetchIntent::Fontsource);
+        }
+    }
+    // Catalog: official Google directory → google. Unknown / exclusive without
+    // stamp or planned markers → None (caller skips or uses catalog "other").
+    // Never blind-default to Google.
+    if is_official_google_family(family) {
+        return Some(FetchIntent::Google);
+    }
+    None
+}
+
+fn family_download_source_marker(dir: &Path) -> PathBuf {
+    dir.join(".download-source")
+}
+
+fn write_download_source(dir: &Path, intent: FetchIntent) {
+    let _ = fs::write(
+        family_download_source_marker(dir),
+        fetch_intent_label(intent).as_bytes(),
+    );
+}
+
+fn read_download_source(dir: &Path) -> Option<FetchIntent> {
+    let s = fs::read_to_string(family_download_source_marker(dir)).ok()?;
+    parse_fetch_intent(s.trim())
+}
+
+/// Boot/scan migration: stamp `.download-source` when evidence is strong.
+/// google if usable `.google-planned` key list; else fontsource if
+/// `.fontsource-planned` / latin-subset names dominate; else leave unset
+/// (never guess wrong). Register still uses `face_allowed_for_register`.
+fn migrate_download_source_stamp(dir: &Path) {
+    if read_download_source(dir).is_some() {
+        return;
+    }
+    if read_google_planned_keys(dir).is_some() {
+        write_download_source(dir, FetchIntent::Google);
+        return;
+    }
+    if read_fontsource_planned_keys(dir).is_some() {
+        write_download_source(dir, FetchIntent::Fontsource);
+        return;
+    }
+    let slug = dir_slug_hint(dir);
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    if files.is_empty() {
+        return;
+    }
+    let mut latin = 0usize;
+    let mut other = 0usize;
+    for path in &files {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        if filename_has_latin_subset(name, &slug) {
+            latin = latin.saturating_add(1);
+        } else {
+            other = other.saturating_add(1);
+        }
+    }
+    // Only stamp fontsource when latin-subset names clearly dominate.
+    if latin > 0 && latin > other {
+        write_download_source(dir, FetchIntent::Fontsource);
+    }
+    // else leave unset — do not guess google vs local.
+}
+
+
+fn family_fontsource_planned_marker(dir: &Path) -> PathBuf {
+    dir.join(".fontsource-planned")
+}
+
+fn write_fontsource_planned(dir: &Path, keys: &[String]) {
+    if keys.is_empty() {
+        let _ = fs::remove_file(family_fontsource_planned_marker(dir));
+        return;
+    }
+    let body = keys.join("\n");
+    let _ = fs::write(family_fontsource_planned_marker(dir), body.as_bytes());
+}
+
+fn clear_fontsource_planned(dir: &Path) {
+    let _ = fs::remove_file(family_fontsource_planned_marker(dir));
+}
+
+fn read_fontsource_planned_keys(dir: &Path) -> Option<Vec<String>> {
+    let s = fs::read_to_string(family_fontsource_planned_marker(dir)).ok()?;
+    let keys: Vec<String> = s
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && l.contains('.'))
+        .collect();
+    if keys.is_empty() {
+        None
+    } else {
+        Some(keys)
+    }
+}
+
+/// Register only faces from the chosen download source so leftover other-source
+/// TTFs in a shared family folder cannot go Live for the wrong card.
+fn face_allowed_for_register(dir: &Path, path: &Path, family: &str) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let slug = slug_family(family);
+    let intent = read_download_source(dir).unwrap_or_else(|| intent_for_family(family));
+    match intent {
+        FetchIntent::Local => true,
+        FetchIntent::Google => {
+            if let Some(keys) = read_google_planned_keys(dir) {
+                return keys.iter().any(|k| k == name);
+            }
+            // No Google plan: never Add Fontsource latin-subset leftovers.
+            if !slug.is_empty() && filename_has_latin_subset(name, &slug) {
+                return false;
+            }
+            if let Some(fs_keys) = read_fontsource_planned_keys(dir) {
+                if fs_keys.iter().any(|k| k == name) {
+                    return false;
+                }
+            }
+            true
+        }
+        FetchIntent::Fontsource => {
+            if let Some(keys) = read_fontsource_planned_keys(dir) {
+                return keys.iter().any(|k| k == name);
+            }
+            // No FS plan: never Add Google-planned leftovers for the Fontsource card.
+            if let Some(g_keys) = read_google_planned_keys(dir) {
+                if g_keys.iter().any(|k| k == name) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct GoogleCatalogMeta {
     floor: usize,
@@ -3851,7 +4347,8 @@ fn fs_only_google_vf_folder(family: &str) -> Option<String> {
         "big shoulders stencil display" => Some("bigshouldersstencildisplay"),
         "big shoulders stencil text" => Some("bigshouldersstenciltext"),
         "briem hand" => Some("briemhand"),
-        "finlandica" => Some("finlandica"),
+        "finlandica text" => Some("finlandicatext"),
+        "finlandica headline" => Some("finlandicaheadline"),
         _ => None,
     };
     if let Some(f) = fixed {
@@ -4053,7 +4550,9 @@ fn family_expects_dual_variable(family: &str) -> bool {
     let t = family.trim();
     t.eq_ignore_ascii_case("Chiron Hei HK")
         || t.eq_ignore_ascii_case("Chiron Sung HK")
-        || t.eq_ignore_ascii_case("Finlandica")
+        // Catalog names (not bare "Finlandica"): each ships roman + italic VF.
+        || t.eq_ignore_ascii_case("Finlandica Text")
+        || t.eq_ignore_ascii_case("Finlandica Headline")
 }
 
 fn dir_has_intact_variable_italic(dir: &Path) -> bool {
@@ -4254,10 +4753,125 @@ fn dir_has_intact_variable(dir: &Path) -> bool {
     })
 }
 
-/// Merge var filenames into planned keys. Vars are listed first (Illustrator/AI
-/// tends to pick earlier faces for axes) but **statics stay** — planned is always
-/// statics + vars, never var-only.
+/// 1.0.206u: VF is primary when an intact variable face is present.
+/// Dual-VF (Hei/Sung + Finlandica Text/Headline): roman + italic both required.
+/// No-public-VF denylist (Poppins-class catalog statics, Google Sans, Edu hands) never VF-primary.
+fn dir_vf_primary_ready(dir: &Path, family: &str) -> bool {
+    if family_has_no_public_vf(family) {
+        return false;
+    }
+    if !dir_has_intact_variable(dir) {
+        return false;
+    }
+    if family_expects_dual_variable(family) && !dir_has_intact_variable_italic(dir) {
+        return false;
+    }
+    true
+}
+
+fn family_any_dir_vf_primary(app: &AppHandle, family: &str) -> bool {
+    family_locations(app, family)
+        .iter()
+        .any(|d| dir_vf_primary_ready(d, family))
+}
+
+/// Compat emoji/color sidecars kept even under VF-primary purge.
+fn is_compat_sidecar_filename(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("-svg.") || lower.contains("-colrv1.") || lower.contains("-compat-")
+}
+
+/// Delete sibling static TTFs when VF is primary. Keeps VFs + compat sidecars.
+/// Also drops matching `%LOCALAPPDATA%\Font Manager\gdi-maps` stage copies.
+/// Returns `(deleted, locked)`.
+fn purge_redundant_statics_in_dir(dir: &Path, family: &str) -> (usize, usize) {
+    if !dir_vf_primary_ready(dir, family) {
+        return (0, 0);
+    }
+    let mut deleted = 0usize;
+    let mut locked = 0usize;
+    let mut files = Vec::new();
+    walk_font_files(dir, &mut files);
+    for path in files {
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) || is_compat_sidecar_filename(name) {
+            continue;
+        }
+        // Drop gdi-maps stage copy first (hash of Documents path).
+        if let Some(dest) = gdi_map_dest_for(&path) {
+            unregister_path(&dest);
+            let _ = delete_font_file(&dest);
+        }
+        unregister_path(&path);
+        match delete_font_file(&path) {
+            Ok(()) => deleted = deleted.saturating_add(1),
+            Err(_) => locked = locked.saturating_add(1),
+        }
+    }
+    // Recalc planned / .complete to intact vars only.
+    let mut vars = Vec::new();
+    let mut again = Vec::new();
+    walk_font_files(dir, &mut again);
+    for p in again {
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_variable_face_filename(name) && ttf_intact(&p) {
+            vars.push(name.to_string());
+        }
+    }
+    if !vars.is_empty() {
+        write_google_planned(dir, &vars);
+        let intact = count_intact_planned_keys(dir, &vars);
+        if intact >= vars.len() {
+            mark_family_complete(dir, vars.len());
+        } else {
+            write_expected_faces(dir, vars.len());
+            clear_complete_marker(dir);
+        }
+    }
+    (deleted, locked)
+}
+
+#[allow(dead_code)] // available for Deactivate/Quit hooks; sync walks dirs directly
+fn purge_redundant_statics_for_family(app: &AppHandle, family: &str) -> (usize, usize) {
+    let mut deleted = 0usize;
+    let mut locked = 0usize;
+    for dir in family_locations(app, family) {
+        let (d, l) = purge_redundant_statics_in_dir(&dir, family);
+        deleted = deleted.saturating_add(d);
+        locked = locked.saturating_add(l);
+    }
+    (deleted, locked)
+}
+
+/// Vars-only planned keys (after successful VarsOnly Add>0).
 fn merge_variable_into_planned_keys(existing: &[String], var_files: &[String]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for v in var_files {
+        if !v.is_empty() && !keys.iter().any(|k| k == v) {
+            keys.push(v.clone());
+        }
+    }
+    if !keys.is_empty() {
+        return keys;
+    }
+    for k in existing {
+        if !k.is_empty() && !keys.iter().any(|x| x == k) {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
+
+/// Pre-Add merge: vars first, **statics kept on disk/plan** until VarsOnly Add>0.
+/// Skye P1: skipping static fetch / purging before Add guts AllIntactFallback.
+fn merge_variable_into_planned_keys_keep_statics(
+    existing: &[String],
+    var_files: &[String],
+) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     for v in var_files {
         if !v.is_empty() && !keys.iter().any(|k| k == v) {
@@ -4270,6 +4884,44 @@ fn merge_variable_into_planned_keys(existing: &[String], var_files: &[String]) -
         }
     }
     keys
+}
+
+/// After VarsOnly Add>0: rewrite planned to vars-only and purge redundant statics.
+fn commit_vf_primary_after_successful_add(app: &AppHandle, family: &str) -> (usize, usize) {
+    let mut deleted = 0usize;
+    let mut locked = 0usize;
+    for dir in family_locations(app, family) {
+        if !dir_vf_primary_ready(&dir, family) {
+            continue;
+        }
+        // Collect intact vars → planned vars-only, then purge statics.
+        let mut vars = Vec::new();
+        let mut files = Vec::new();
+        walk_font_files(&dir, &mut files);
+        for p in &files {
+            let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if is_variable_face_filename(name) && ttf_intact(p) {
+                vars.push(name.to_string());
+            }
+        }
+        if vars.is_empty() {
+            continue;
+        }
+        write_google_planned(&dir, &vars);
+        let intact = count_intact_planned_keys(&dir, &vars);
+        if intact >= vars.len() {
+            mark_family_complete(&dir, vars.len());
+        } else {
+            write_expected_faces(&dir, vars.len());
+            clear_complete_marker(&dir);
+        }
+        let (d, l) = purge_redundant_statics_in_dir(&dir, family);
+        deleted = deleted.saturating_add(d);
+        locked = locked.saturating_add(l);
+    }
+    (deleted, locked)
 }
 
 /// Collect intact Google static instance filenames already on disk (for adopting
@@ -4293,16 +4945,17 @@ fn collect_intact_google_instance_keys(dir: &Path) -> Vec<String> {
     out
 }
 
-/// When variable TTFs land, fold them into `.google-planned` / expected / complete
-/// **alongside** existing static instance keys — never replace statics with var-only.
-/// Stamp honesty only (markers + planned keys); never deletes/renames/rewrites
-/// static face files on disk.
+/// When variable TTFs land, fold them into `.google-planned` / expected / complete.
+/// **1.0.206u amend (Skye):** planned may list vars first, but **do not purge**
+/// statics here — purge only after VarsOnly Add>0 (see register_intact_family_detailed).
+/// Happy-path purge-before-register guts AllIntactFallback when VF Add=0.
 fn adopt_variable_files_into_plan(root: &Path, var_files: &[String]) {
     if var_files.is_empty() {
         return;
     }
     let existing = read_google_planned_keys(root).unwrap_or_else(|| collect_intact_google_instance_keys(root));
-    let keys = merge_variable_into_planned_keys(&existing, var_files);
+    // Keep statics in planned until successful VF Add; merge lists vars first.
+    let keys = merge_variable_into_planned_keys_keep_statics(&existing, var_files);
     if keys.is_empty() {
         return;
     }
@@ -4330,9 +4983,8 @@ fn http_download_client() -> Option<reqwest::blocking::Client> {
 
 /// Always pull real `*-variable-*` TTFs for catalog-variable families — including
 /// when the folder is already `.complete` / statics-only. `.complete` must **not**
-/// block VF fetch. Does **not** delete, rename, rewrite, or purge static faces —
-/// only writes missing var files, then `adopt_variable_files_into_plan` updates
-/// planned/expected/complete. No-public-VF catalog families are skipped (no invent).
+/// block VF fetch. `adopt_variable_files_into_plan` updates planned (statics kept
+/// until VarsOnly Add>0). No-public-VF catalog families are skipped (no invent).
 /// Returns (var filenames written/intact, HealStats from intact var heals).
 fn ensure_catalog_variable_faces(
     app: &AppHandle,
@@ -4426,11 +5078,8 @@ fn ensure_catalog_variable_faces(
         return (0, heal);
     }
     adopt_variable_files_into_plan(&root, &var_files);
-    // Register vars first; statics stay and are registered by the normal pass.
-    // Windows AddFontResource lists every file; order helps apps that pick the
-    // first face with axes. Statics remain installed as backup — never var-only.
-    // Intact heals already counted in download_google_variable_ttfs — do not
-    // re-heal here (would double-count locked).
+    // 1.0.206u: register vars only here; redundant statics purged by adopt when
+    // VF-primary. Intact heals already counted in download_google_variable_ttfs.
     for name in &var_files {
         let path = root.join(name);
         if ttf_intact(&path) {
@@ -5099,7 +5748,8 @@ fn fetch_google_family_faces_to_dir(
         (Vec::new(), HealStats::default())
     };
     heal.add(var_heal);
-    // 2) Google CSS static instances (may 404 for metadata-missing FS-only).
+    // 1.0.206u Skye P1: always fetch static instances alongside VF until VarsOnly
+    // Add>0 succeeds — skipping static fetch guts AllIntactFallback on Add=0.
     let listed = discover_richest_google_listing(client, family);
     let (inst_wrote, _, inst_heal) = if listed.is_empty() {
         (0, 0, HealStats::default())
@@ -5144,8 +5794,70 @@ fn install_compat_pack(client: &reqwest::blocking::Client, root: &Path, family: 
     }
 }
 
+fn is_emoji_session_family(family: &str) -> bool {
+    // Single source with `SOFT_GDI_TRY_ADD_FIRST` (mirrored in TS).
+    soft_gdi_try_add_entry(family).is_some()
+}
+
+/// Noto Color Emoji only — multi-MB upstream color TTF; never Google CSS latin stubs.
+fn is_noto_color_emoji_family(family: &str, slug: &str) -> bool {
+    slug == "noto-color-emoji" || family.eq_ignore_ascii_case("Noto Color Emoji")
+}
+
+/// Full color-capable TTF from noto-emoji upstream (not CSS unicode-range WOFF2,
+/// not latin-only stubs). Returns bytes written/intact count for the primary face.
+fn pull_emoji_upstream_color_ttf(
+    client: &reqwest::blocking::Client,
+    family: &str,
+    slug: &str,
+    root: &Path,
+) -> usize {
+    if !is_emoji_session_family(family) && slug != "noto-color-emoji" && slug != "noto-emoji" {
+        return 0;
+    }
+    let urls = ttf_urls(slug, "", 400, false, "emoji", 0);
+    if urls.is_empty() {
+        return 0;
+    }
+    let dest_name = if slug == "noto-color-emoji" || family.eq_ignore_ascii_case("Noto Color Emoji")
+    {
+        format!("{slug}.ttf")
+    } else {
+        format!("{slug}-400-normal.ttf")
+    };
+    let dest = root.join(&dest_name);
+    let emoji_stub_gate = slug == "noto-color-emoji"
+        || slug == "noto-emoji"
+        || is_emoji_session_family(family);
+    if ttf_intact(&dest) {
+        // Never treat a tiny latin stub as a working emoji face (color + outline).
+        if let Ok(meta) = fs::metadata(&dest) {
+            if meta.len() < 256 * 1024 && emoji_stub_gate {
+                let _ = delete_font_file(&dest);
+            } else {
+                return 1;
+            }
+        } else {
+            return 1;
+        }
+    }
+    for url in &urls {
+        if let Some(bytes) = fetch_url_ttf(client, url) {
+            // Soft emoji TTFs are large; reject obvious latin/CSS stubs (≥256KB gate).
+            if emoji_stub_gate && bytes.len() < 256 * 1024 {
+                continue;
+            }
+            if write_font_file(&dest, &bytes).is_ok() && ttf_intact(&dest) {
+                return 1;
+            }
+        }
+    }
+    0
+}
+
 /// Register intact faces. For catalog-variable families, register `*-variable-*`
-/// first so Illustrator/AI can pick axes, then static instances as backup.
+/// first so Illustrator/AI can pick axes. 1.0.206u: statics are skipped/purged
+/// when VF-primary — sort still puts vars ahead for mixed folders / fallback.
 fn sort_faces_var_first(files: &mut [PathBuf]) {
     files.sort_by(|a, b| {
         let av = a
@@ -5310,18 +6022,8 @@ fn register_intact_family(app: &AppHandle, family: &str) -> usize {
 }
 
 fn register_intact_new(app: &AppHandle, family: &str) -> usize {
-    let mut added = 0usize;
-    for dir in family_locations(app, family) {
-        let mut files = Vec::new();
-        walk_font_files(&dir, &mut files);
-        sort_faces_var_first(&mut files);
-        for path in files {
-            if ttf_intact(&path) && register_family_path(family, &path) {
-                added += 1;
-            }
-        }
-    }
-    added
+    // Same VF-primary gate as register_intact_family_detailed (session restore path).
+    register_intact_family_detailed(app, family).0
 }
 
 /// Unload + drop gdi-maps copy, then stage+Add again. Does not touch Documents library files.
@@ -5909,6 +6611,90 @@ fn count_intact_faces(dir: &Path) -> usize {
 
 fn clear_complete_marker(dir: &Path) {
     let _ = fs::remove_file(family_complete_marker(dir));
+    clear_settled_add_zero_provenance(dir);
+}
+
+/// Soft Settled provenance — written only after real Add=0 (`stamp_soft_settle_dir_after_add_zero`).
+fn family_settled_add_zero_marker(dir: &Path) -> PathBuf {
+    dir.join(".settled-add-zero")
+}
+
+fn dir_has_settled_add_zero_provenance(dir: &Path) -> bool {
+    family_settled_add_zero_marker(dir).is_file()
+}
+
+fn stamp_settled_add_zero_provenance(dir: &Path) {
+    let _ = fs::write(family_settled_add_zero_marker(dir), b"1");
+}
+
+fn clear_settled_add_zero_provenance(dir: &Path) {
+    let _ = fs::remove_file(family_settled_add_zero_marker(dir));
+}
+
+/// One-shot upgrade: soft `.complete` from hard-emoji tips lacks provenance — wipe so Scan
+/// does not treat bare `.complete` as Settled. Full-face soft stays not-Incomplete (try-Add).
+fn wipe_soft_complete_lacking_provenance(dir: &Path, family: &str) {
+    if !family_soft_try_add_then_settle(family) {
+        return;
+    }
+    if dir_is_complete(dir) && !dir_has_settled_add_zero_provenance(dir) {
+        clear_complete_marker(dir);
+    }
+}
+
+/// Soft + full-face size OK + no provenance ⇒ not Incomplete / not Repair (try-Add first).
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_full_face_exclude_repair(dir: &Path, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return false;
+    }
+    if dir_has_settled_add_zero_provenance(dir) {
+        // Provenanced Settled uses .complete path — not a Repair exclude special-case.
+        return false;
+    }
+    dir_has_intact(dir)
+        && soft_emoji_full_face_ok(dir, family)
+        && !dir_has_undersized_google_static(dir, family)
+}
+
+/// Scan/Repair classification for soft emoji (unit-tested).
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_scan_settled_from_provenance(
+    has_provenance: bool,
+    full_face_ok: bool,
+    intact: bool,
+    undersized: bool,
+) -> bool {
+    has_provenance && full_face_ok && intact && !undersized
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn soft_scan_incomplete(
+    settled: bool,
+    soft: bool,
+    full_face_ok: bool,
+    intact: bool,
+    has_complete: bool,
+    missing_variable: bool,
+    undersized: bool,
+) -> bool {
+    if settled {
+        return false;
+    }
+    // Soft full-face without provenance: not Incomplete (Activate try-Add; no huge Repair).
+    if soft && full_face_ok && intact && !undersized {
+        return false;
+    }
+    (intact && !has_complete) || missing_variable || undersized
+}
+
+fn family_soft_full_face_exclude_repair(app: &AppHandle, family: &str) -> bool {
+    if !family_soft_try_add_then_settle(family) {
+        return false;
+    }
+    family_locations(app, family)
+        .iter()
+        .any(|d| soft_full_face_exclude_repair(d, family))
 }
 
 /// Stamp `.complete` only for a full face set. Body + `.expected` store the count.
@@ -5961,10 +6747,10 @@ fn official_google_complete_is_lie(dir: &Path) -> bool {
     if family.is_empty() || !is_official_google_family(family) {
         return false;
     }
-    // Gidugu-class disk settled: intact full-size official TTF — Add=0 does not
+    // Hard Gidugu or soft-settled emoji: intact full-size — Add=0 does not
     // make `.complete` a lie; Scan must not churn Repair.
     if family_disk_settled_known_gdi_incapable(
-        family_known_gdi_session_incapable(family),
+        family_may_settle_add_zero(family),
         dir_has_intact(dir),
         dir_has_undersized_google_static(dir, family),
     ) {
@@ -6044,6 +6830,10 @@ fn family_is_ready(app: &AppHandle, family: &str) -> bool {
 }
 
 fn family_is_incomplete(app: &AppHandle, family: &str) -> bool {
+    // Soft full-face without provenance: not Incomplete / not Repair target.
+    if family_soft_full_face_exclude_repair(app, family) {
+        return false;
+    }
     !family_is_ready(app, family) && family_has_intact(app, family)
 }
 
@@ -6076,6 +6866,7 @@ fn forget_queued(family: &str) {
     if let Ok(mut queued) = bulk().queued.lock() {
         queued.remove(&family.trim().to_lowercase());
     }
+    forget_fetch_intent(family);
 }
 
 fn remember_failed(family: &str, reason: &str) {
@@ -6116,6 +6907,8 @@ struct Bulk {
     pending: Mutex<VecDeque<String>>,
     queued: Mutex<HashSet<String>>,
     denied: Mutex<HashSet<String>>,
+    /// Per-family Activate intent (google | fontsource | local).
+    intents: Mutex<HashMap<String, FetchIntent>>,
     circuits: Mutex<HashMap<&'static str, CdnGate>>,
 }
 
@@ -6143,6 +6936,7 @@ fn bulk() -> &'static Bulk {
         pending: Mutex::new(VecDeque::new()),
         queued: Mutex::new(HashSet::new()),
         denied: Mutex::new(HashSet::new()),
+        intents: Mutex::new(HashMap::new()),
         circuits: Mutex::new(HashMap::new()),
     })
 }
@@ -6245,13 +7039,17 @@ fn download_family(
             heal_clear_sans_expected_plan(&dir, family);
         }
     }
+    let intent_early = intent_for_family(family);
     let existing = register_intact_family(app, family);
     if existing > 0 && !bust && family_is_ready(app, family) && !clear_sans_needs_heal {
-        // Complete folders still need missing catalog variable TTFs (no bust)
-        // and name heal for pre-namepatch installs. Statics stay; vars are added.
-        // Do not emit here — caller (drain) coalesces HealStats across families.
-        let (_, mut heal) = ensure_catalog_variable_faces(app, client, family);
-        heal.add(heal_family_google_names(app, family, false));
+        // Complete folders: Google intent may still pull missing catalog VF + name heal.
+        // Fontsource intent must not call Google CSS2 / desktop VF ensure.
+        let mut heal = HealStats::default();
+        if matches!(intent_early, FetchIntent::Google) {
+            let (_, h) = ensure_catalog_variable_faces(app, client, family);
+            heal.add(h);
+            heal.add(heal_family_google_names(app, family, false));
+        }
         let total = register_intact_family(app, family).max(existing);
         return Ok((total, heal));
     }
@@ -6265,14 +7063,54 @@ fn download_family(
     let mut planned = 0usize;
     let mut version = String::new();
 
-    // Google desktop TTFs first (official families): discover richest listing, then stream
-    // to disk (no full-family RAM buffer). Fontsource only when Google listed nothing.
-    let (google_wrote, mut google_listed, mut google_var_files, mut heal) =
-        fetch_google_family_faces_to_dir(client, family, &slug, &root);
-    // If Google CSS listed faces but nothing intact landed, do NOT purge latin
-    // remnants into an empty folder and abort — clear the plan so Fontsource can
-    // fill (or a later Repair can retry Google). Partial Google writes keep the plan.
-    if !google_listed.is_empty() && google_wrote == 0 {
+    let intent = intent_for_family(family);
+    if matches!(intent, FetchIntent::Local) {
+        let total = register_intact_family(app, family);
+        if total > 0 {
+            return Ok((total, HealStats::default()));
+        }
+        return Err("local family has no installable faces".into());
+    }
+    // Stamp chosen source so register only Adds faces from this Activate card.
+    write_download_source(&root, intent);
+
+    // Hard separation: Google Activate = Google faces only (no Fontsource fill).
+    // Fontsource Activate = Fontsource only (no Google CSS2 / desktop fetch).
+    // Completeness P0: Noto Color Emoji = full upstream color TTF only — never
+    // Google CSS unicode-range / latin stubs in the planned set.
+    let (mut google_wrote, mut google_listed, mut google_var_files, mut heal) =
+        if matches!(intent, FetchIntent::Google) && !is_noto_color_emoji_family(family, &slug) {
+            fetch_google_family_faces_to_dir(client, family, &slug, &root)
+        } else {
+            (0, Vec::new(), Vec::new(), HealStats::default())
+        };
+    // 1.0.206: emoji P0 — prefer full color-capable upstream TTF (not CSS WOFF2 /
+    // unicode-range shreds). Live only if later Add>0; allowlist Settled if Add=0.
+    if matches!(intent, FetchIntent::Google) && is_emoji_session_family(family) {
+        let emoji_n = pull_emoji_upstream_color_ttf(client, family, &slug, &root);
+        google_wrote = google_wrote.saturating_add(emoji_n);
+        if emoji_n > 0 {
+            let key = if is_noto_color_emoji_family(family, &slug) {
+                format!("{slug}.ttf")
+            } else {
+                format!("{slug}-400-normal.ttf")
+            };
+            // Color emoji: planned = upstream face only (drop any CSS instance keys).
+            if is_noto_color_emoji_family(family, &slug) {
+                google_listed.clear();
+                google_var_files.clear();
+                // Drop latin/CSS stubs that may pre-exist from older installs.
+                let _ = purge_known_incapable_fontsource_remnants(&root, family);
+            }
+            // Track via var_files so planned keys match on-disk name (not CSS face matrix).
+            if !google_var_files.iter().any(|k| k == &key) {
+                google_var_files.push(key);
+            }
+        }
+    }
+    // If Google CSS listed faces but nothing intact landed, clear the plan — do NOT
+    // Fontsource-fill on Google intent (hard separation). Repair can retry Google.
+    if matches!(intent, FetchIntent::Google) && !google_listed.is_empty() && google_wrote == 0 {
         let keys_probe: Vec<String> = google_listed
             .iter()
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
@@ -6286,33 +7124,38 @@ fn download_family(
     let google_instance_expected = google_listed.len();
     let google_expected = google_instance_expected.saturating_add(google_var_files.len());
     wrote = wrote.saturating_add(google_wrote);
-    if google_expected > 0 {
+    if matches!(intent, FetchIntent::Google) && google_expected > 0 {
         planned = google_expected;
         let instance_keys: Vec<String> = google_listed
             .iter()
             .map(|(style, weight, _)| google_face_filename(&slug, weight, style))
             .collect();
-        // Vars first in planned (axes pick), statics retained as backup — never var-only.
-        let keys = merge_variable_into_planned_keys(&instance_keys, &google_var_files);
+        // 1.0.206u Skye P1: vars first but keep statics in plan/on disk until
+        // VarsOnly Add>0 (commit_vf_primary_after_successful_add). Do not purge here.
+        let keys = merge_variable_into_planned_keys_keep_statics(&instance_keys, &google_var_files);
         write_google_planned(&root, &keys);
-        // Only purge leftovers once we have Google bytes on disk — otherwise a
-        // failed Google fetch would delete latin remnants and leave the folder empty.
+        clear_fontsource_planned(&root);
+        // Only purge *unplanned* leftovers (latin shreds) — never drop planned statics
+        // before register (would gut Add=0 fallback).
         if google_wrote > 0 || count_intact_planned_keys(&root, &keys) > 0 {
             purge_unplanned_font_files(&root, &keys);
         }
+    } else if matches!(intent, FetchIntent::Google) {
+        clear_google_planned(&root);
     } else {
+        // Fontsource intent: never keep a stale Google plan that would confuse register.
         clear_google_planned(&root);
     }
 
-    // Fontsource fills remaining when Google had no static CSS listing.
-    // VF may already be on disk (step 1) — still allow FS statics for FS-only /
-    // metadata-missing families. Never use FS to satisfy Google planned keys.
-    let need_fontsource = google_listed.is_empty();
+    // Fontsource fill only on Fontsource intent — never as Google fallback.
+    let need_fontsource = matches!(intent, FetchIntent::Fontsource);
+    let mut fontsource_keys: Vec<String> = Vec::new();
     if need_fontsource && slug == "clear-sans" {
         // Intel-only planned set (8). Never Fontsource face-matrix (10).
         planned = clear_sans_intel_planned_count();
         version = CLEAR_SANS_INTEL_PIN.to_string();
         let keys = clear_sans_intel_face_keys();
+        fontsource_keys = keys.clone();
         for (weight, italic) in CLEAR_SANS_INTEL_FACES {
             if bulk().cancel.load(Ordering::SeqCst) {
                 break;
@@ -6333,6 +7176,7 @@ fn download_family(
         // Drop any leftover ThinItalic / LightItalic / Fontsource shreds outside the plan.
         purge_unplanned_font_files(&root, &keys);
         write_expected_faces(&root, planned);
+        write_fontsource_planned(&root, &fontsource_keys);
     } else if need_fontsource {
         if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
             version = fs_ver.clone();
@@ -6348,17 +7192,23 @@ fn download_family(
                 meta_styles
             };
             let fs_expected = subsets.len().saturating_mul(weights.len()).saturating_mul(styles.len());
-            if google_expected == 0 {
-                planned = fs_expected;
+            planned = fs_expected;
+            for subset in &subsets {
+                for weight in &weights {
+                    for italic in &styles {
+                        let style = if *italic { "italic" } else { "normal" };
+                        fontsource_keys.push(fontsource_face_filename(&slug, subset, *weight, style));
+                    }
+                }
             }
-            // When Google listed a rich set, keep that expected count for .complete honesty.
-            // FS may still fill supplemental files, but *-latin-* never counts toward Google planned.
+            fontsource_keys.sort();
+            fontsource_keys.dedup();
             let fs_wrote = pull_fontsource_subset_to_dir(
                 client, &slug, &version, &subsets, &weights, &styles, &root,
             );
             // CJK honesty: metadata listed chinese-* but FS only dropped latin → do not
-            // claim a Fontsource expected set when Google also wrote nothing.
-            if google_wrote == 0 && all_subsets.iter().any(|s| is_cjk_subset(s)) {
+            // claim a Fontsource expected set when nothing usable landed.
+            if all_subsets.iter().any(|s| is_cjk_subset(s)) {
                 let mut files = Vec::new();
                 walk_font_files(&root, &mut files);
                 let fs_names: Vec<_> = files
@@ -6375,8 +7225,10 @@ fn download_family(
                 }
             }
             wrote = wrote.saturating_add(fs_wrote);
+            write_fontsource_planned(&root, &fontsource_keys);
         }
     }
+
     // Legacy Fontsource packs used `*-latin-*` names — strip when we have a
     // replacement set (Google wrote, or Fontsource-only path). Never strip when
     // Google listed then failed with zero writes — that left folders empty (1.0.148+).
@@ -6402,6 +7254,21 @@ fn download_family(
     if planned > 0 {
         write_expected_faces(&root, planned);
     }
+    // Fontsource emoji path: ensure full upstream color TTF landed (ttf_urls special-case).
+    if matches!(intent, FetchIntent::Fontsource) && is_emoji_session_family(family) {
+        let emoji_n = pull_emoji_upstream_color_ttf(client, family, &slug, &root);
+        wrote = wrote.saturating_add(emoji_n);
+        if emoji_n > 0 && is_noto_color_emoji_family(family, &slug) {
+            // Completeness: purge latin/FS stubs; planned = upstream color face only.
+            let _ = purge_known_incapable_fontsource_remnants(&root, family);
+            let key = format!("{slug}.ttf");
+            fontsource_keys.clear();
+            fontsource_keys.push(key);
+            planned = 1;
+            write_fontsource_planned(&root, &fontsource_keys);
+            write_expected_faces(&root, planned);
+        }
+    }
     if needs_compat_pack(&slug) && (wrote > 0 || existing > 0) {
         install_compat_pack(client, &root, family, &slug);
     }
@@ -6413,13 +7280,13 @@ fn download_family(
     if total == 0 {
         let intact_now = count_intact_faces(&root);
         if family_disk_settled_known_gdi_incapable(
-            family_known_gdi_session_incapable(family),
+            family_may_settle_add_zero(family),
             intact_now > 0,
             dir_has_undersized_google_static(&root, family),
         ) {
-            // Disk settled: stamp `.complete` so Scan does not Repair-churn.
+            // Disk settled after Add=0 (hard Gidugu or soft emoji): stamp `.complete`.
             // Err so caller quiet-settles — never Activated / ready_names.
-            stamp_known_incapable_dir_settled(&root, family);
+            stamp_settle_after_add_zero(app, family);
             return Err(format_register_zero_detail_with(app, family, reg_cause));
         }
         clear_complete_marker(&root);
@@ -6548,19 +7415,23 @@ fn drain_download_queue(
         emit_progress(&app);
         let already = family_is_ready(&app, &family) && !state.bust.load(Ordering::SeqCst);
         let result = if already {
-            // Already-complete: still pull missing catalog vars (no bust) + heal names,
-            // then register — do not treat .complete as activated without GDI.
+            // Already-complete: Google intent may pull missing catalog vars + heal names.
+            // Fontsource intent must not hit Google CSS2 / desktop VF ensure.
             // Aggregate — do not emit per family (toast storm).
-            let (_, mut heal) = ensure_catalog_variable_faces(&app, &client, &family);
-            heal.add(heal_family_google_names(&app, &family, false));
+            let mut heal = HealStats::default();
+            if matches!(intent_for_family(&family), FetchIntent::Google) {
+                let (_, h) = ensure_catalog_variable_faces(&app, &client, &family);
+                heal.add(h);
+                heal.add(heal_family_google_names(&app, &family, false));
+            }
             heal_acc.add(heal);
             let (n, cause) = register_intact_family_detailed(&app, &family);
             if n == 0 {
-                if family_known_gdi_session_incapable(&family)
+                if family_may_settle_add_zero(&family)
                     && family_has_intact(&app, &family)
                 {
-                    // Keep / stamp disk settled — do not clear `.complete` (Scan honesty).
-                    stamp_known_incapable_disk_settled(&app, &family);
+                    // Keep / stamp disk settled after Add=0 — never fake Live.
+                    stamp_settle_after_add_zero(&app, &family);
                     Err(format_register_zero_detail_with(&app, &family, cause))
                 } else {
                     Err(note_register_zero(&app, &family, cause))
@@ -6864,7 +7735,93 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
     #[cfg(windows)]
     let mut unloaded_paths: Vec<PathBuf> = Vec::new();
     let mut last_emit = Instant::now();
+    let mut cancelled = false;
     for (i, family) in families.iter().enumerate() {
+        // 1.0.206i: bulk Deactivate / unload_now honor Cancel + Pause (same gate as on-disk register).
+        // Cancel → stop further Removes (already-unloaded stay Off). Pause → wait; Resume continues.
+        let state = bulk();
+        match on_disk_register_gate(
+            state.cancel.load(Ordering::SeqCst),
+            state.pause.load(Ordering::SeqCst),
+        ) {
+            OnDiskRegisterGate::StopCancelled => {
+                cancelled = true;
+                if report {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.kind = "remove".into();
+                        p.running = false;
+                        p.paused = false;
+                        p.current = "Cancelled".into();
+                        // Keep done at families already processed — do not jump to total.
+                    }
+                    emit_progress(app);
+                }
+                break;
+            }
+            OnDiskRegisterGate::WaitPaused => {
+                if report {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.paused = true;
+                        p.running = true;
+                        p.kind = "remove".into();
+                    }
+                    emit_progress(app);
+                }
+                thread::sleep(Duration::from_millis(200));
+                // Re-process same index after pause/cancel check.
+                // `continue` would skip without advancing — use a nested wait loop instead.
+                loop {
+                    let st = bulk();
+                    match on_disk_register_gate(
+                        st.cancel.load(Ordering::SeqCst),
+                        st.pause.load(Ordering::SeqCst),
+                    ) {
+                        OnDiskRegisterGate::StopCancelled => {
+                            cancelled = true;
+                            break;
+                        }
+                        OnDiskRegisterGate::WaitPaused => {
+                            if report {
+                                if let Ok(mut p) = st.progress.lock() {
+                                    p.paused = true;
+                                    p.running = true;
+                                    p.kind = "remove".into();
+                                }
+                                emit_progress(app);
+                            }
+                            thread::sleep(Duration::from_millis(200));
+                        }
+                        OnDiskRegisterGate::Run => {
+                            if report {
+                                if let Ok(mut p) = st.progress.lock() {
+                                    p.paused = false;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                if cancelled {
+                    if report {
+                        if let Ok(mut p) = bulk().progress.lock() {
+                            p.kind = "remove".into();
+                            p.running = false;
+                            p.paused = false;
+                            p.current = "Cancelled".into();
+                        }
+                        emit_progress(app);
+                    }
+                    break;
+                }
+            }
+            OnDiskRegisterGate::Run => {
+                if report {
+                    if let Ok(mut p) = state.progress.lock() {
+                        p.paused = false;
+                    }
+                }
+            }
+        }
         let t = family.trim();
         if t.is_empty() {
             continue;
@@ -6919,6 +7876,11 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
                 p.done = (i + 1) as u32;
                 p.total = total_n;
                 p.current = t.to_string();
+                // 1.0.206j: ready_names = unloaded prefix so UI confirms Off only for these
+                // (never confirmDeactivated(all) at unload_font_families spawn).
+                if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                    p.ready_names.push(t.to_string());
+                }
             }
             let last = i + 1 == families.len();
             if i == 0 || last || (i + 1) % 4 == 0 || last_emit.elapsed() >= Duration::from_millis(150) {
@@ -6927,8 +7889,24 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
             }
         }
     }
-    session_remove(app, families);
-    if report {
+    // On cancel, only drop session entries for families actually processed (done count).
+    // Full cancel mid-bulk: still remove session for unloaded prefix via per-family forget_queued;
+    // session_remove of the whole list would mark still-Live faces Off in sidecar — skip when cancelled.
+    if !cancelled {
+        session_remove(app, families);
+    } else {
+        // Persist whatever unregister already did.
+        let done_n = bulk()
+            .progress
+            .lock()
+            .map(|p| p.done as usize)
+            .unwrap_or(0);
+        let prefix: Vec<String> = families.iter().take(done_n).cloned().collect();
+        if !prefix.is_empty() {
+            session_remove(app, &prefix);
+        }
+    }
+    if report && !cancelled {
         if let Ok(mut p) = bulk().progress.lock() {
             p.kind = "remove".into();
             p.running = true;
@@ -6970,9 +7948,13 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
         if let Ok(mut p) = bulk().progress.lock() {
             p.kind = "remove".into();
             p.running = false;
-            p.done = total_n;
-            p.total = total_n;
-            p.current.clear();
+            p.paused = false;
+            if !cancelled {
+                p.done = total_n;
+                p.total = total_n;
+                p.current.clear();
+            }
+            // cancelled: keep done at processed count; current already "Cancelled"
         }
         emit_progress(app);
     }
@@ -6995,6 +7977,12 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
     // snapshot (that used to toast “done” while GDI was still running).
     let downloading = bulk().running.load(Ordering::SeqCst);
     if !downloading {
+        // Fresh remove job — clear leftover cancel/pause from a prior Cancel click (1.0.206i).
+        {
+            let state = bulk();
+            state.cancel.store(false, Ordering::SeqCst);
+            state.pause.store(false, Ordering::SeqCst);
+        }
         if let Ok(mut p) = bulk().progress.lock() {
             p.running = true;
             p.paused = false;
@@ -7133,7 +8121,8 @@ pub fn activate_families_on_disk(app: AppHandle, families: Vec<String>) -> Resul
         if let Ok(mut p) = state.progress.lock() {
             p.running = true;
             p.paused = false;
-            p.kind = "download".into();
+            // 1.0.205: on-disk Activate All is register, not download (split owners).
+            p.kind = "register".into();
             p.done = 0;
             p.total = families.len() as u32;
             p.failed = 0;
@@ -7176,6 +8165,9 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
         let t = family.trim();
         if t.is_empty() {
             continue;
+        }
+        for dir in family_locations(&app, t) {
+            migrate_download_source_stamp(&dir);
         }
         if family_skip_register_this_process(&app, t).is_some() {
             already.push(t.to_string());
@@ -7221,7 +8213,8 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     }
 
     if let Ok(mut p) = state.progress.lock() {
-        p.kind = "download".into();
+        // 1.0.205: on-disk Activate All is register, not download (split owners).
+        p.kind = "register".into();
         p.running = true;
         p.done = already.len() as u32;
         p.total = (already.len() + ready.len()) as u32;
@@ -7467,9 +8460,9 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                         // Toast only: session-active + maps — suppress failed_names,
                         // do not claim activated / ready_names.
                     } else if suppress_fail_toast_known_incapable(&app, &family) {
-                        // Gidugu-class: intact + known GDI-incapable — disk settled + quiet.
+                        // Hard Gidugu OR soft emoji after Add=0 — disk settled + quiet.
                         // Push settled while holding progress (avoid note_settled_quiet deadlock).
-                        stamp_known_incapable_disk_settled(&app, &family);
+                        stamp_settle_after_add_zero(&app, &family);
                         if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
                             p.settled_names.push(family.clone());
                         }
@@ -7633,12 +8626,12 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
             let honesty = family_disk_honesty(&app, family);
             if retry_gidugu_settle_without_refetch(
                 n,
-                family_known_gdi_session_incapable(family),
+                family_may_settle_add_zero(family),
                 honesty.intact > 0,
                 honesty.undersized,
             ) {
                 note_session_gdi_refused(family);
-                stamp_known_incapable_disk_settled(&app, family);
+                stamp_settle_after_add_zero(&app, family);
                 note_settled_quiet(family);
                 continue;
             }
@@ -7690,7 +8683,7 @@ pub fn retry_google_downloads(app: AppHandle, families: Vec<String>) -> Result<u
     if !bulk().running.load(Ordering::SeqCst) {
         reset_circuits();
     }
-    let added = start_google_downloads(app, need_fetch)?;
+    let added = start_google_downloads(app, need_fetch, None)?;
     Ok(added.saturating_add(reregistered))
 }
 
@@ -7834,6 +8827,17 @@ fn fontsource_offer_activated_only_if_add(added: usize) -> bool {
     added > 0
 }
 
+/// Soft Settled Power Retry: clear this-session Add=0 refuse so register tries Add again (1.0.206f).
+#[tauri::command]
+pub fn clear_session_gdi_refused_family(family: String) -> Result<(), String> {
+    let family = family.trim();
+    if family.is_empty() {
+        return Err("family required".into());
+    }
+    clear_session_gdi_refused(family);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn try_fontsource_gdi_offer(app: AppHandle, family: String) -> Result<FontsourceOfferResult, String> {
     let family = family.trim().to_string();
@@ -7883,7 +8887,12 @@ pub fn repair_incomplete_families(
             }
             if dir_has_intact(dir) && !dir_is_complete(dir) {
                 if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
-                    targets.push(name.to_string());
+                    // Soft full-face without provenance: exclude Repair (try-Add first).
+                    if soft_full_face_exclude_repair(dir, name) {
+                        // skip
+                    } else {
+                        targets.push(name.to_string());
+                    }
                 }
             } else if dir_is_complete(dir) {
                 // Complete Google folders: name-heal + pull missing catalog vars (no bust).
@@ -7911,7 +8920,9 @@ pub fn repair_incomplete_families(
                 }
                 stamp_known_incapable_disk_settled(&app, &family);
             }
-            if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
+            if family_soft_full_face_exclude_repair(&app, &family) {
+                // Soft full-face without provenance: try-Add first, never Repair re-download.
+            } else if family_is_incomplete(&app, &family) || !family_is_ready(&app, &family) {
                 targets.push(family);
             } else {
                 if let Some(ref c) = client {
@@ -7989,6 +9000,211 @@ pub struct DiskFamily {
     pub undersized: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncDocsResult {
+    pub families_seen: u32,
+    pub families_purged: u32,
+    pub statics_deleted: u32,
+    pub locked: u32,
+    pub cancelled: bool,
+}
+
+/// 1.0.206u / 1.0.206aa: manual Refresh / sync Documents — reconcile installed
+/// folders to VF-primary policy (remove redundant statics when intact VF present).
+/// Does **not** surprise-download the full catalog. Progress on `font-download`.
+///
+/// Cancel via `cancel_google_downloads` (shared `bulk().cancel` AtomicBool).
+/// 1.0.206aa amend (Skye HOLD): **async** command + `spawn_blocking` so the main
+/// thread is free to run `cancel_google_downloads` while purge work runs. Sync
+/// `fn` + `rx.recv()` still held the main thread (Tauri v2 runs sync commands there).
+#[tauri::command]
+pub async fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String> {
+    let state = bulk();
+    if state.running.load(Ordering::SeqCst) {
+        return Err(
+            "Activate or download already running — wait or Cancel first".into(),
+        );
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    state.pause.store(false, Ordering::SeqCst);
+    state.running.store(true, Ordering::SeqCst);
+    if let Ok(mut p) = state.progress.lock() {
+        *p = GoogleDlProgress {
+            running: true,
+            done: 0,
+            total: 0,
+            failed: 0,
+            current: "Scanning Documents…".into(),
+            failed_names: Vec::new(),
+            failed_details: Vec::new(),
+            paused: false,
+            ready_names: Vec::new(),
+            skipped: 0,
+            settled_names: Vec::new(),
+            kind: "download".into(),
+        };
+    }
+    emit_progress_force(&app);
+
+    // Clone for join-error cleanup — `app` moves into the blocking closure.
+    let app_join = app.clone();
+    match tauri::async_runtime::spawn_blocking(move || sync_documents_vf_policy_work(app)).await {
+        Ok(result) => result,
+        Err(e) => {
+            // Must reset running/progress or the app sticks on "already running".
+            let _ = finish_docs_vf_sync(&app_join, 0, 0, 0, 0, false);
+            Err(format!("Documents refresh worker join failed: {e}"))
+        }
+    }
+}
+
+/// Per-dir purge loop — shared by production + unit tests.
+/// Cancel checked at the start of each iteration and again immediately before `purge`
+/// (after `prepare`). Returns (cancelled, families_purged, statics_deleted, locked, done).
+fn run_docs_vf_sync_purge_loop<Prep, Purge>(
+    dirs: &[PathBuf],
+    cancel: &AtomicBool,
+    mut prepare: Prep,
+    mut purge: Purge,
+) -> (bool, u32, u32, u32, u32)
+where
+    Prep: FnMut(&Path, &str),
+    Purge: FnMut(&Path, &str) -> (usize, usize),
+{
+    let mut families_purged = 0u32;
+    let mut statics_deleted = 0u32;
+    let mut locked = 0u32;
+    let mut cancelled = false;
+    let mut done = 0u32;
+
+    for dir in dirs {
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
+        let name = dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("font")
+            .to_string();
+        prepare(dir, &name);
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
+        let (del, lock) = purge(dir, &name);
+        if del > 0 || lock > 0 {
+            families_purged = families_purged.saturating_add(1);
+        }
+        statics_deleted = statics_deleted.saturating_add(del as u32);
+        locked = locked.saturating_add(lock as u32);
+        done = done.saturating_add(1);
+    }
+
+    (cancelled, families_purged, statics_deleted, locked, done)
+}
+
+/// Inner Documents VF sync — cancel-aware; uses `run_docs_vf_sync_purge_loop`.
+fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, String> {
+    let state = bulk();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut scan_cancelled = false;
+    for_family_dirs(&app, |dir| {
+        if state.cancel.load(Ordering::SeqCst) {
+            scan_cancelled = true;
+            return;
+        }
+        dirs.push(dir.to_path_buf());
+    });
+    if scan_cancelled || state.cancel.load(Ordering::SeqCst) {
+        return Ok(finish_docs_vf_sync(
+            &app,
+            dirs.len() as u32,
+            0,
+            0,
+            0,
+            true,
+        ));
+    }
+
+    let total = dirs.len() as u32;
+    if let Ok(mut p) = state.progress.lock() {
+        p.total = total;
+        p.current = format!("Syncing Documents (0/{total})");
+    }
+    emit_progress_force(&app);
+
+    let total_cap = total;
+    let (cancelled, families_purged, statics_deleted, locked, _done) =
+        run_docs_vf_sync_purge_loop(
+            &dirs,
+            &state.cancel,
+            |dir, _name| {
+                migrate_download_source_stamp(dir);
+            },
+            |dir, name| {
+                let (del, lock) = purge_redundant_statics_in_dir(dir, name);
+                if let Ok(mut p) = state.progress.lock() {
+                    p.done = p.done.saturating_add(1);
+                    p.total = total_cap.max(p.done);
+                    p.running = true;
+                    p.kind = "download".into();
+                    p.current = if del > 0 {
+                        format!("Synced {name} (−{del} static)")
+                    } else {
+                        format!("Syncing {name}")
+                    };
+                    if lock > 0 {
+                        p.failed = p.failed.saturating_add(lock as u32);
+                    }
+                }
+                emit_progress(&app);
+                (del, lock)
+            },
+        );
+
+    Ok(finish_docs_vf_sync(
+        &app,
+        total,
+        families_purged,
+        statics_deleted,
+        locked,
+        cancelled,
+    ))
+}
+
+fn finish_docs_vf_sync(
+    app: &AppHandle,
+    families_seen: u32,
+    families_purged: u32,
+    statics_deleted: u32,
+    locked: u32,
+    cancelled: bool,
+) -> SyncDocsResult {
+    let state = bulk();
+    state.running.store(false, Ordering::SeqCst);
+    if let Ok(mut p) = state.progress.lock() {
+        p.running = false;
+        p.paused = false;
+        p.current = if cancelled {
+            "Sync cancelled".into()
+        } else {
+            format!(
+                "Sync done — {families_purged} families, {statics_deleted} statics removed"
+            )
+        };
+    }
+    emit_progress_force(app);
+    SyncDocsResult {
+        families_seen,
+        families_purged,
+        statics_deleted,
+        locked,
+        cancelled,
+    }
+}
+
 #[tauri::command]
 pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
     let mut out = Vec::new();
@@ -7999,6 +9215,8 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
             .and_then(|s| s.to_str())
             .unwrap_or("font")
             .to_string();
+        // 1.0.205: migrate legacy folders missing `.download-source`.
+        migrate_download_source_stamp(dir);
         // 1.0.188: purge FS remnants before Scan honesty / undersized flag.
         if family_known_gdi_session_incapable(&name) {
             let _ = purge_known_incapable_fontsource_remnants(dir, &name);
@@ -8032,22 +9250,36 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
         verify_complete_marker(dir);
         // Known GDI-incapable + intact full-size ⇒ disk settled (no Repair-1 churn).
         stamp_known_incapable_dir_settled(dir, &name);
+        // Soft: wipe bare `.complete` lacking `.settled-add-zero` (hard-emoji tip upgrade).
+        wipe_soft_complete_lacking_provenance(dir, &name);
         let has_complete = dir_is_complete(dir);
         let has_variable = dir_has_intact_variable(dir);
         let missing_variable =
             catalog_variable_expects_public_vf(&name) && !has_variable && intact > 0;
         let undersized = dir_has_undersized_google_static(dir, &name);
-        let settled = family_disk_settled_known_gdi_incapable(
-            family_known_gdi_session_incapable(&name),
+        let soft = family_soft_try_add_then_settle(&name);
+        let full_face_ok = soft_emoji_full_face_ok(dir, &name);
+        let has_prov = dir_has_settled_add_zero_provenance(dir);
+        // Hard Gidugu: intact full-size ⇒ Settled (may stamp `.complete` above).
+        // Soft emoji: Settled only with Add=0 provenance (never bare `.complete`).
+        let settled = if family_known_gdi_session_incapable(&name) {
+            family_disk_settled_known_gdi_incapable(true, intact > 0, undersized)
+        } else if soft {
+            soft_scan_settled_from_provenance(has_prov, full_face_ok, intact > 0, undersized)
+        } else {
+            false
+        };
+        // Settled: never Incomplete. Soft full-face without provenance: also not Incomplete
+        // (Activate try-Add first — no huge TTF Repair churn).
+        let incomplete = soft_scan_incomplete(
+            settled,
+            soft,
+            full_face_ok,
             intact > 0,
+            has_complete,
+            missing_variable,
             undersized,
         );
-        // Settled known-incapable: never Incomplete / Repair-1 (calm disk OK).
-        let incomplete = if settled {
-            false
-        } else {
-            (intact > 0 && !has_complete) || missing_variable || undersized
-        };
         out.push(DiskFamily {
             name,
             bytes,
@@ -8106,12 +9338,39 @@ pub fn prune_unknown_folders(app: AppHandle, keep: Vec<String>) -> Result<u32, S
     Ok(n)
 }
 
+/// Resolve Activate fetch intent for resume when the JS store row is missing.
+/// Returns "google" | "fontsource" | "local" | null (skip — never guess google).
 #[tauri::command]
-pub fn start_google_downloads(app: AppHandle, families: Vec<String>) -> Result<usize, String> {
+pub fn resolve_family_fetch_intent(app: AppHandle, family: String) -> Option<String> {
+    resolve_fetch_intent_from_disk(&app, &family).map(fetch_intent_label).map(|s| s.to_string())
+}
+
+#[tauri::command]
+pub fn start_google_downloads(
+    app: AppHandle,
+    families: Vec<String>,
+    // Parallel to `families`: "google" | "fontsource" | "local". Missing → disk/catalog resolve.
+    intents: Option<Vec<String>>,
+) -> Result<usize, String> {
     if families.is_empty() {
         return Ok(0);
     }
-    let fresh = accept_new_families(families);
+    let intent_list = intents.unwrap_or_default();
+    // 1.0.206h: explicit intent OR disk/catalog resolve — never infer_fetch_intent after resolve None.
+    let mut resolved: Vec<String> = Vec::with_capacity(families.len());
+    for (i, family) in families.iter().enumerate() {
+        let explicit = intent_list.get(i).and_then(|s| parse_fetch_intent(s));
+        let intent = match explicit {
+            Some(i) => i,
+            None => match resolve_fetch_intent_from_disk(&app, family) {
+                Some(i) => i,
+                None => continue, // skip ambiguous — never blind-infer Google/Fontsource
+            },
+        };
+        remember_fetch_intent(family, intent);
+        resolved.push(family.clone());
+    }
+    let fresh = accept_new_families(resolved);
     if fresh.is_empty() {
         return Ok(0);
     }
@@ -8176,8 +9435,9 @@ pub fn resume_google_downloads(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 1.0.206aa amend: async so Cancel is never queued behind a sync main-thread command.
 #[tauri::command]
-pub fn cancel_google_downloads() -> Result<(), String> {
+pub async fn cancel_google_downloads() -> Result<(), String> {
     let state = bulk();
     state.cancel.store(true, Ordering::SeqCst);
     state.pause.store(false, Ordering::SeqCst);
@@ -8192,6 +9452,49 @@ pub fn cancel_google_downloads() -> Result<(), String> {
         p.current = "Stopping…".into();
     }
     Ok(())
+}
+
+/// 1.0.204: Deactivate while download running — drop only those families from the queue.
+#[tauri::command]
+pub fn drop_google_download_families(families: Vec<String>) -> Result<u32, String> {
+    let state = bulk();
+    let keys: std::collections::HashSet<String> = families
+        .iter()
+        .map(|f| f.trim().to_lowercase())
+        .filter(|k| !k.is_empty())
+        .collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let mut dropped = 0u32;
+    if let Ok(mut pending) = state.pending.lock() {
+        let before = pending.len();
+        pending.retain(|f| !keys.contains(&f.trim().to_lowercase()));
+        dropped = dropped.saturating_add((before - pending.len()) as u32);
+    }
+    if let Ok(mut queued) = state.queued.lock() {
+        for key in &keys {
+            if queued.remove(key) {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+    }
+    if let Ok(mut intents) = state.intents.lock() {
+        for key in &keys {
+            intents.remove(key);
+        }
+    }
+    if let Ok(mut denied) = state.denied.lock() {
+        for key in &keys {
+            denied.insert(key.clone());
+        }
+    }
+    if let Ok(mut p) = state.progress.lock() {
+        if p.total > dropped {
+            p.total = p.total.saturating_sub(dropped);
+        }
+    }
+    Ok(dropped)
 }
 
 #[tauri::command]
@@ -8398,7 +9701,9 @@ mod complete_marker_tests {
     #[test]
     fn fs_only_google_vf_folder_maps_42dot_and_skips_material() {
         assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans".into()));
-        assert_eq!(fs_only_google_vf_folder("Finlandica"), Some("finlandica".into()));
+        assert_eq!(fs_only_google_vf_folder("Finlandica Text"), Some("finlandicatext".into()));
+        assert_eq!(fs_only_google_vf_folder("Finlandica Headline"), Some("finlandicaheadline".into()));
+        assert!(fs_only_google_vf_folder("Finlandica").is_none());
         assert_eq!(
             fs_only_google_vf_folder("Big Shoulders Display"),
             Some("bigshouldersdisplay".into())
@@ -8413,7 +9718,9 @@ mod complete_marker_tests {
         assert!(family_ensures_google_vf("42dot Sans"));
         assert!(!google_catalog_is_variable("42dot Sans"));
         assert!(fs_only_google_vf_folder("42dot Sans").is_some());
-        assert!(family_expects_dual_variable("Finlandica"));
+        assert!(family_expects_dual_variable("Finlandica Text"));
+        assert!(family_expects_dual_variable("Finlandica Headline"));
+        assert!(!family_expects_dual_variable("Finlandica"));
         assert!(!family_expects_dual_variable("42dot Sans"));
     }
 
@@ -8951,8 +10258,8 @@ mod install_path_tests {
         ]));
     }
 
-    #[test]
-    fn merge_variable_into_planned_keeps_statics_and_lists_vars_first() {
+        #[test]
+    fn merge_variable_into_planned_vars_only_when_vf_present() {
         let statics = vec![
             "nunito-200-normal.ttf".into(),
             "nunito-400-normal.ttf".into(),
@@ -8961,28 +10268,179 @@ mod install_path_tests {
             "nunito-variable-wght.ttf".into(),
             "nunito-variable-wght-italic.ttf".into(),
         ];
+        // 1.0.206u VF-primary: vars present → planned vars only (no static backup).
         let keys = merge_variable_into_planned_keys(&statics, &vars);
         assert_eq!(
             keys,
             vec![
                 "nunito-variable-wght.ttf",
                 "nunito-variable-wght-italic.ttf",
-                "nunito-200-normal.ttf",
-                "nunito-400-normal.ttf",
             ]
         );
-        // Dedup: existing var already in statics list should not duplicate.
+        assert!(!keys.iter().any(|k| k.contains("-normal")));
+        // No vars → keep statics.
+        let keys_static = merge_variable_into_planned_keys(&statics, &[]);
+        assert_eq!(keys_static, statics);
+        // Dedup vars.
         let mixed = vec![
             "nunito-variable-wght.ttf".into(),
             "nunito-400-normal.ttf".into(),
         ];
         let keys2 = merge_variable_into_planned_keys(&mixed, &vars);
+        assert_eq!(keys2.len(), 2);
         assert_eq!(keys2.iter().filter(|k| k.contains("-variable-")).count(), 2);
-        assert!(keys2.iter().any(|k| k == "nunito-400-normal.ttf"));
         assert!(
             !keys2.iter().any(|k| k.contains("-variable-") && keys2.iter().filter(|x| *x == k).count() > 1),
             "no duplicate var keys"
         );
+    }
+
+    #[test]
+    fn dir_vf_primary_ready_respects_dual_vf_and_denylist() {
+        let parent = temp_family_dir("vf-primary-gate");
+        let dir = parent.join("Inter");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        assert!(!dir_vf_primary_ready(&dir, "Inter"));
+        fs::write(dir.join("inter-variable-wght.ttf"), &fake).unwrap();
+        assert!(dir_vf_primary_ready(&dir, "Inter"));
+        // Dual-VF: roman alone is not enough.
+        let hei = parent.join("Chiron Hei HK");
+        fs::create_dir_all(&hei).unwrap();
+        fs::write(hei.join("chiron-hei-hk-variable-wght.ttf"), &fake).unwrap();
+        assert!(!dir_vf_primary_ready(&hei, "Chiron Hei HK"));
+        fs::write(hei.join("chiron-hei-hk-variable-wght-italic.ttf"), &fake).unwrap();
+        assert!(dir_vf_primary_ready(&hei, "Chiron Hei HK"));
+        // No-public-VF denylist never VF-primary even with a fake var file.
+        let gs = parent.join("Google Sans");
+        fs::create_dir_all(&gs).unwrap();
+        fs::write(gs.join("google-sans-variable-wght.ttf"), &fake).unwrap();
+        assert!(family_has_no_public_vf("Google Sans"));
+        assert!(!dir_vf_primary_ready(&gs, "Google Sans"));
+        // Poppins catalog static-only — no intact VF → not VF-primary.
+        let pop = parent.join("Poppins");
+        fs::create_dir_all(&pop).unwrap();
+        fs::write(pop.join("poppins-400-normal.ttf"), &fake).unwrap();
+        assert!(!dir_vf_primary_ready(&pop, "Poppins"));
+        // Finlandica Text (catalog dual-VF) — roman alone not enough.
+        let ft = parent.join("Finlandica Text");
+        fs::create_dir_all(&ft).unwrap();
+        fs::write(ft.join("finlandica-text-variable-wght.ttf"), &fake).unwrap();
+        assert!(family_expects_dual_variable("Finlandica Text"));
+        assert!(!dir_vf_primary_ready(&ft, "Finlandica Text"));
+        fs::write(ft.join("finlandica-text-variable-wght-italic.ttf"), &fake).unwrap();
+        assert!(dir_vf_primary_ready(&ft, "Finlandica Text"));
+        assert!(!family_expects_dual_variable("Finlandica"));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn purge_after_successful_vf_add_ordering_keep_statics_until_commit() {
+        // Skye P1: merge keep_statics + no purge on adopt; vars-only merge after.
+        let statics = vec!["inter-400-normal.ttf".into()];
+        let vars = vec!["inter-variable-wght.ttf".into()];
+        let kept = merge_variable_into_planned_keys_keep_statics(&statics, &vars);
+        assert!(kept.iter().any(|k| k.contains("-variable-")));
+        assert!(kept.iter().any(|k| k == "inter-400-normal.ttf"));
+        let only = merge_variable_into_planned_keys(&statics, &vars);
+        assert_eq!(only, vars);
+        assert!(!only.iter().any(|k| k.contains("-normal")));
+    }
+
+    #[test]
+    fn purge_redundant_statics_keeps_vf_deletes_statics() {
+        let parent = temp_family_dir("purge-statics-vf");
+        let dir = parent.join("Inter");
+        fs::create_dir_all(&dir).unwrap();
+        let mut fake = b"\x00\x01\x00\x00".to_vec();
+        fake.resize(256, 0);
+        let varf = "inter-variable-wght.ttf";
+        let inst = "inter-400-normal.ttf";
+        fs::write(dir.join(varf), &fake).unwrap();
+        fs::write(dir.join(inst), &fake).unwrap();
+        write_google_planned(&dir, &[varf.into(), inst.into()]);
+        mark_family_complete(&dir, 2);
+        assert!(dir_vf_primary_ready(&dir, "Inter"));
+        let (del, lock) = purge_redundant_statics_in_dir(&dir, "Inter");
+        assert_eq!(lock, 0);
+        assert!(del >= 1, "should delete static: del={del}");
+        assert!(dir.join(varf).is_file(), "VF must remain");
+        assert!(!dir.join(inst).is_file(), "static must be gone");
+        let keys = read_google_planned_keys(&dir).expect("planned");
+        assert_eq!(keys, vec![varf.to_string()]);
+        assert!(dir_is_complete(&dir));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn docs_vf_sync_loop_stops_before_further_purges_when_cancelled() {
+        // 1.0.206aa amend: exercise real `run_docs_vf_sync_purge_loop` (not a sim copy).
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let dirs: Vec<PathBuf> = (0..10).map(|i| PathBuf::from(format!("dir-{i}"))).collect();
+        let cancel = AtomicBool::new(false);
+        let purge_calls = AtomicUsize::new(0);
+
+        let (cancelled, _fam, statics, _lock, done) = run_docs_vf_sync_purge_loop(
+            &dirs,
+            &cancel,
+            |_dir, _name| {},
+            |_dir, _name| {
+                let n = purge_calls.fetch_add(1, Ordering::SeqCst);
+                if n == 2 {
+                    // After third purge starts counting from 0: cancel before next
+                    cancel.store(true, Ordering::SeqCst);
+                }
+                (1usize, 0usize)
+            },
+        );
+        assert!(cancelled, "cancel after 3rd purge must stop further dirs");
+        assert_eq!(purge_calls.load(Ordering::SeqCst), 3, "dirs 0..=2 purged only");
+        assert_eq!(done, 3);
+        assert_eq!(statics, 3);
+
+        let cancel2 = AtomicBool::new(true);
+        let purge2 = AtomicUsize::new(0);
+        let dirs2: Vec<PathBuf> = (0..5).map(|i| PathBuf::from(format!("x-{i}"))).collect();
+        let (cancelled2, _, statics2, _, done2) = run_docs_vf_sync_purge_loop(
+            &dirs2,
+            &cancel2,
+            |_, _| {},
+            |_, _| {
+                purge2.fetch_add(1, Ordering::SeqCst);
+                (1, 0)
+            },
+        );
+        assert!(cancelled2);
+        assert_eq!(purge2.load(Ordering::SeqCst), 0, "pre-set cancel skips all purges");
+        assert_eq!(statics2, 0);
+        assert_eq!(done2, 0);
+
+        // Cancel set in prepare (before purge) at index 3 — purges 0..=2 only.
+        let cancel3 = AtomicBool::new(false);
+        let purge3 = AtomicUsize::new(0);
+        let idx = AtomicUsize::new(0);
+        let dirs3: Vec<PathBuf> = (0..8).map(|i| PathBuf::from(format!("p-{i}"))).collect();
+        let (cancelled3, _, statics3, _, done3) = run_docs_vf_sync_purge_loop(
+            &dirs3,
+            &cancel3,
+            |_, _| {
+                let i = idx.fetch_add(1, Ordering::SeqCst);
+                if i == 3 {
+                    cancel3.store(true, Ordering::SeqCst);
+                }
+            },
+            |_, _| {
+                purge3.fetch_add(1, Ordering::SeqCst);
+                (1, 0)
+            },
+        );
+        assert!(cancelled3);
+        assert_eq!(purge3.load(Ordering::SeqCst), 3);
+        assert_eq!(statics3, 3);
+        assert_eq!(done3, 3);
     }
 
     #[test]
@@ -9006,11 +10464,15 @@ mod install_path_tests {
             keys.iter().any(|k| k == var_roman),
             "planned must include variable after adopt: {keys:?}"
         );
+        // Skye P1: adopt must NOT purge — statics stay until VarsOnly Add>0.
         assert!(
             keys.iter().any(|k| k == inst),
-            "planned must keep static instance: {keys:?}"
+            "pre-Add planned keeps static for fallback: {keys:?}"
         );
-        assert_eq!(keys[0], var_roman, "var listed first");
+        assert!(
+            dir.join(inst).is_file(),
+            "static must remain on disk until successful VF Add"
+        );
         assert!(dir_is_complete(&dir), "complete when all planned intact");
         let _ = fs::remove_dir_all(&parent);
     }
@@ -9339,9 +10801,9 @@ mod install_path_tests {
     }
 
     #[test]
-    fn complete_statics_only_keeps_stamp_vars_adopted_without_touching_statics() {
-        // Eric: .complete must not block VF backfill; statics untouched.
-        // Clearing .complete would Repair/bust and risk wiping statics — don't.
+    fn complete_statics_kept_until_post_add_purge() {
+        // Eric: .complete must not block VF backfill while VF missing.
+        // 1.0.206u Skye: adopt keeps statics; purge only after VarsOnly Add>0.
         let parent = temp_family_dir("statics-only-complete");
         let dir = parent.join("Nunito");
         fs::create_dir_all(&dir).unwrap();
@@ -9369,15 +10831,25 @@ mod install_path_tests {
         adopt_variable_files_into_plan(&dir, &[varf.into()]);
         let keys = read_google_planned_keys(&dir).expect("planned");
         assert!(keys.iter().any(|k| k == varf), "planned gains var: {keys:?}");
-        assert!(keys.iter().any(|k| k == inst), "planned keeps static: {keys:?}");
+        // Skye P1: adopt keeps statics until VarsOnly Add>0.
+        assert!(keys.iter().any(|k| k == inst), "planned keeps static pre-Add: {keys:?}");
         assert_eq!(
             fs::read(dir.join(inst)).unwrap(),
             static_bytes_before,
-            "static face bytes must be untouched after adopt"
+            "static face bytes untouched by adopt"
         );
         assert!(dir.is_dir());
         assert!(dir.join(inst).is_file());
+        assert!(dir.join(varf).is_file(), "VF remains");
         assert!(dir_is_complete(&dir), "stamp honest once vars intact");
+        // Simulate post-Add commit: vars-only plan + purge.
+        write_google_planned(&dir, &[varf.into()]);
+        mark_family_complete(&dir, 1);
+        let (del, lock) = purge_redundant_statics_in_dir(&dir, "Nunito");
+        assert_eq!(lock, 0);
+        assert!(del >= 1, "purge-after-successful-VF-Add deletes static");
+        assert!(!dir.join(inst).is_file(), "static gone after post-Add purge");
+        assert!(dir.join(varf).is_file(), "VF remains after purge");
         let _ = fs::remove_dir_all(&parent);
     }
 
@@ -9481,6 +10953,113 @@ mod install_path_tests {
             "nunito"
         ));
     }
+
+    #[test]
+    fn migrate_download_source_stamp_google_planned() {
+        let dir = temp_family_dir("mig-google");
+        write_google_planned(
+            &dir,
+            &["nunito-400-normal.ttf".into(), "nunito-700-normal.ttf".into()],
+        );
+        assert!(read_download_source(&dir).is_none());
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Google));
+        // Idempotent — do not overwrite an existing stamp.
+        write_download_source(&dir, FetchIntent::Fontsource);
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_fontsource_planned() {
+        let dir = temp_family_dir("mig-fs");
+        write_fontsource_planned(&dir, &["clear-sans-400-normal.ttf".into()]);
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_latin_dominates() {
+        // temp_family_dir prefixes the label — nest a real family leaf so
+        // dir_slug_hint == "rubik" and `-latin-` subset detection works.
+        let root = temp_family_dir("mig-latin-root");
+        let dir = root.join("Rubik");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("rubik-latin-400-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-latin-700-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-latin-900-normal.ttf"), b"x").unwrap();
+        // One non-latin google-shaped name — latin still dominates.
+        fs::write(dir.join("rubik-400-normal.ttf"), b"x").unwrap();
+        migrate_download_source_stamp(&dir);
+        assert_eq!(read_download_source(&dir), Some(FetchIntent::Fontsource));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn migrate_download_source_stamp_leaves_ambiguous_unset() {
+        let dir = temp_family_dir("mig-amb");
+        fs::write(dir.join("rubik-400-normal.ttf"), b"x").unwrap();
+        fs::write(dir.join("rubik-700-normal.ttf"), b"x").unwrap();
+        migrate_download_source_stamp(&dir);
+        assert!(
+            read_download_source(&dir).is_none(),
+            "ambiguous folder must stay unset — never guess google"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn face_allowed_for_register_google_stamp_skips_fontsource() {
+        let dir = temp_family_dir("src-stamp-google");
+        fs::write(dir.join(".download-source"), b"google").unwrap();
+        write_google_planned(
+            &dir,
+            &["inter-400-normal.ttf".into(), "inter-700-normal.ttf".into()],
+        );
+        write_fontsource_planned(&dir, &["inter-latin-400-normal.ttf".into()]);
+        let g = dir.join("inter-400-normal.ttf");
+        let fs = dir.join("inter-latin-400-normal.ttf");
+        fs::write(&g, b"x").unwrap();
+        fs::write(&fs, b"x").unwrap();
+        assert!(face_allowed_for_register(&dir, &g, "Inter"));
+        assert!(!face_allowed_for_register(&dir, &fs, "Inter"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn face_allowed_for_register_fontsource_stamp_skips_google_planned() {
+        let dir = temp_family_dir("src-stamp-fs");
+        fs::write(dir.join(".download-source"), b"fontsource").unwrap();
+        write_google_planned(&dir, &["clear-sans-400-normal.ttf".into()]);
+        write_fontsource_planned(
+            &dir,
+            &["clear-sans-400-normal.ttf".into(), "clear-sans-700-normal.ttf".into()],
+        );
+        let keep = dir.join("clear-sans-400-normal.ttf");
+        let other = dir.join("clear-sans-900-normal.ttf");
+        fs::write(&keep, b"x").unwrap();
+        fs::write(&other, b"x").unwrap();
+        assert!(face_allowed_for_register(&dir, &keep, "Clear Sans"));
+        assert!(!face_allowed_for_register(&dir, &other, "Clear Sans"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_fetch_intent_labels() {
+        assert_eq!(parse_fetch_intent("google"), Some(FetchIntent::Google));
+        assert_eq!(parse_fetch_intent("fontsource"), Some(FetchIntent::Fontsource));
+        assert_eq!(parse_fetch_intent("other"), Some(FetchIntent::Fontsource));
+        assert_eq!(parse_fetch_intent("local"), Some(FetchIntent::Local));
+        assert_eq!(parse_fetch_intent("nope"), None);
+    }
+
+    #[test]
+    fn infer_fetch_intent_official_vs_exclusive() {
+        assert_eq!(infer_fetch_intent("Nunito"), FetchIntent::Google);
+        assert_eq!(infer_fetch_intent("Clear Sans"), FetchIntent::Fontsource);
+    }
+
 
     #[test]
     fn filename_has_latin_subset_slug_aware() {
@@ -9784,6 +11363,105 @@ mod install_path_tests {
             .any(|u| u.contains("@fontsource/gidugu") || u.contains("fontsource/fonts/gidugu")));
         let dest = fontsource_face_filename(&fontsource_gdi_offer_slug("Gidugu"), "latin", 400, "normal");
         assert_eq!(dest, "gidugu-400-normal.ttf");
+    }
+
+    #[test]
+    fn soft_settled_requires_provenance_not_bare_complete() {
+        // P1 206e: bare .complete (hard-emoji tip upgrade) ≠ Settled; provenance after Add=0 does.
+        assert!(!soft_scan_settled_from_provenance(false, true, true, false));
+        assert!(soft_scan_settled_from_provenance(true, true, true, false));
+        assert!(!soft_scan_settled_from_provenance(true, false, true, false));
+        assert!(!soft_scan_settled_from_provenance(true, true, true, true));
+        // Soft full-face without provenance: not Incomplete / not Repair.
+        assert!(!soft_scan_incomplete(false, true, true, true, false, false, false));
+        // Soft Settled with provenance: not Incomplete.
+        assert!(!soft_scan_incomplete(true, true, true, true, true, false, false));
+        // Soft undersized: Incomplete.
+        assert!(soft_scan_incomplete(false, true, false, true, false, false, true));
+        // Non-soft missing .complete: Incomplete.
+        assert!(soft_scan_incomplete(false, false, true, true, false, false, false));
+
+        let parent = temp_family_dir("soft-prov-206e");
+        let dir = parent.join("Noto Color Emoji");
+        fs::create_dir_all(&dir).unwrap();
+        let mut full = b"\x00\x01\x00\x00".to_vec();
+        full.resize(300 * 1024, 0);
+        fs::write(dir.join("NotoColorEmoji.ttf"), &full).unwrap();
+        // Bare .complete without provenance — wipe + exclude repair.
+        mark_family_complete(&dir, 1);
+        assert!(dir_is_complete(&dir));
+        assert!(!dir_has_settled_add_zero_provenance(&dir));
+        wipe_soft_complete_lacking_provenance(&dir, "Noto Color Emoji");
+        assert!(!dir_is_complete(&dir), "upgrade wipe bare soft .complete");
+        assert!(soft_full_face_exclude_repair(&dir, "Noto Color Emoji"));
+        // After real Add=0 stamp: provenance + Settled.
+        stamp_soft_settle_dir_after_add_zero(&dir, "Noto Color Emoji");
+        assert!(dir_is_complete(&dir));
+        assert!(dir_has_settled_add_zero_provenance(&dir));
+        assert!(!soft_full_face_exclude_repair(&dir, "Noto Color Emoji"));
+        assert!(soft_scan_settled_from_provenance(true, true, true, false));
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn soft_power_retry_clears_session_gdi_refuse_so_add_can_run() {
+        // P1 206f Skye HOLD: after soft Add=0 refuse, Power Retry must clear refuse
+        // so family_early_skip_soft_session_refused no longer returns AddReturnedZero without Add.
+        let fam = "Noto Color Emoji";
+        clear_session_gdi_refused(fam);
+        assert!(!family_session_gdi_refused(fam));
+        assert!(family_soft_try_add_then_settle(fam));
+
+        note_session_gdi_refused(fam);
+        assert!(family_session_gdi_refused(fam));
+        assert!(soft_early_skip_from_session_refuse(true, true, true));
+        assert!(!soft_retry_allows_add_after_clear(true, false));
+
+        // Soft Retry path (UI / clear_session_gdi_refused_family).
+        clear_session_gdi_refused(fam);
+        assert!(!family_session_gdi_refused(fam), "Retry must clear session refuse");
+        assert!(soft_retry_allows_add_after_clear(true, true));
+        assert!(
+            !soft_early_skip_from_session_refuse(true, family_session_gdi_refused(fam), true),
+            "after clear, soft early-skip must not block Add"
+        );
+
+        // Refuse can be re-noted after another Add=0 (Activate All skip still works).
+        note_session_gdi_refused(fam);
+        assert!(family_session_gdi_refused(fam));
+        clear_session_gdi_refused(fam);
+
+        // Non-settle family: note is a no-op.
+        note_session_gdi_refused("Nunito");
+        assert!(!family_session_gdi_refused("Nunito"));
+    }
+
+    #[test]
+    fn emoji_allowlist_and_upstream_urls_for_settled_honesty() {
+        // 1.0.206c/d: emoji soft try-Add-first — NOT hard allowlist (Gidugu-only).
+        // Soft table SOFT_GDI_TRY_ADD_FIRST is the single Rust source (TS mirror).
+        assert!(!SOFT_GDI_TRY_ADD_FIRST.is_empty());
+        assert_eq!(SOFT_GDI_TRY_ADD_FIRST.len(), 2);
+        assert!(SOFT_GDI_TRY_ADD_FIRST.iter().any(|e| e.family == "Noto Color Emoji"));
+        assert!(SOFT_GDI_TRY_ADD_FIRST.iter().any(|e| e.family == "Noto Emoji"));
+        assert!(!family_known_gdi_session_incapable("Noto Color Emoji"));
+        assert!(!family_known_gdi_session_incapable("Noto Emoji"));
+        assert!(family_soft_try_add_then_settle("Noto Color Emoji"));
+        assert!(family_may_settle_add_zero("Noto Color Emoji"));
+        assert!(family_may_settle_add_zero("Noto Emoji"));
+        assert!(family_known_gdi_session_incapable("Gidugu"));
+        assert!(is_emoji_session_family("Noto Color Emoji"));
+        assert!(is_emoji_session_family("noto emoji"));
+        assert!(!is_emoji_session_family("Nunito"));
+        let urls = ttf_urls("noto-color-emoji", "", 400, false, "emoji", 0);
+        assert!(
+            urls.iter().any(|u| u.contains("NotoColorEmoji.ttf")),
+            "noto-color-emoji must use full upstream color TTF"
+        );
+        assert!(
+            urls.iter().all(|u| !u.contains("fontsource-variable")),
+            "never WOFF2 variable pack for emoji install"
+        );
     }
 
     #[test]
@@ -10134,6 +11812,25 @@ filename: "Nunito[wght].ttf"
         ];
         let got = pick_subsets(&all);
         assert_eq!(got, vec!["chinese-hongkong".to_string()]);
+    }
+
+    #[test]
+    fn pick_subsets_prefers_emoji_over_latin() {
+        // Completeness P0: emoji script subset, never latin-only as enough.
+        let all = vec!["latin".into(), "emoji".into()];
+        let got = pick_subsets(&all);
+        assert_eq!(got, vec!["emoji".to_string()]);
+    }
+
+    #[test]
+    fn noto_color_emoji_skips_css_latin_plan() {
+        assert!(is_noto_color_emoji_family("Noto Color Emoji", "noto-color-emoji"));
+        assert!(is_noto_color_emoji_family("noto color emoji", "other-slug"));
+        assert!(!is_noto_color_emoji_family("Noto Emoji", "noto-emoji"));
+        // Upstream URLs only — never Fontsource latin stub list for color emoji.
+        let urls = ttf_urls("noto-color-emoji", "", 400, false, "emoji", 0);
+        assert!(urls.iter().all(|u| u.contains("NotoColorEmoji.ttf")));
+        assert!(urls.iter().all(|u| !u.contains("-latin-")));
     }
 
     #[test]
