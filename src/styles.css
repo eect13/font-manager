@@ -45,6 +45,193 @@
   --width-inspector: 22rem;
 }
 
+/* UI density (1.0.206p/q/r) — Comfortable default; Compact tightens primary + secondary
+   chrome (library/sidebar/toolbar/inspector + download bar + shell header +
+   dialogs/sheets + empty panes + Desktop Settings). */
+:root,
+:root[data-ui-density="comfortable"] {
+  --fm-lib-gap: 0.5rem;
+  --fm-lib-pad: 0.625rem;
+  --fm-lib-pad-md: 0.75rem;
+  --fm-card-h-grid: 14.5rem;
+  --fm-card-h-list: 9.5rem;
+  --fm-card-meta-h: 2.75rem;
+  --fm-card-spec-py-grid: 0.75rem;
+  --fm-card-spec-py-list: 0.5rem;
+  --fm-sidebar-row-h: 2rem;
+  --fm-sidebar-nav-py: 0.75rem;
+  --fm-toolbar-py: 0.375rem;
+  --fm-toolbar-px: 0.75rem;
+  --fm-toolbar-px-md: 1rem;
+  --fm-toolbar-gap: 0.375rem;
+  --fm-inspector-pad: 1.25rem;
+  --fm-inspector-pad-sm: 0.75rem;
+  --fm-inspector-gap: 1.5rem;
+  --fm-download-py: 0.375rem;
+  --fm-download-px: 0.75rem;
+  --fm-download-gap: 0.375rem;
+  --fm-shell-header-py: 0.375rem;
+  --fm-shell-header-px: 0.5rem;
+  --fm-shell-header-gap: 0.5rem;
+  --fm-dialog-pad: 1.5rem;
+  --fm-dialog-gap: 1rem;
+  --fm-dialog-header-mb: 1rem;
+  --fm-sheet-pad: 1.25rem;
+  --fm-empty-py: 5rem;
+  --fm-empty-px: 1.5rem;
+  --fm-settings-pad: 0.75rem;
+  --fm-settings-gap: 0.5rem;
+  --fm-settings-row-py: 0.625rem;
+}
+
+:root[data-ui-density="compact"] {
+  --fm-lib-gap: 0.25rem;
+  --fm-lib-pad: 0.375rem;
+  --fm-lib-pad-md: 0.5rem;
+  --fm-card-h-grid: 11rem;
+  --fm-card-h-list: 7.5rem;
+  --fm-card-meta-h: 2rem;
+  --fm-card-spec-py-grid: 0.375rem;
+  --fm-card-spec-py-list: 0.25rem;
+  --fm-sidebar-row-h: 1.625rem;
+  --fm-sidebar-nav-py: 0.5rem;
+  --fm-toolbar-py: 0.25rem;
+  --fm-toolbar-px: 0.5rem;
+  --fm-toolbar-px-md: 0.75rem;
+  --fm-toolbar-gap: 0.25rem;
+  --fm-inspector-pad: 0.75rem;
+  --fm-inspector-pad-sm: 0.5rem;
+  --fm-inspector-gap: 0.875rem;
+  --fm-download-py: 0.25rem;
+  --fm-download-px: 0.5rem;
+  --fm-download-gap: 0.25rem;
+  --fm-shell-header-py: 0.25rem;
+  --fm-shell-header-px: 0.375rem;
+  --fm-shell-header-gap: 0.375rem;
+  --fm-dialog-pad: 1rem;
+  --fm-dialog-gap: 0.625rem;
+  --fm-dialog-header-mb: 0.625rem;
+  --fm-sheet-pad: 0.75rem;
+  --fm-empty-py: 2.5rem;
+  --fm-empty-px: 1rem;
+  --fm-settings-pad: 0.5rem;
+  --fm-settings-gap: 0.375rem;
+  --fm-settings-row-py: 0.375rem;
+}
+
+.fm-library-surface {
+  gap: var(--fm-lib-gap);
+  padding: var(--fm-lib-pad);
+}
+@media (min-width: 768px) {
+  .fm-library-surface {
+    padding: var(--fm-lib-pad-md);
+  }
+}
+
+.fm-font-card.fm-layout-grid {
+  height: var(--fm-card-h-grid);
+}
+.fm-font-card.fm-layout-list {
+  height: var(--fm-card-h-list);
+}
+.fm-card-meta {
+  height: var(--fm-card-meta-h);
+}
+.fm-spec-pane.fm-spec-grid {
+  padding-top: var(--fm-card-spec-py-grid);
+  padding-bottom: var(--fm-card-spec-py-grid);
+}
+.fm-spec-pane.fm-spec-list {
+  padding-top: var(--fm-card-spec-py-list);
+  padding-bottom: var(--fm-card-spec-py-list);
+}
+
+.fm-sidebar-row {
+  height: var(--fm-sidebar-row-h);
+}
+.fm-sidebar-nav {
+  padding-top: var(--fm-sidebar-nav-py);
+  padding-bottom: var(--fm-sidebar-nav-py);
+}
+
+.fm-preview-toolbar {
+  gap: var(--fm-toolbar-gap);
+  padding: var(--fm-toolbar-py) var(--fm-toolbar-px);
+}
+@media (min-width: 768px) {
+  .fm-preview-toolbar {
+    padding-left: var(--fm-toolbar-px-md);
+    padding-right: var(--fm-toolbar-px-md);
+  }
+}
+
+.fm-inspector-head {
+  padding: var(--fm-inspector-pad);
+  padding-bottom: var(--fm-inspector-pad-sm);
+}
+.fm-inspector-body {
+  padding-left: var(--fm-inspector-pad);
+  padding-right: var(--fm-inspector-pad);
+}
+.fm-inspector-body > :not([hidden]) ~ :not([hidden]) {
+  margin-top: var(--fm-inspector-gap);
+}
+
+.fm-download-bar {
+  gap: var(--fm-download-gap);
+  padding: var(--fm-download-py) var(--fm-download-px);
+}
+
+.fm-shell-header {
+  gap: var(--fm-shell-header-gap);
+  padding-top: var(--fm-shell-header-py);
+  padding-bottom: var(--fm-shell-header-py);
+  padding-left: var(--fm-shell-header-px);
+  padding-right: var(--fm-shell-header-px);
+}
+@media (min-width: 768px) {
+  .fm-shell-header {
+    padding-left: 0;
+    padding-right: 0.75rem;
+  }
+}
+
+.fm-dialog-content {
+  padding: var(--fm-dialog-pad);
+}
+.fm-dialog-header {
+  margin-bottom: var(--fm-dialog-header-mb);
+}
+.fm-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fm-dialog-gap);
+}
+.fm-dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--fm-dialog-gap);
+}
+.fm-sheet-header {
+  padding: var(--fm-sheet-pad);
+  padding-right: calc(var(--fm-sheet-pad) + 1.75rem);
+}
+.fm-empty-pane {
+  padding: var(--fm-empty-py) var(--fm-empty-px);
+}
+.fm-settings-stack {
+  display: grid;
+  gap: var(--fm-settings-gap);
+}
+.fm-settings-row {
+  padding: var(--fm-settings-row-py) var(--fm-settings-pad);
+}
+.fm-settings-opts {
+  gap: var(--fm-settings-gap);
+}
+
 html {
   color-scheme: dark;
 }

@@ -33,8 +33,10 @@ test("1.0.188: remnant purge + early-skip hook + offer no-download", () => {
   assert.match(offer[0], /Fontsource download skipped/);
 });
 
-test("1.0.187 bar clear still intact", () => {
-  assert.match(osActivate, /current:\s*p\.current\s*\?\?\s*""/);
+test("1.0.187/204 bar clear still intact (idle ternary)", () => {
+  // 1.0.206g hygiene: lock idle ternary `current: active ? (p.current ?? "") : ""`
+  // (not stale 1.0.187-only `p.current ?? ""`).
+  assert.match(osActivate, /current:\s*active \? \(p\.current\s*\?\?\s*""\) : ""/);
   assert.doesNotMatch(osActivate, /current:\s*p\.current\s*\|\|\s*job\.current/);
   assert.match(downloadBar, /settledIdle\s*\?\s*"Done"/);
   assert.match(downloadBar, /SETTLED_IDLE_AUTO_HIDE_MS\s*=\s*16_000/);

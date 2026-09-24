@@ -39,7 +39,7 @@ export function CollectionDialog({
             Group typefaces without moving files. Nested collections stay under Collections. Disk folders belong in Folders.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="space-y-4">
+        <form onSubmit={submit} className="fm-dialog-body">
           <div className="space-y-2">
             <Label htmlFor="collection-name">Name</Label>
             <Input
@@ -50,7 +50,7 @@ export function CollectionDialog({
               autoFocus
             />
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="fm-dialog-footer">
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>

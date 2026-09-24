@@ -74,6 +74,18 @@ if (html.includes("/src/main.tsx")) {
   fail("index.html still points at /src/main.tsx — the hashed bundle was not substituted.");
 }
 
+
+// 1.0.206t: stamp git SHA next to the UI bundle so tip-install / smoke can verify provenance
+// without packing. Sidecar also written beside release exe by scripts/write-tip-sha.mjs.
+const tipSha = spawnSync(process.execPath, [join(ROOT, "scripts", "write-tip-sha.mjs"), STATIC], {
+  cwd: ROOT,
+  stdio: "inherit",
+  env: process.env,
+});
+if ((tipSha.status ?? 1) !== 0) {
+  fail("Could not write TIP_SHA.txt provenance stamp.");
+}
+
 banner(
   "Phase 1 done — phase 2/3: compile Rust",
   "  cargo --release is next (first time often 5–15 minutes; LTO + size opt).\n  Do not close this window. Phase 3 (MSI/NSIS) starts after cargo.\n",
