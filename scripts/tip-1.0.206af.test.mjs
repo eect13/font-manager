@@ -20,6 +20,10 @@ const ownership = readFileSync(
   join(root, "src/lib/fonts/docs-vf-sync-ownership.mjs"),
   "utf8",
 );
+const {
+  cancelToastKind,
+  isDocsRefreshJobCurrent,
+} = await import(join(root, "src/lib/fonts/docs-vf-sync-ownership.mjs"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -83,6 +87,37 @@ test("P0: UIA Cancel Name/id — no title/valuenow steal; labelledby", () => {
   assert.match(osActivate, /removeAttribute\("title"\)/);
   // shell chrome must not be a named region
   assert.doesNotMatch(appShell, /aria-label=\{hideLibraryA11y/);
+});
+
+test("P0 HOLD: Activate Stopping… without sticky ≠ documents-refresh", () => {
+  assert.equal(isDocsRefreshJobCurrent("Stopping…"), false);
+  assert.equal(isDocsRefreshJobCurrent("Stopping..."), false);
+  assert.notEqual(
+    cancelToastKind({
+      docsVfSyncActive: false,
+      docsVfSyncCancelPending: false,
+      current: "Stopping…",
+    }),
+    "documents-refresh",
+  );
+  assert.equal(
+    cancelToastKind({
+      docsVfSyncActive: false,
+      docsVfSyncCancelPending: false,
+      current: "Stopping…",
+    }),
+    "download",
+  );
+  // Docs mid-abort still owned via sticky pending (not bare Stopping).
+  assert.equal(
+    cancelToastKind({
+      docsVfSyncActive: false,
+      docsVfSyncCancelPending: true,
+      current: "Stopping…",
+    }),
+    "documents-refresh",
+  );
+  assert.doesNotMatch(ownership, /\|stopping/i);
 });
 
 test("P0: 206ae throttle + 206ad keepers", () => {

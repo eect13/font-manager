@@ -14,8 +14,9 @@ export const DOCS_CANCEL_MIN_DISPLAY_MS = 1000;
 
 /** Progress currents Activate never uses (belt-and-suspenders vs sticky race). */
 export function isDocsRefreshJobCurrent(current) {
-  // 1.0.206af: include Stopping… (cancel IPC) so ownsJob stays docs mid-abort.
-  return /syncing documents|sync cancelled|refresh(?:ing)? documents|stopping/i.test(
+  // Docs mid-abort owned via docsVfSyncCancelPending + docsVfSyncSessionLive — never bare
+  // "Stopping…" (shared cancel_google_downloads sets that for Activate too — soft-lie).
+  return /syncing documents|sync cancelled|refresh(?:ing)? documents/i.test(
     current ?? "",
   );
 }

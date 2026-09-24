@@ -1,4 +1,5 @@
 ## Fixed in tip / 1.0.206af
+- **HOLD soft-lie amend:** reverted `|stopping` from `isDocsRefreshJobCurrent` — bare `Stopping…` is shared by Activate cancel IPC; without sticky must NOT → documents-refresh toast. Docs mid-abort stays via `docsVfSyncCancelPending` + `docsVfSyncSessionLive`.
 - **P0 Escape after settle / cancel window too short (206ae Gate D):** Escape at +5409ms after Inter static already 0 → success **Documents refreshed — 18…**; `cancelDocsVfSyncFromShortcut` false when chrome/active/pending/job all false. UIA FromPoint still blind (`chrome=[]`).
 - **sessionLive:** `docsVfSyncSessionLive` true from `armDocsVfSyncOwnership` / sync start until sync `finally` — Escape/tray can arm cancel IPC during Scanning before Cancel chrome paints. After settle → false (no success overwrite).
 - **Tray:** `cancel_google_downloads(app)` emits `docs-vf-cancel-requested`; JS listen → `cancelDocsVfSyncFromShortcut` (same cancelled toast path).
