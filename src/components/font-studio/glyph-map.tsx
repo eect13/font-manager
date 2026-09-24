@@ -170,7 +170,7 @@ export function GlyphMap() {
 
   if (!activated.length) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center px-6 py-20 text-center">
+      <div className="fm-empty-pane flex flex-1 flex-col items-center justify-center text-center">
         <p className="font-heading text-3xl">Character Map</p>
         <p className="mt-2 max-w-sm text-sm text-muted-foreground">
           Activate a typeface in the library, then open Glyphs to browse every character like Windows Character Map.

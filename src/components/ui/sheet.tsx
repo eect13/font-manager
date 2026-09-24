@@ -40,7 +40,7 @@ export function SheetContent({
 }
 
 export function SheetHeader({ className, ...props }: ComponentProps<"div">) {
-  return <div className={cn("space-y-1 p-5 pr-12", className)} {...props} />;
+  return <div className={cn("fm-sheet-header space-y-1", className)} {...props} />;
 }
 
 export function SheetTitle({

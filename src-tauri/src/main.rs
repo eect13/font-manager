@@ -101,8 +101,16 @@ fn main() {
 
             let show = MenuItem::with_id(app, "show", "Show Font Manager", true, None::<&str>)?;
             let folder = MenuItem::with_id(app, "folder", "Open Documents folder", true, None::<&str>)?;
+            // In-app Cancel for Documents refresh. No system-wide Escape accelerator.
+            let cancel_docs = MenuItem::with_id(
+                app,
+                "cancel_docs_refresh",
+                "Cancel Documents refresh",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &folder, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
 
             let icon = app
                 .default_window_icon()
@@ -118,6 +126,9 @@ fn main() {
                     "show" => show_main(app),
                     "folder" => {
                         let _ = activate::open_activation_folder(app.clone());
+                    }
+                    "cancel_docs_refresh" => {
+                        activate::request_docs_vf_cancel_native(app.clone());
                     }
                     "quit" => quit_gracefully(app),
                     _ => {}
@@ -150,12 +161,16 @@ fn main() {
             activate::flush_font_cache,
             activate::save_library_file,
             activate::remove_library_file,
+            activate::resolve_family_fetch_intent,
             activate::start_google_downloads,
             activate::retry_google_downloads,
+            activate::clear_session_gdi_refused_family,
             activate::try_fontsource_gdi_offer,
             activate::repair_incomplete_families,
             activate::skip_google_failures,
             activate::cancel_google_downloads,
+            activate::cancel_documents_refresh,
+            activate::drop_google_download_families,
             activate::pause_google_downloads,
             activate::resume_google_downloads,
             activate::google_download_progress,
@@ -167,6 +182,7 @@ fn main() {
             activate::session_boot_state,
             activate::read_family_font,
             activate::scan_disk_families,
+            activate::sync_documents_vf_policy,
             activate::prune_unknown_folders,
             parse::parse_family_cmap,
             parse::parse_family_layout,
