@@ -249,12 +249,9 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
         </header>
         {/* 1.0.206z: shell chrome (header already above + DownloadBar) stays outside library inert.
             data-fm-shell-chrome marks the Cancel host region for tip/structure asserts. */}
-        <div
-          data-fm-shell-chrome=""
-          className="shrink-0"
-          role="region"
-          aria-label={hideLibraryA11y ? "Documents refresh progress" : undefined}
-        >
+        {/* 1.0.206af: no role/aria-label on chrome host — WV2 FromPoint was landing on
+            the region (empty/wrong Name) instead of Cancel Documents refresh. */}
+        <div data-fm-shell-chrome="" className="shrink-0">
           <DownloadBar />
         </div>
 

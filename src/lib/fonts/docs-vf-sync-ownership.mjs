@@ -14,7 +14,8 @@ export const DOCS_CANCEL_MIN_DISPLAY_MS = 1000;
 
 /** Progress currents Activate never uses (belt-and-suspenders vs sticky race). */
 export function isDocsRefreshJobCurrent(current) {
-  return /syncing documents|sync cancelled|refresh(?:ing)? documents/i.test(
+  // 1.0.206af: include Stopping… (cancel IPC) so ownsJob stays docs mid-abort.
+  return /syncing documents|sync cancelled|refresh(?:ing)? documents|stopping/i.test(
     current ?? "",
   );
 }

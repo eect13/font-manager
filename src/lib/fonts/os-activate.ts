@@ -647,10 +647,12 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
   }
   // Arm sticky BEFORE beginOwnedJob so Cancel during shared "Scanning Documents…" is docs-owned.
   docsVfSyncActive = true;
+  docsVfSyncSessionLive = true;
   docsVfSyncCancelPending = false;
   docsVfSyncCancelToasted = false;
   if (!beginOwnedJob("download", { total: 1, current: "Scanning Documents…" })) {
     docsVfSyncActive = false;
+    docsVfSyncSessionLive = false;
     toast.message("Busy", {
       description: "Activate/download already running — Cancel or wait, then Refresh again.",
     });
@@ -659,6 +661,7 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
   // Cancel raced after arm / before job paint — do not run Rust.
   if (docsVfSyncCancelPending) {
     docsVfSyncActive = false;
+    docsVfSyncSessionLive = false;
     docsVfSyncCancelPending = false;
     finishOwnedJob("download");
     return {
@@ -711,8 +714,10 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
     docsVfSyncCancelToasted = false;
     return null;
   } finally {
-    // Clear active only — sticky pending/toasted must outlive this so cancel toast stays owned.
+    // Clear active + session-live — Escape after settle must no-op (no success overwrite).
+    // Sticky pending/toasted outlive this so late-cancel classification still works.
     docsVfSyncActive = false;
+    docsVfSyncSessionLive = false;
     finishOwnedJob("download");
   }
 }
@@ -1292,6 +1297,11 @@ let rustSeenRunning = false;
 let ignoreProgress = false;
 /** 1.0.206w: Refresh Documents owns cancel toast (sticky — survives finally clearing active). */
 let docsVfSyncActive = false;
+/**
+ * 1.0.206af: true from Refresh arm until syncDocumentsVfPolicy finally (covers Scanning
+ * before Cancel chrome paints). Escape/tray use this so cancel IPC can fire mid-job.
+ */
+let docsVfSyncSessionLive = false;
 /** Set when Cancel hits while docs sync owns the bar; survives docsVfSyncActive=false in finally. */
 let docsVfSyncCancelPending = false;
 /** Set if cancel path toasted docs-cancel early — callers must not double-toast. */
@@ -1312,8 +1322,11 @@ let expectKind: "" | "download" | "register" | "remove" = "";
 /** Arm sticky docs ownership before opening Refreshing Documents toast Cancel (Should). */
 export function armDocsVfSyncOwnership() {
   docsVfSyncActive = true;
+  docsVfSyncSessionLive = true;
   docsVfSyncCancelPending = false;
   docsVfSyncCancelToasted = false;
+  docsCancelTeardownScheduled = false;
+  docsCancelIpcFired = false;
 }
 
 /** True while Refresh Documents owns the progress bar (sticky primary; docs-only current belt). */
@@ -1343,6 +1356,7 @@ export function clearDocsVfSyncCancelPending() {
   docsVfSyncCancelToasted = false;
   docsCancelTeardownScheduled = false;
   docsCancelIpcFired = false;
+  docsVfSyncSessionLive = false;
 }
 
 /** True after pointerdown/click armed docs cancel (click may no-op). */
@@ -1354,9 +1368,18 @@ export function peekDocsVfSyncCancelPending(): boolean {
   return docsVfSyncCancelPending;
 }
 
-/** 1.0.206ae P1: Escape hatch — arm docs Cancel without needing UIA hit-test. */
+/** True from Refresh arm until sync await finally — Escape/tray mid-job window. */
+export function isDocsVfSyncSessionLive(): boolean {
+  return docsVfSyncSessionLive;
+}
+
+/**
+ * 1.0.206af: Escape/tray hatch — arm docs Cancel while session live (incl. Scanning
+ * before Cancel chrome paints). After settle (sessionLive false) → false (no success overwrite).
+ */
 export function cancelDocsVfSyncFromShortcut(): boolean {
   if (
+    !docsVfSyncSessionLive &&
     !docsCancelChromePresented &&
     !docsVfSyncActive &&
     !docsVfSyncCancelPending &&
@@ -1388,18 +1411,19 @@ function bumpDocsCancelSeqInDom() {
         '[data-testid="activate-bar-cancel"][data-cancel-kind="documents-refresh"]',
       );
     if (btn) {
+      // 1.0.206af: seq via data-* / aria-valuetext only — NEVER title/aria-description/aria-valuenow
+      // (WV2 FromPoint/Name went blind when those stole accessible Name from button contents).
       btn.setAttribute("data-fm-cancel-seq", seq);
-      // 206ad: WebView2 HelpText often follows `title`; aria-valuenow alone was unreadable.
-      btn.setAttribute("title", `fm-cancel-seq=${seq}`);
-      btn.setAttribute("aria-description", `fm-cancel-seq=${seq}`);
-      btn.setAttribute("aria-valuenow", seq);
-      btn.setAttribute("aria-valuetext", `cancel-seq ${seq}`);
+      btn.setAttribute("aria-valuetext", `fm-cancel-seq=${seq}`);
+      btn.removeAttribute("title");
+      btn.removeAttribute("aria-description");
+      btn.removeAttribute("aria-valuenow");
     }
     const chrome = document.querySelector("[data-fm-shell-chrome]");
     if (chrome) {
-      // 1.0.206ae: stamp seq on chrome for probes — do NOT set title (HelpText/Name steal).
       chrome.setAttribute("data-fm-cancel-seq", seq);
-      chrome.setAttribute("aria-valuenow", seq);
+      chrome.removeAttribute("title");
+      chrome.removeAttribute("aria-valuenow");
     }
   } catch {
     /* jsdom / SSR */
@@ -1646,6 +1670,10 @@ export async function bindDownloadEvents() {
     const { listen } = await import("@tauri-apps/api/event");
     await listen("font-download", (ev) => {
       applyPayload(ev.payload as Parameters<typeof applyPayload>[0]);
+    });
+    // 1.0.206af: tray "Cancel Documents refresh" → same JS arm/toast path as Escape.
+    await listen("docs-vf-cancel-requested", () => {
+      cancelDocsVfSyncFromShortcut();
     });
     await listen("name-heal", (ev) => {
       const p = ev.payload as { healed?: number; locked?: number; write_failed?: number };
@@ -1895,6 +1923,7 @@ function armDocsCancelFromChrome(): boolean {
     return false;
   }
   docsVfSyncCancelPending = true;
+  // Keep sessionLive true until sync finally — Escape idempotent mid-await.
   docsVfSyncActive = false;
   bumpDocsCancelSeqInDom();
   replaceDocsRefreshingToastWithCancelling();

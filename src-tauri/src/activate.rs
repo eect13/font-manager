@@ -9533,8 +9533,9 @@ pub fn resume_google_downloads(app: AppHandle) -> Result<(), String> {
 }
 
 /// 1.0.206aa amend: async so Cancel is never queued behind a sync main-thread command.
+/// 1.0.206af: emit `docs-vf-cancel-requested` so tray/native cancel joins the JS toast path.
 #[tauri::command]
-pub async fn cancel_google_downloads() -> Result<(), String> {
+pub async fn cancel_google_downloads(app: AppHandle) -> Result<(), String> {
     let state = bulk();
     state.cancel.store(true, Ordering::SeqCst);
     state.pause.store(false, Ordering::SeqCst);
@@ -9548,6 +9549,7 @@ pub async fn cancel_google_downloads() -> Result<(), String> {
         p.paused = false;
         p.current = "Stopping…".into();
     }
+    let _ = app.emit("docs-vf-cancel-requested", ());
     Ok(())
 }
 

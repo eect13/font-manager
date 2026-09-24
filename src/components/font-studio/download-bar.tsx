@@ -248,21 +248,16 @@ export function DownloadBar() {
         ) : job.running || job.paused ? (
           <>
             {docsChrome ? (
-              /* 1.0.206ae: arm on pointerdown/mousedown WITHOUT preventDefault (206ad
-                 preventDefault correlated with UIA FromPoint blind). Click no-ops if armed. */
+              /* 1.0.206af: UIA Name = visible label only (no title/valuenow/description steal).
+                 pointerdown/mousedown arm WITHOUT preventDefault; click no-ops if armed. */
               <button
                 type="button"
                 key="activate-bar-cancel"
                 tabIndex={0}
-                role="button"
                 className="inline-flex h-7 min-w-[7.5rem] items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 text-xs font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 data-testid="activate-bar-cancel"
                 data-fm-cancel-seq={String(getDocsCancelSeq())}
-                aria-valuenow={getDocsCancelSeq() || undefined}
-                title={getDocsCancelSeq() ? `fm-cancel-seq=${getDocsCancelSeq()}` : undefined}
-                aria-description={
-                  getDocsCancelSeq() ? `fm-cancel-seq=${getDocsCancelSeq()}` : undefined
-                }
+                aria-labelledby="fm-cancel-documents-refresh-label"
                 {...cancelChromeA11y({ showDocsCancelIdentity: true })}
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
@@ -287,7 +282,7 @@ export function DownloadBar() {
                 }}
               >
                 <X aria-hidden="true" className="size-4 shrink-0" />
-                <span>
+                <span id="fm-cancel-documents-refresh-label">
                   {cancelChromeVisibleLabel({ showDocsCancelIdentity: true })}
                 </span>
               </button>

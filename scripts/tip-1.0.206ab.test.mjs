@@ -52,7 +52,8 @@ test("P0: bar docs Cancel passes fromDocsCancelChrome + native InvokePattern but
   assert.match(downloadBar, /fromDocsCancelChrome:\s*true/);
   assert.match(downloadBar, /setDocsCancelChromePresented/);
   assert.match(downloadBar, /type="button"/);
-  assert.match(downloadBar, /role="button"/);
+  // 206af: native <button type="button"> — omit redundant role="button" (UIA Name).
+  assert.match(downloadBar, /type="button"/);
   assert.match(downloadBar, /data-fm-cancel-seq/);
   assert.match(downloadBar, /onKeyDown/);
   // Cancel rendered before Pause when docsChrome (FindFirst walks early)
@@ -96,7 +97,9 @@ test("P0 FindFirst: header+nav inert during docs; chrome outside library; no ari
   );
   assert.match(headerBlock, /inert=\{hideLibraryA11y/);
   assert.match(appShell, /data-fm-shell-chrome/);
-  assert.match(appShell, /Documents refresh progress/);
+  // 206af: chrome host must NOT be a named region (FromPoint Name steal).
+  assert.doesNotMatch(appShell, /Documents refresh progress/);
+  assert.match(appShell, /data-fm-shell-chrome/);
   assert.doesNotMatch(appShell, /aria-hidden=\{hideLibraryA11y/);
   const barAt = appShell.indexOf("<DownloadBar");
   const inertLib = appShell.indexOf("data-fm-library-inert");

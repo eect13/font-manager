@@ -128,9 +128,10 @@ fn main() {
                         let _ = activate::open_activation_folder(app.clone());
                     }
                     "cancel_docs_refresh" => {
-                        // Sets bulk().cancel only — works even if WebView pump is starved.
+                        // Sets bulk().cancel + emits docs-vf-cancel-requested for JS toast path.
+                        let handle = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = activate::cancel_google_downloads().await;
+                            let _ = activate::cancel_google_downloads(handle).await;
                         });
                     }
                     "quit" => quit_gracefully(app),

@@ -89,10 +89,11 @@ test("P0: Rust cancel IPC is flag-only; work returns cancelled; skip emit after 
   assert.doesNotMatch(cancelCmd, /spawn_blocking/);
 });
 
-test("P2: cancel-seq exposed via aria-valuenow", () => {
-  assert.match(osActivate, /aria-valuenow/);
-  assert.match(downloadBar, /aria-valuenow/);
+test("P2: cancel-seq exposed via data-fm-cancel-seq (206af: no aria-valuenow Name steal)", () => {
   assert.match(osActivate, /data-fm-cancel-seq/);
+  assert.match(downloadBar, /data-fm-cancel-seq/);
+  // 206af removed mid-job aria-valuenow/title from Cancel button (UIA FromPoint blind).
+  assert.doesNotMatch(downloadBar, /aria-valuenow=\{getDocsCancelSeq/);
 });
 
 test("206ab keepers still present", () => {

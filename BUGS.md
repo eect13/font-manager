@@ -1,3 +1,11 @@
+## Fixed in tip / 1.0.206af
+- **P0 Escape after settle / cancel window too short (206ae Gate D):** Escape at +5409ms after Inter static already 0 → success **Documents refreshed — 18…**; `cancelDocsVfSyncFromShortcut` false when chrome/active/pending/job all false. UIA FromPoint still blind (`chrome=[]`).
+- **sessionLive:** `docsVfSyncSessionLive` true from `armDocsVfSyncOwnership` / sync start until sync `finally` — Escape/tray can arm cancel IPC during Scanning before Cancel chrome paints. After settle → false (no success overwrite).
+- **Tray:** `cancel_google_downloads(app)` emits `docs-vf-cancel-requested`; JS listen → `cancelDocsVfSyncFromShortcut` (same cancelled toast path).
+- **UIA:** Cancel Name from visible label + `aria-labelledby`; strip title/aria-description/aria-valuenow (Name steal); no `role=region`/aria-label on shell chrome host.
+- Keep 206ae throttle (≥900ms / 48 dirs) + 206ad immediate IPC / deferred teardown / cancelable purge / honesty.
+- ProductVersion 1.0.206. No tip-install/pack.
+
 ## Fixed in tip / 1.0.206ae
 - **P0 WebView Not Responding mid-Refresh (206ad Gate D):** UIA FromPoint/FindFirst blind (`chrome=[]`); bitmap mouse → success **Documents refreshed — 18…**; Inter static=0. Progress emits ~350ms during ~2k-folder purge starved message pump.
 - **Throttle:** `docs_vf_emit_progress_throttle_ms()=900` + every `48` dirs; stable `Refreshing Documents (done/total)` (no per-family `Syncing {name}` churn). Activate throttle stays 350ms. JS poll 1000ms while docs owns job.

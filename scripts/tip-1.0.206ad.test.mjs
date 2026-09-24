@@ -88,12 +88,14 @@ test("P0: Rust cancelable purge + cancelled if flag after last purge", () => {
   );
 });
 
-test("P1: seq exposed via title HelpText (fm-cancel-seq=)", () => {
-  assert.match(osActivate, /title.*fm-cancel-seq=/);
-  assert.match(osActivate, /aria-description.*fm-cancel-seq=/);
+test("P1: seq exposed via data-fm-cancel-seq / aria-valuetext (no title steal)", () => {
+  // 206af: title/aria-description stole WV2 UIA Name — seq via data-* + valuetext only.
+  assert.match(osActivate, /data-fm-cancel-seq/);
+  assert.match(osActivate, /aria-valuetext.*fm-cancel-seq=/);
+  assert.match(osActivate, /removeAttribute\("title"\)/);
   assert.match(downloadBar, /fm-cancel-seq=/);
-  assert.match(downloadBar, /aria-description/);
-  assert.match(downloadBar, /title=\{getDocsCancelSeq/);
+  assert.doesNotMatch(downloadBar, /aria-valuenow=\{getDocsCancelSeq/);
+  assert.doesNotMatch(downloadBar, /title=\{getDocsCancelSeq/);
 });
 
 test("206ac hang deferral kept", () => {
