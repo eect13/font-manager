@@ -93,6 +93,21 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, Shortcut, ShortcutState};
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let esc = Shortcut::new(None, Code::Escape);
+                    if shortcut == &esc {
+                        // 1.0.206ag: native Escape bypasses WebView SendKeys — docs session only.
+                        activate::request_docs_vf_cancel_native(app.clone());
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -101,8 +116,16 @@ fn main() {
 
             let show = MenuItem::with_id(app, "show", "Show Font Manager", true, None::<&str>)?;
             let folder = MenuItem::with_id(app, "folder", "Open Documents folder", true, None::<&str>)?;
+            // 1.0.206ae P1: native cancel hatch when WebView is busy / UIA-blind.
+            let cancel_docs = MenuItem::with_id(
+                app,
+                "cancel_docs_refresh",
+                "Cancel Documents refresh",
+                true,
+                Some("Esc"),
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &folder, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
 
             let icon = app
                 .default_window_icon()
@@ -118,6 +141,10 @@ fn main() {
                     "show" => show_main(app),
                     "folder" => {
                         let _ = activate::open_activation_folder(app.clone());
+                    }
+                    "cancel_docs_refresh" => {
+                        // 1.0.206ag: same native path as Escape (session-live gated + immediate flag).
+                        activate::request_docs_vf_cancel_native(app.clone());
                     }
                     "quit" => quit_gracefully(app),
                     _ => {}
@@ -150,12 +177,15 @@ fn main() {
             activate::flush_font_cache,
             activate::save_library_file,
             activate::remove_library_file,
+            activate::resolve_family_fetch_intent,
             activate::start_google_downloads,
             activate::retry_google_downloads,
+            activate::clear_session_gdi_refused_family,
             activate::try_fontsource_gdi_offer,
             activate::repair_incomplete_families,
             activate::skip_google_failures,
             activate::cancel_google_downloads,
+            activate::drop_google_download_families,
             activate::pause_google_downloads,
             activate::resume_google_downloads,
             activate::google_download_progress,
@@ -167,6 +197,7 @@ fn main() {
             activate::session_boot_state,
             activate::read_family_font,
             activate::scan_disk_families,
+            activate::sync_documents_vf_policy,
             activate::prune_unknown_folders,
             parse::parse_family_cmap,
             parse::parse_family_layout,

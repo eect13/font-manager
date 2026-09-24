@@ -1,6 +1,6 @@
 [package]
 name = "font-manager"
-version = "1.0.203"
+version = "1.0.206"
 description = "Font Manager — browse Google Fonts, activate typefaces for other apps, and inspect glyphs"
 edition = "2021"
 rust-version = "1.77"
@@ -21,6 +21,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+tauri-plugin-global-shortcut = "2"
 
 [profile.release]
 panic = "abort"

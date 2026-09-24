@@ -146,6 +146,7 @@ export function Sidebar({
   const recentIds = useFontStore((s) => s.recentIds);
   const activated = useFontStore((s) => s.activated);
   const settledCount = useFontStore((s) => s.settledFamilies.length);
+  const diskCount = useFontStore((s) => s.diskFamilies.length);
   const favorites = useFontStore((s) => s.favorites);
   const collections = useFontStore((s) => s.collections);
   const customTags = useFontStore((s) => s.customTags);
@@ -200,7 +201,7 @@ export function Sidebar({
 
   return (
     <aside className={cn("flex h-full min-w-0 flex-col overflow-hidden bg-card", className)}>
-      <div className="sidebar-nav min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain py-3 pl-2 pr-2">
+      <div className="sidebar-nav fm-sidebar-nav min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pl-2 pr-2">
         <div className="min-w-0 space-y-4">
           <section>
             <p className="mb-0.5 px-2.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -223,14 +224,16 @@ export function Sidebar({
               count={counts.activated}
               mainProps={{
                 "aria-label": "Activated",
-                title: `Live ${counts.activated.toLocaleString()} · Settled ${settledCount.toLocaleString()} · Library ${googleFonts.length.toLocaleString()}`,
+                // Count lanes stay separate — never merge Google ↔ Fontsource ↔ Disk ↔ Live ↔ Settled.
+                title: `Live ${counts.activated.toLocaleString()} · Settled ${settledCount.toLocaleString()} · Google ${counts.gfonts.toLocaleString()} · Fontsource ${counts.fontsource.toLocaleString()} · On disk ${diskCount.toLocaleString()}`,
               }}
               menu={<ActivatedDeactivateMenuItem />}
             />
             {settledCount > 0 ? (
               <p className="px-2.5 pb-1 text-[10px] tabular-nums text-muted-foreground">
-                Live {counts.activated.toLocaleString()} · Settled {settledCount.toLocaleString()} · Library{" "}
-                {googleFonts.length.toLocaleString()}
+                Live {counts.activated.toLocaleString()} · Settled {settledCount.toLocaleString()} · Google{" "}
+                {counts.gfonts.toLocaleString()} · Fontsource {counts.fontsource.toLocaleString()} · Disk{" "}
+                {diskCount.toLocaleString()}
               </p>
             ) : null}
             <SidebarRow
