@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { Code2, Copy, FolderUp, Grid3x3, Library, Menu, Search, SplitSquareHorizontal, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,12 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { CollectionDialog } from "./collection-dialog";
 import { CssExportDialog } from "./css-export-dialog";
 import { DownloadBar } from "./download-bar";
+import {
+  getDownloadJob,
+  isDocsVfSyncJob,
+  subscribeDownloadJob,
+} from "@/lib/fonts/os-activate";
+import { shouldHideLibraryFromA11yDuringDocsJob } from "@/lib/fonts/docs-vf-sync-ownership.mjs";
 import { FontInspector } from "./font-inspector";
 import { Sidebar } from "./sidebar";
 import { TabPanes } from "./tab-panes";
@@ -50,6 +56,12 @@ const NAV = [
 export function AppShell({ children: _children }: { children: ReactNode }) {
   useHydrateFonts();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // 1.0.206y: shrink a11y tree during docs sync (library cards stay out of UIA Descendants).
+  const job = useSyncExternalStore(subscribeDownloadJob, getDownloadJob, getDownloadJob);
+  const hideLibraryA11y = shouldHideLibraryFromA11yDuringDocsJob({
+    docsOwns: isDocsVfSyncJob(),
+    cancelChromeEligible: job.running || job.paused,
+  });
   const query = useFontStore((s) => s.query);
   const setQuery = useFontStore((s) => s.setQuery);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -225,12 +237,21 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
         </header>
         <DownloadBar />
 
-        <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        {/* 1.0.206y: hide library/main from a11y during docs sync so UIA FindFirst Cancel ≤300ms.
+            DownloadBar stays outside this subtree. */}
+        <div
+          className="relative flex min-h-0 flex-1 overflow-hidden"
+          aria-hidden={hideLibraryA11y || undefined}
+          inert={hideLibraryA11y || undefined}
+        >
           <Sidebar
             onNewCollection={openNewCollection}
             className="hidden w-sidebar shrink-0 border-r border-border md:flex"
           />
-          <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <main
+            className="flex min-w-0 flex-1 flex-col overflow-hidden"
+            aria-busy={hideLibraryA11y || undefined}
+          >
             <TabPanes pathname={pathname} />
           </main>
           <FontInspector />

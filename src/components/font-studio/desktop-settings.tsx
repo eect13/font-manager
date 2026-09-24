@@ -12,6 +12,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { applyDesktopPrefs } from "@/lib/desktop/prefs";
 import { armDocsVfSyncOwnership, cancelDownloadQueue, didDocsVfSyncCancelToast, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { useFontStore } from "@/lib/fonts/store";
 import { toast } from "sonner";
 import { useUiDensity, type UiDensity } from "@/lib/ui-density";
@@ -90,7 +91,7 @@ export function DesktopSettings() {
                   id: "sync-docs-vf",
                   description: "Cancel from the progress bar if needed.",
                   duration: 8_000,
-                  action: { label: "Cancel", onClick: () => void cancelDownloadQueue() },
+                  action: docsCancelToastAction(),
                 });
                 const result = await syncDocumentsVfPolicy();
                 if (!result) return;
