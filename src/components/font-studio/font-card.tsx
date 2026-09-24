@@ -7,7 +7,9 @@ import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, previewWghtAxis, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
-import { useFontStore } from "@/lib/fonts/store";
+import { noteFamilyVisible } from "@/lib/fonts/visible-families";
+import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst } from "@/lib/fonts/gdi-incapable";
+import { softSettledRetryAlreadyTried, useFontStore } from "@/lib/fonts/store";
 import { useLiveAxes } from "@/lib/fonts/live-axes";
 import type { FontRecord, PreviewSettings } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
@@ -151,7 +153,24 @@ export const FontCard = memo(function FontCard({
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
   const settledDisk = useFontStore((s) => s.settledFamilySet.has(font.family.trim().toLowerCase()));
   const settled = settledDisk && !activated;
+  const softSettled = settled && isSoftGdiTryAddFirst(font.family);
+  const hardSettled = settled && isKnownGdiSessionIncapable(font.family);
+  const softRetryUsed = softSettled && softSettledRetryAlreadyTried(font.family);
+  const settledBadgeTitle = softSettled
+    ? softRetryUsed
+      ? "Settled after Add=0 — Retry already used this process (not Live)"
+      : "Settled after Add=0 — Power = Retry Add (one try this process)"
+    : "On disk · Windows won’t load (not Activated)";
+  const settledPowerTitle = softSettled
+    ? softRetryUsed
+      ? "Settled — Retry already used this process (not Live)"
+      : "Settled — Retry Add (one try this process)"
+    : hardSettled
+      ? "Settled — Windows won’t load (not Activated)"
+      : "Settled — on disk · Windows won’t load (not Activated)";
   const pending = useFontStore((s) => s.pendingSet.has(font.id));
+  const pendingOff = useFontStore((s) => s.pendingDeactivateSet.has(font.id));
+  const unloadStuck = useFontStore((s) => s.unloadStuckSet.has(font.id));
   const favorite = useFontStore((s) => s.favorites.includes(font.id));
   const hasCollections = useFontStore((s) => s.collections.length > 0);
   const toggleActivated = useFontStore((s) => s.toggleActivated);
@@ -168,6 +187,8 @@ export const FontCard = memo(function FontCard({
     const root = el.closest("[data-library-scroll]") as HTMLElement | null;
     const io = new IntersectionObserver(
       ([entry]) => {
+        noteFamilyVisible(font.family, Boolean(entry?.isIntersecting));
+
         if (!entry?.isIntersecting) {
           unpinCss(cssKey);
           return;
@@ -184,6 +205,7 @@ export const FontCard = memo(function FontCard({
     );
     io.observe(el);
     return () => {
+      noteFamilyVisible(font.family, false);
       unpinCss(cssKey);
       io.disconnect();
     };
@@ -369,7 +391,7 @@ export const FontCard = memo(function FontCard({
   );
 
   const specimenPane = (
-    <div className={cn("fm-spec-pane px-4", layout === "list" ? "py-2" : "py-3")}>
+    <div className={cn("fm-spec-pane px-4", layout === "list" ? "fm-spec-list" : "fm-spec-grid")}>
       {specimen}
       {axisPop}
     </div>
@@ -389,7 +411,7 @@ export const FontCard = memo(function FontCard({
       }}
       className={cn(
         "fm-font-card group relative w-full cursor-pointer overflow-hidden rounded-xl text-left shadow-border",
-        layout === "list" ? "flex h-[9.5rem] flex-col" : "flex h-[14.5rem] flex-col",
+        layout === "list" ? "fm-layout-list flex flex-col" : "fm-layout-grid flex flex-col",
         THEME[preview.theme],
       )}
     >
@@ -415,14 +437,14 @@ export const FontCard = memo(function FontCard({
 
       {layout === "list" ? (
         <>
-          <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
+          <div className={cn("fm-card-meta flex w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             {settled ? (
               <Badge
                 variant="outline"
                 className="ml-auto border-muted-foreground/40 text-muted-foreground"
-                title="On disk · Windows won’t load (not Activated)"
+                title={settledBadgeTitle}
               >
                 Settled
               </Badge>
@@ -435,7 +457,7 @@ export const FontCard = memo(function FontCard({
       ) : (
         <>
           {specimenPane}
-          <div className={cn("fm-card-meta flex h-11 w-full min-w-0 shrink-0 items-center gap-1.5 border-t px-3", metaTone)}>
+          <div className={cn("fm-card-meta flex w-full min-w-0 shrink-0 items-center gap-1.5 border-t px-3", metaTone)}>
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             <span className="ml-auto flex min-w-0 items-center gap-1.5">
@@ -448,7 +470,7 @@ export const FontCard = memo(function FontCard({
                 <Badge
                   variant="outline"
                   className="border-muted-foreground/40 text-muted-foreground"
-                  title="On disk · Windows won’t load (not Activated)"
+                  title={settledBadgeTitle}
                 >
                   Settled
                 </Badge>
@@ -488,17 +510,24 @@ export const FontCard = memo(function FontCard({
         <button
           type="button"
           title={
-            activated
-              ? "Deactivate — hide from other apps, keep files"
-              : settled
-                ? "Settled — on disk · Windows won’t load (not Activated)"
-              : pending
-                ? "Queued"
-                : isDesktopShellSync()
-                  ? "Activate"
-                  : "Mark on. Word and Adobe only see session fonts in the desktop app."
+            pendingOff
+              ? unloadStuck
+              ? "Still unloading — Word may be locking; retry Deactivate"
+              : "Deactivating — waiting for Windows unload"
+              : activated
+                ? "Deactivate — hide from other apps, keep files"
+                : settled
+                  ? settledPowerTitle
+                  : pending
+                    ? "Queued"
+                    : isDesktopShellSync()
+                      ? "Activate"
+                      : "Mark on. Word and Adobe only see session fonts in the desktop app."
           }
-          aria-label={activated ? "Deactivate" : pending ? "Queued" : "Activate"}
+          aria-label={
+            pendingOff ? (unloadStuck ? "Still unloading" : "Deactivating") : activated ? "Deactivate" : pending ? "Queued" : "Activate"
+          }
+          disabled={pending || pendingOff}
           onPointerDown={isolate}
           onClick={(e) => {
             isolate(e);
@@ -506,8 +535,9 @@ export const FontCard = memo(function FontCard({
           }}
           className={cn(
             "flex size-8 items-center justify-center rounded-full bg-background/80 text-foreground backdrop-blur-sm",
-            activated && "bg-primary text-primary-foreground",
+            activated && !pendingOff && "bg-primary text-primary-foreground",
             pending && !activated && "animate-pulse bg-primary/40 text-primary-foreground",
+            pendingOff && activated && "animate-pulse bg-primary/60 text-primary-foreground",
           )}
         >
           <Power className="size-3.5" />

@@ -32,7 +32,7 @@ export function UploadsResetDialog({
               : "No uploaded typefaces. Reset still restores default activations."}
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="fm-dialog-footer">
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
