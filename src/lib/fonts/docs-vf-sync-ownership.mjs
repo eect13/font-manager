@@ -55,13 +55,17 @@ export function cancelToastKind({
 }
 
 /**
- * Latch docs Cancel chrome identity for UIA stability (1.0.206x).
+ * Latch docs Cancel chrome for UIA stability (1.0.206x) + honest post-end hold.
  *
- * When docs ownership first meets a visible Cancel chrome, latch and record paintedAt.
- * Keep docs Cancel Name/id for ≥ minMs from first paint AND while docs still owns
- * (or sticky cancel-pending). Do not flip to restore/download mid-window.
+ * When docs ownership first meets cancellable Cancel chrome, latch and record paintedAt.
+ * Keep Cancel Name/id while docs still owns AND cancel chrome is eligible (running/paused).
+ * Do not flip to restore/download mid-job.
  *
- * holdCancelChrome: delay hide after natural end until paintedAt+minMs (docs path only).
+ * showDocsCancelIdentity — true ONLY while docs + cancellable (Cancel Documents refresh path).
+ * Never true during post-end min window (that would imply Cancel while onClick only dismisses).
+ *
+ * inMinDisplayHold / holdDismissChrome — post-end min window: delay bar hide until
+ * paintedAt+minMs; download-bar routes to cancelChromeA11y({ dismissHold: true }).
  */
 export function advanceDocsCancelChrome({
   docsOwns = false,
@@ -77,7 +81,9 @@ export function advanceDocsCancelChrome({
       ? null
       : Number(paintedAt);
 
-  if (docsOwns && cancelChromeEligible) {
+  const cancellableDocs = Boolean(docsOwns) && Boolean(cancelChromeEligible);
+
+  if (cancellableDocs) {
     if (!nextLatched || nextPaintedAt == null) {
       nextLatched = true;
       nextPaintedAt = now;
@@ -88,11 +94,13 @@ export function advanceDocsCancelChrome({
     nextPaintedAt == null ? Number.POSITIVE_INFINITY : Math.max(0, now - nextPaintedAt);
   const inMinWindow = nextLatched && nextPaintedAt != null && elapsed < minMs;
 
-  const showDocsCancelIdentity = nextLatched && (Boolean(docsOwns) || inMinWindow);
-  const holdCancelChrome =
-    (Boolean(docsOwns) && Boolean(cancelChromeEligible)) || inMinWindow;
+  // Cancel Name/id path — docs + cancellable only (never post-end hold).
+  const showDocsCancelIdentity = nextLatched && cancellableDocs;
+  // Post-end hold — min window after Cancel chrome no longer eligible.
+  const inMinDisplayHold = inMinWindow && !cancellableDocs;
+  const holdDismissChrome = inMinDisplayHold;
 
-  if (nextLatched && !docsOwns && !inMinWindow) {
+  if (nextLatched && !cancellableDocs && !inMinWindow) {
     nextLatched = false;
     nextPaintedAt = null;
   }
@@ -101,7 +109,8 @@ export function advanceDocsCancelChrome({
     latched: nextLatched,
     paintedAt: nextPaintedAt,
     showDocsCancelIdentity,
-    holdCancelChrome,
+    inMinDisplayHold,
+    holdDismissChrome,
     remainingMinMs:
       nextPaintedAt == null || !nextLatched
         ? 0
@@ -113,7 +122,7 @@ export function advanceDocsCancelChrome({
  * Stable Cancel / Dismiss button a11y attrs — single source of truth for download-bar.
  * - dismissHold (post-end min-display): honest Dismiss — never Cancel Documents refresh Name/id
  * - showDocsCancelIdentity (cancellable docs): Cancel Documents refresh + fm-cancel-documents-refresh
- * Docs cancel identity must not thrash mid min-window while still cancellable.
+ * Docs cancel identity must not thrash mid-job while still cancellable.
  */
 export function cancelChromeA11y({
   showDocsCancelIdentity = false,

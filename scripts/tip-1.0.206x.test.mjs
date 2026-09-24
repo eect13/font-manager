@@ -48,9 +48,10 @@ test("docs Cancel identity latches ≥1s after paint (pure helper)", () => {
   assert.equal(s.latched, true);
   assert.equal(s.paintedAt, t0);
   assert.equal(s.showDocsCancelIdentity, true);
-  assert.equal(s.holdCancelChrome, true);
+  assert.equal(s.inMinDisplayHold, false);
+  assert.equal(s.holdDismissChrome, false);
 
-  // Mid-window, still docs-owned
+  // Mid-window, still docs-owned + cancellable — Cancel identity, not hold Dismiss
   s = advanceDocsCancelChrome({
     docsOwns: true,
     cancelChromeEligible: true,
@@ -59,9 +60,10 @@ test("docs Cancel identity latches ≥1s after paint (pure helper)", () => {
     paintedAt: s.paintedAt,
   });
   assert.equal(s.showDocsCancelIdentity, true);
+  assert.equal(s.inMinDisplayHold, false);
   assert.equal(s.paintedAt, t0, "paintedAt must not reset on progress ticks");
 
-  // Docs job ends at 600ms — identity + hold until 1000ms
+  // Docs job ends at 600ms — Cancel identity OFF; hold Dismiss until 1000ms
   s = advanceDocsCancelChrome({
     docsOwns: false,
     cancelChromeEligible: false,
@@ -69,8 +71,9 @@ test("docs Cancel identity latches ≥1s after paint (pure helper)", () => {
     latched: s.latched,
     paintedAt: s.paintedAt,
   });
-  assert.equal(s.showDocsCancelIdentity, true);
-  assert.equal(s.holdCancelChrome, true);
+  assert.equal(s.showDocsCancelIdentity, false, "post-end must not imply Cancel identity");
+  assert.equal(s.inMinDisplayHold, true);
+  assert.equal(s.holdDismissChrome, true);
   assert.ok(s.remainingMinMs > 0);
 
   // Exactly at +1000ms — min window closed
@@ -82,7 +85,8 @@ test("docs Cancel identity latches ≥1s after paint (pure helper)", () => {
     paintedAt: s.paintedAt,
   });
   assert.equal(s.showDocsCancelIdentity, false);
-  assert.equal(s.holdCancelChrome, false);
+  assert.equal(s.inMinDisplayHold, false);
+  assert.equal(s.holdDismissChrome, false);
   assert.equal(s.latched, false);
 });
 
@@ -203,20 +207,24 @@ test("206w ownership matrix still passes (sticky + belt + Scanning collision)", 
 test("download-bar latches docs Cancel ≥1s; stable key; no tree storm", () => {
   assert.match(downloadBar, /advanceDocsCancelChrome/);
   assert.match(downloadBar, /docsCancelLatch/);
-  assert.match(downloadBar, /holdDocsCancelChrome/);
+  assert.match(downloadBar, /holdDismissChrome/);
+  assert.match(downloadBar, /inMinDisplayHold/);
   assert.match(downloadBar, /key="activate-bar-cancel"/);
   assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
   assert.match(downloadBar, /cancelChromeA11y/);
   assert.match(downloadBar, /showDocsCancelIdentity:\s*docsChrome/);
   assert.match(downloadBar, /const docsSync = isDocsVfSyncJob\(\)/);
   assert.match(downloadBar, /Refreshing Documents/);
+  // cancelChromeEligible must be running/paused only — not latched OR (would imply Cancel mid-hold)
+  assert.match(downloadBar, /cancelChromeEligible:\s*cancelEligible,/);
+  assert.doesNotMatch(downloadBar, /cancelEligible \|\| docsCancelLatch/);
   // Do not reintroduce bare scanning OR into docsSync
   assert.doesNotMatch(
     downloadBar,
     /isDocsVfSyncJob\(\) \|\| \/syncing documents\|scanning documents/i,
   );
   // Hold path: honest Dismiss (dismissDownloadBar) — never Cancel Documents refresh Name/id
-  assert.match(downloadBar, /holdDocsCancelChrome \? \(/);
+  assert.match(downloadBar, /holdDismissChrome \? \(/);
   assert.match(downloadBar, /dismissHold:\s*true/);
   assert.match(downloadBar, /dismissDownloadBar\(\)/);
   assert.match(downloadBar, /Refreshing complete/);
@@ -224,12 +232,16 @@ test("download-bar latches docs Cancel ≥1s; stable key; no tree storm", () => 
   assert.match(downloadBar, />\s*Dismiss\s*</);
   // Hold JSX must not hardcode Cancel Documents refresh / fm-cancel-documents-refresh
   const holdBlock = downloadBar.match(
-    /holdDocsCancelChrome \? \([\s\S]*?\) : job\.running \|\| job\.paused/,
+    /holdDismissChrome \? \([\s\S]*?\) : job\.running \|\| job\.paused/,
   );
-  assert.ok(holdBlock, "holdDocsCancelChrome ternary present");
+  assert.ok(holdBlock, "holdDismissChrome ternary present");
   assert.doesNotMatch(holdBlock[0], /Cancel Documents refresh/);
   assert.doesNotMatch(holdBlock[0], /fm-cancel-documents-refresh/);
   assert.doesNotMatch(holdBlock[0], /documents-refresh/);
+  // Helper must not export holdCancelChrome (old Cancel-implying hold name)
+  assert.doesNotMatch(ownership, /holdCancelChrome/);
+  assert.match(ownership, /inMinDisplayHold/);
+  assert.match(ownership, /holdDismissChrome/);
   // job.current family names suppressed during docs chrome (tree storm)
   assert.match(
     downloadBar,
@@ -262,6 +274,8 @@ test("docs mark 206x; no tip-install/pack; 206w ownership kept", () => {
   assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
   assert.match(bugs, /Cancel Documents refresh/);
   assert.match(bugs, /Dismiss Documents refresh|honest Dismiss|dismissHold/);
+  assert.match(bugs, /inMinDisplayHold|holdDismissChrome/);
+  assert.match(readme, /inMinDisplayHold|holdDismissChrome/);
   assert.match(bugs, /≥1s|>=1s|1s/);
   assert.match(bugs, /No tip-install\/pack/);
   assert.match(readme, /No tip-install/);

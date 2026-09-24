@@ -78,29 +78,30 @@ export function DownloadBar() {
     return () => window.clearTimeout(t);
   }, [settledIdle]);
 
-  // Peek docs ownership before idle early-return so min-display hold can keep Cancel ≥1s.
+  // Peek docs ownership before idle early-return so post-end min-display hold can keep bar ≥1s.
+  // cancelChromeEligible = running/paused only — do NOT OR latched (that would imply Cancel mid-hold).
   const docsSync = isDocsVfSyncJob();
   const cancelEligible = job.running || job.paused;
   const now = Date.now();
   const chrome = advanceDocsCancelChrome({
     docsOwns: docsSync,
-    cancelChromeEligible: cancelEligible || docsCancelLatch.current.latched,
+    cancelChromeEligible: cancelEligible,
     now,
     paintedAt: docsCancelLatch.current.paintedAt,
     latched: docsCancelLatch.current.latched,
   });
   docsCancelLatch.current = { latched: chrome.latched, paintedAt: chrome.paintedAt };
 
-  // Re-render when min-display hold expires after natural docs end (no fake Pause).
+  // Re-render when post-end Dismiss hold expires after natural docs end (no fake Pause).
   useEffect(() => {
-    if (!chrome.holdCancelChrome || chrome.remainingMinMs <= 0) return;
+    if (!chrome.inMinDisplayHold || chrome.remainingMinMs <= 0) return;
     if (job.running || job.paused) return;
     const t = window.setTimeout(() => setDocsHoldTick((n) => n + 1), chrome.remainingMinMs + 1);
     return () => window.clearTimeout(t);
-  }, [chrome.holdCancelChrome, chrome.remainingMinMs, job.running, job.paused]);
+  }, [chrome.inMinDisplayHold, chrome.remainingMinMs, job.running, job.paused]);
 
-  const holdDocsCancelChrome =
-    chrome.holdCancelChrome && !cancelEligible && chrome.showDocsCancelIdentity;
+  // Post-end hold only — helper already excludes cancellable docs (Cancel Name/id path).
+  const holdDismissChrome = chrome.holdDismissChrome;
   const idleHide =
     (!job.running &&
       !job.paused &&
@@ -110,7 +111,7 @@ export function DownloadBar() {
       !settledIdle) ||
     empty;
 
-  if (idleHide && !holdDocsCancelChrome) {
+  if (idleHide && !holdDismissChrome) {
     holdPct.current = 0;
     return null;
   }
@@ -120,18 +121,18 @@ export function DownloadBar() {
   // 1.0.190: calm Restoring N/T — not download hang chrome.
   const restoring = /restoring/i.test(job.current) && !chrome.showDocsCancelIdentity;
   // 1.0.206w amend: sticky docs ownership only — never bare "scanning documents" (Activate shares it).
-  // 1.0.206x: prefer latched docs identity for label/Cancel so progress ticks don't thrash UIA.
+  // 1.0.206x: docs Cancel identity only while docs + cancellable (not post-end hold).
   const docsChrome = chrome.showDocsCancelIdentity;
   const pct = job.total > 0 || job.done > 0 ? clampPct((100 * processed) / total) : job.paused ? holdPct.current : 0;
   if (pct > holdPct.current) holdPct.current = pct;
   const shownPct = job.paused ? Math.max(pct, holdPct.current) : pct;
   const clock = getJobClock();
   const eta =
-    job.paused || scanning || restoring || docsChrome || settledIdle || holdDocsCancelChrome
+    job.paused || scanning || restoring || docsChrome || settledIdle || holdDismissChrome
       ? ""
       : etaLabel(remaining, clock.activeMs, Math.max(0, processed - skipped) || processed);
   const label =
-    holdDocsCancelChrome
+    holdDismissChrome
       ? "Refreshing complete"
       : settledIdle
         ? "Done"
@@ -166,7 +167,7 @@ export function DownloadBar() {
         <p className="min-w-0 flex-1 truncate">
           <span className="font-medium text-foreground">{label}</span>
           {/* 1.0.206x: never put rapidly changing job.current into a11y tree during docs sync. */}
-          {job.current && !scanning && !restoring && !docsChrome && !settledIdle && !holdDocsCancelChrome ? ` — ${job.current}` : ""}
+          {job.current && !scanning && !restoring && !docsChrome && !settledIdle && !holdDismissChrome ? ` — ${job.current}` : ""}
           {job.failedNames.length ? (
             <span className="block truncate text-destructive">
               Couldn’t load: {job.failedNames.slice(0, 8).join(", ")}
@@ -179,7 +180,7 @@ export function DownloadBar() {
             </span>
           ) : null}
           <span className="text-muted-foreground">
-            {settledIdle || holdDocsCancelChrome
+            {settledIdle || holdDismissChrome
               ? ""
               : job.paused
                 ? " · queue held at this percent — Resume continues, does not restart"
@@ -213,8 +214,8 @@ export function DownloadBar() {
             Dismiss
           </Button>
         ) : null}
-        {holdDocsCancelChrome ? (
-          /* Min-display hold after docs job ended: honest Dismiss (dismissDownloadBar only) — never Cancel Name. */
+        {holdDismissChrome ? (
+          /* Post-end min-display hold: honest Dismiss (dismissDownloadBar only) — never Cancel Name/id. */
           <Button
             key="activate-bar-dismiss"
             size="sm"
