@@ -96,13 +96,17 @@ export function DesktopSettings() {
                   });
                   const result = await syncDocumentsVfPolicy();
                   if (!result) return;
-                  await syncManagedDocumentsRoot();
                   if (result.cancelled) {
                     if (!didDocsVfSyncCancelToast()) {
                       toast.message("Documents refresh cancelled", {
                         id: "sync-docs-vf",
                         description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
                       });
+                    }
+                    try {
+                      await syncManagedDocumentsRoot();
+                    } catch {
+                      /* best-effort */
                     }
                     return;
                   }
@@ -118,6 +122,19 @@ export function DesktopSettings() {
                         description: `${result.familiesSeen.toLocaleString()} folders checked before Cancel landed.`,
                       },
                     );
+                    try {
+                      await syncManagedDocumentsRoot();
+                    } catch {
+                      /* best-effort */
+                    }
+                    return;
+                  }
+                  try {
+                    await syncManagedDocumentsRoot();
+                  } catch {
+                    toast.error("Documents refreshed but library rescan failed", {
+                      id: "sync-docs-vf",
+                    });
                     return;
                   }
                   if (result.locked > 0) {

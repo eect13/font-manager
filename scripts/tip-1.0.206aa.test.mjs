@@ -101,7 +101,11 @@ test("P1-3: docs cancel IPC is fire-and-forget (accurate; async cmds free main t
     cancelFn,
     /await tauriInvoke\("cancel_google_downloads"\)/,
   );
-  assert.match(cancelFn, /fire-and-forget|not queued behind/i);
+  // 206ac: docs path defers teardown via setTimeout; IPC is still non-blocking.
+  assert.match(
+    osActivate,
+    /fire-and-forget|not queued behind|finishDocsCancelTeardown|setTimeout\(\s*\(\)\s*=>\s*finishDocsCancelTeardown/i,
+  );
 });
 
 test("P1-4: docs Cancel onClick only; cancelDownloadQueue docs-idempotent", () => {

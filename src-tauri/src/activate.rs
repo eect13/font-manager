@@ -9018,6 +9018,8 @@ pub struct SyncDocsResult {
 /// 1.0.206aa amend (Skye HOLD): **async** command + `spawn_blocking` so the main
 /// thread is free to run `cancel_google_downloads` while purge work runs. Sync
 /// `fn` + `rx.recv()` still held the main thread (Tauri v2 runs sync commands there).
+/// 1.0.206ac: cancel IPC only sets `bulk().cancel` (no spawn_blocking); work checks the
+/// flag between dirs and returns `cancelled: true` so this `.await` resolves promptly.
 #[tauri::command]
 pub async fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String> {
     let state = bulk();
@@ -9183,6 +9185,11 @@ fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, Strin
         },
         |dir, name| {
             let (del, lock) = purge_redundant_statics_in_dir(dir, name);
+            // 1.0.206ac: after cancel, skip progress emits so the WebView is not flooded
+            // while Invoke/JS is settling (Gate D 206ab hang).
+            if state.cancel.load(Ordering::SeqCst) {
+                return (del, lock);
+            }
             if let Ok(mut p) = state.progress.lock() {
                 p.done = p.done.saturating_add(1);
                 p.total = total_cap.max(p.done);

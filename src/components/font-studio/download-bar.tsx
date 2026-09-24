@@ -258,10 +258,12 @@ export function DownloadBar() {
                 className="inline-flex h-7 min-w-[7.5rem] items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 text-xs font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 data-testid="activate-bar-cancel"
                 data-fm-cancel-seq={String(getDocsCancelSeq())}
+                aria-valuenow={getDocsCancelSeq() || undefined}
                 {...cancelChromeA11y({ showDocsCancelIdentity: true })}
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  // Return from InvokePattern ASAP — cancelDownloadQueue defers teardown (206ac).
                   cancelDownloadQueue({ fromDocsCancelChrome: true });
                 }}
                 onKeyDown={(e) => {

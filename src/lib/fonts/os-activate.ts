@@ -1355,11 +1355,35 @@ function bumpDocsCancelSeqInDom() {
       document.querySelector(
         '[data-testid="activate-bar-cancel"][data-cancel-kind="documents-refresh"]',
       );
-    if (btn) btn.setAttribute("data-fm-cancel-seq", seq);
+    if (btn) {
+      btn.setAttribute("data-fm-cancel-seq", seq);
+      // P2: UIA-readable (aria-valuenow) without DOM scrape.
+      btn.setAttribute("aria-valuenow", seq);
+      btn.setAttribute("aria-valuetext", `cancel-seq ${seq}`);
+    }
     const chrome = document.querySelector("[data-fm-shell-chrome]");
-    if (chrome) chrome.setAttribute("data-fm-cancel-seq", seq);
+    if (chrome) {
+      chrome.setAttribute("data-fm-cancel-seq", seq);
+      chrome.setAttribute("aria-valuenow", seq);
+    }
   } catch {
     /* jsdom / SSR */
+  }
+}
+
+const DOCS_REFRESH_TOAST_ID = "sync-docs-vf";
+
+/** Replace stuck "Refreshing Documents folder…" so Cancel never leaves it forever (206ac). */
+function replaceDocsRefreshingToastWithCancelling() {
+  try {
+    toast.dismiss(DOCS_REFRESH_TOAST_ID);
+    toast.message("Cancelling Documents refresh…", {
+      id: DOCS_REFRESH_TOAST_ID,
+      description: "Stopping purge — waiting for confirmation.",
+      duration: 120_000,
+    });
+  } catch {
+    /* toast unavailable */
   }
 }
 
@@ -1781,6 +1805,44 @@ async function pumpRemove(myBatch: number) {
   if (myBatch === batchId) finishIfIdle();
 }
 
+/**
+ * Tear down progress bar / poll / IPC for docs Cancel.
+ * Must run *off* the UIA Invoke stack (see cancelDownloadQueue setTimeout) — sync emit+IPC
+ * during InvokePattern hung the WebView on 206ab so syncDocumentsVfPolicy never settled.
+ */
+function finishDocsCancelTeardown() {
+  batchId += 1;
+  installQueue.length = 0;
+  removeQueue.splice(0, removeQueue.length);
+  workers = 0;
+  const keepFailed = (lastFailedNames.length ? lastFailedNames : job.failedNames).slice();
+  const keepDetails = job.failedDetails.slice();
+  ignoreProgress = true;
+  expectKind = "";
+  job = {
+    ...EMPTY,
+    failed: keepFailed.length,
+    failedNames: keepFailed,
+    failedDetails: keepDetails,
+  };
+  lastFailedNames = keepFailed;
+  markJobClock(false, false);
+  emit();
+  unlockUi();
+  if (pollTimer) {
+    window.clearInterval(pollTimer);
+    pollTimer = 0;
+    rustSeenRunning = false;
+  }
+  window.setTimeout(() => {
+    ignoreProgress = false;
+  }, 600);
+  void finalizeReadyAndClearPending();
+  void tauriInvoke("cancel_google_downloads").catch(() => {
+    /* web / ACL — pending drives late-cancel toast if Rust already finished */
+  });
+}
+
 export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
   // 1.0.206w: snapshot BEFORE clearing job / before sync finally races active→false.
   const currentSnap = job.current ?? "";
@@ -1795,8 +1857,6 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
     docsVfSyncCancelPending = false;
   }
   // 1.0.206ab: if bar shows docs Cancel chrome, always docs — do not depend on sticky/ownsJob alone.
-  // (206aa Gate D: FromPoint HIT Cancel Name but success toast — either handler never ran, or
-  // wasDocsVfSync was false so pending never set. Chrome flag closes the ownsJob race.)
   const wasDocsVfSync =
     Boolean(opts?.fromDocsCancelChrome) ||
     docsCancelChromePresented ||
@@ -1807,7 +1867,8 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
     });
   // Idempotent second docs Cancel when bar already torn down (job idle + pending).
   if (!job.running && !job.paused && docsVfSyncCancelPending && wasDocsVfSync) {
-    bumpDocsCancelSeqInDom(); // still prove Invoke landed
+    bumpDocsCancelSeqInDom();
+    replaceDocsRefreshingToastWithCancelling();
     return;
   }
   const wasRestore = !wasDocsVfSync && /restoring/i.test(currentSnap);
@@ -1816,6 +1877,12 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
     docsVfSyncCancelPending = true;
     docsVfSyncActive = false;
     bumpDocsCancelSeqInDom();
+    // 1.0.206ac: never leave "Refreshing Documents folder…" stuck (Gate D hang left it forever).
+    replaceDocsRefreshingToastWithCancelling();
+    // Defer teardown + cancel IPC off InvokePattern stack so WebView stays responsive and
+    // `await syncDocumentsVfPolicy()` can settle when Rust returns cancelled:true.
+    window.setTimeout(() => finishDocsCancelTeardown(), 0);
+    return;
   }
   batchId += 1;
   installQueue.length = 0;
@@ -1849,15 +1916,6 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
   }, 600);
   // Flush+mark any queued ready families before clearPending; reset timer/cumulative with that.
   void finalizeReadyAndClearPending();
-  // Docs path: fire-and-forget cancel IPC. With async sync_documents_vf_policy +
-  // async cancel_google_downloads (206aa amend), Cancel is not queued behind the purge job
-  // on the main thread — no need to block the click handler on the invoke.
-  if (wasDocsVfSync) {
-    void tauriInvoke("cancel_google_downloads").catch(() => {
-      /* web / ACL — pending drives late-cancel toast if Rust already finished */
-    });
-    return;
-  }
   void tauriInvoke("cancel_google_downloads").catch(() => undefined);
   // 1.0.206j: Cancel Deactivate — confirm Off only for unloaded prefix; restore Live for remainder.
   // Toast must match store (no "stay Live" if already confirmDeactivated-all at spawn).

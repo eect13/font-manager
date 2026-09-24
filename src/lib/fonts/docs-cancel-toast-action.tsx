@@ -5,7 +5,6 @@
  * with no bar Gate D id / data-automation-id / long Name (avoids dual FindFirst miss).
  */
 import { createElement, type MouseEvent } from "react";
-import { toast } from "sonner";
 import { cancelDownloadQueue } from "@/lib/fonts/os-activate";
 
 const DOCS_REFRESH_TOAST_ID = "sync-docs-vf";
@@ -23,8 +22,8 @@ export function docsCancelToastAction() {
       "data-cancel-kind": "documents-refresh-toast",
       onClick: (event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault();
+        // cancelDownloadQueue replaces Refreshing → Cancelling (do not dismiss after).
         void cancelDownloadQueue({ fromDocsCancelChrome: true });
-        toast.dismiss(DOCS_REFRESH_TOAST_ID);
       },
     },
     "Cancel",

@@ -490,20 +490,24 @@ export function RefreshDocumentsMenuItem() {
               });
               return;
             }
-            // Rescan honesty after purge.
-            await syncManagedDocumentsRoot();
+            // 1.0.206ac: toast decision BEFORE rescan so cancelled/late always replaces
+            // "Refreshing…" / "Cancelling…" even if syncManagedDocumentsRoot throws.
             if (result.cancelled) {
-              // Only raw.cancelled (206aa amend) — never soft-lie from pending.
               if (!didDocsVfSyncCancelToast()) {
                 toast.message("Documents refresh cancelled", {
                   id: "sync-docs-vf",
                   description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
                 });
               }
+              try {
+                await syncManagedDocumentsRoot();
+              } catch {
+                /* rescan best-effort after cancel */
+              }
               return;
             }
             if (result.cancelArrivedLate) {
-              didDocsVfSyncCancelToast(); // clear sticky; do not show fake cancelled
+              didDocsVfSyncCancelToast();
               const n = result.staticsDeleted;
               toast.message(
                 n === 0
@@ -514,6 +518,21 @@ export function RefreshDocumentsMenuItem() {
                   description: `${result.familiesSeen.toLocaleString()} folders checked before Cancel landed.`,
                 },
               );
+              try {
+                await syncManagedDocumentsRoot();
+              } catch {
+                /* best-effort */
+              }
+              return;
+            }
+            try {
+              await syncManagedDocumentsRoot();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err ?? "rescan failed");
+              toast.error("Documents refreshed but library rescan failed", {
+                id: "sync-docs-vf",
+                description: msg,
+              });
               return;
             }
             if (result.locked > 0) {

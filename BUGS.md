@@ -1,3 +1,11 @@
+## Fixed in tip / 1.0.206ac
+- **P0 WebView hang after Invoke (206ab Gate D):** InvokePattern SUCCESS + purge interrupted (statics kept), but `hung=True` / toast stuck on **Refreshing Documents folder…** — never **Documents refresh cancelled**. Sync teardown during Invoke blocked the UI thread so `await syncDocumentsVfPolicy()` never settled.
+- **Fix:** docs `cancelDownloadQueue` sets pending + bumps seq + replaces Refreshing→**Cancelling Documents refresh…**, then `setTimeout(0)` → `finishDocsCancelTeardown` (clear bar, cancel IPC). Toast decision **before** `syncManagedDocumentsRoot` (try/catch). Rust skips `emit_progress` after cancel flag.
+- **Honesty:** only `raw.cancelled` → **Documents refresh cancelled**; late-cancel kept; no soft-lie OR.
+- **P2:** `aria-valuenow` mirrors `data-fm-cancel-seq` for UIA.
+- Keeps 206ab: fromDocsCancelChrome, cancel-seq, inert header/nav/library, async cmds, docs_vf_sync_execute, bar-only Gate D.
+- ProductVersion 1.0.206. No tip-install/pack. Smoke-aid only — no pack / tip-install / NSIS / gh release.
+
 ## Fixed in tip / 1.0.206ab
 - **P0 Gate D Cancel still success-toast on 206aa:** FromPoint HIT Name **Cancel Documents refresh** / aid `fm-cancel-documents-refresh`, but click → **Documents refreshed — 18 redundant statics removed** (full purge). Handler fire not proven; sticky pending depended on `docsVfSyncOwnsJob` / `docsVfSyncActive`.
 - **Prove handler:** `data-fm-cancel-seq` bumps only inside docs path of `cancelDownloadQueue` (DOM on button + `[data-fm-shell-chrome]`).
