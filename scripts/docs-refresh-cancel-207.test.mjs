@@ -53,7 +53,8 @@ test("Cancel button invokes cancel_documents_refresh only", () => {
   const arm = os.slice(os.indexOf("function armDocsCancelFromChrome"));
   const armBody = arm.slice(0, arm.indexOf("export function cancelDownloadQueue"));
   assert.match(armBody, /cancel_documents_refresh/);
-  assert.doesNotMatch(armBody, /cancel_google_downloads/);
+  assert.doesNotMatch(armBody, /cancel_google_downloads|bumpDocsCancelSeqInDom/);
+  assert.doesNotMatch(os, /data-fm-cancel-seq|getDocsCancelSeq|bumpDocsCancelSeqInDom/);
   assert.match(bar, /fromDocsCancelChrome: true/);
   assert.doesNotMatch(bar, /onPointerDown|onMouseDown|data-fm-cancel-seq|aria-labelledby/);
 });

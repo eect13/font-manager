@@ -9598,7 +9598,7 @@ pub fn resume_google_downloads(app: AppHandle) -> Result<(), String> {
 /// Activate / download cancel. Does not abort a Documents refresh (`docs_cancel`)
 /// and does not emit `docs-vf-cancel-requested` (that mis-labeled Activate as refresh).
 #[tauri::command]
-pub async fn cancel_google_downloads(app: AppHandle) -> Result<(), String> {
+pub async fn cancel_google_downloads(_app: AppHandle) -> Result<(), String> {
     let state = bulk();
     state.cancel.store(true, Ordering::SeqCst);
     state.pause.store(false, Ordering::SeqCst);
@@ -9615,7 +9615,6 @@ pub async fn cancel_google_downloads(app: AppHandle) -> Result<(), String> {
             p.current = "Stopping…".into();
         }
     }
-    let _ = app;
     Ok(())
 }
 

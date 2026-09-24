@@ -31,9 +31,8 @@ test("206ab keeps ProductVersion 1.0.206", () => {
   assert.match(version, /1\.0\.207/);
 });
 
-test("P0: cancelDownloadQueue docs path bumps data-fm-cancel-seq", () => {
-  assert.match(osActivate, /data-fm-cancel-seq/);
-  assert.match(osActivate, /bumpDocsCancelSeqInDom|docsCancelSeq/);
+test("P0: cancelDownloadQueue docs path is chrome-forced, not a cancel-seq stamp", () => {
+  assert.doesNotMatch(osActivate, /data-fm-cancel-seq|bumpDocsCancelSeqInDom|getDocsCancelSeq/);
   assert.match(osActivate, /fromDocsCancelChrome/);
   assert.match(osActivate, /docsCancelChromePresented/);
   assert.match(osActivate, /setDocsCancelChromePresented/);
@@ -42,8 +41,7 @@ test("P0: cancelDownloadQueue docs path bumps data-fm-cancel-seq", () => {
     osActivate.indexOf("export function pauseDownloadQueue"),
   );
   assert.match(cancelFn, /fromDocsCancelChrome|docsCancelChromePresented/);
-  assert.match(cancelFn, /bumpDocsCancelSeqInDom/);
-  // 206ad: pending set inside armDocsCancelFromChrome (called from docs path).
+  assert.doesNotMatch(cancelFn, /bumpDocsCancelSeqInDom/);
   assert.match(cancelFn, /armDocsCancelFromChrome\(\)/);
   assert.match(osActivate, /docsVfSyncCancelPending = true/);
 });

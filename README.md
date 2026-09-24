@@ -1,6 +1,16 @@
 # Font Manager **1.0.207**
 
-**1.0.207.** Documents refresh cancel is its own flag (`docs_cancel`), not Activate’s `cancel` / “Stopping…”. The walk stays async and checks that flag between folders, so Cancel stops the next delete. Progress stays about once a second (`Refreshing Documents (n/N)`). Cancel is a normal in-app button (and tray). Escape works only while this window is focused and you are not typing — it is not a system-wide shortcut. The library stays visible. Toast follows Rust `cancelled`, not a regex on the progress label.
+FontBase-style desktop typeface library for Windows. Browse **Google Fonts** and **Fontsource**, upload TTF/OTF/WOFF/WOFF2/TTC, then **Activate** so Word, Adobe, and Figma see them while this window is open.
+
+**100% temporary session activation.** Zero registry bloat. Fonts unload on close. Library files live in `Documents / Font Manager` — nothing is copied to `C:\Windows\Fonts`. GDI registers **copies** under `%LOCALAPPDATA%\Font Manager\gdi-maps`, so Documents family folders are not write-locked after Quit. The in-browser preview is a CSS catalog only (no Word/GDI). The Windows app is the product.
+
+**Current (1.0.207).** Documents refresh cancel is its own flag (`docs_cancel`), not Activate’s `cancel` / “Stopping…”. The walk stays async and checks that flag between folders, so Cancel stops the next delete. Progress stays about once a second (`Refreshing Documents (n/N)`). Cancel is a normal in-app button and a tray item with no Esc accelerator. Escape works only while this window is focused and you are not typing — there is **no system-wide shortcut** (`tauri-plugin-global-shortcut` is not a dependency). The library stays visible. The Cancel control does not stamp `data-fm-cancel-seq`. Toast follows Rust `cancelled`, not a regex on the progress label.
+
+Google-first download; Fontsource-exclusive cards do not hit Google CSS2. Settled (Gidugu and known-incapable) is not Activated. Refresh Documents is VF-primary: purge redundant statics only when an intact variable face is present. Close-to-tray stays off, so X = Quit = Remove. Never skip Add, never raise `GDIProcessHandleQuota`, never `FR_PRIVATE`. NSIS is still Windows `deploy.bat` — not packed from this tree. GitHub `main` and the public catalog last shipped **1.0.203**. This branch is `tip/1.0.207`.
+
+## Letter-tip history
+
+Notes from **1.0.206** through **1.0.206ag** stay below so older reviews can find them. Where they mention a system-wide Escape shortcut, pointerdown cancel, hiding the library, or `data-fm-cancel-seq`, **1.0.207 replaced that**. They are not the live behavior.
 
 **1.0.206ag (Eric GO via Skye — native Escape must abort mid-Refresh).** Live 206af: Escape SendKeys into WebView never armed cancel; UIA often blind; job finished → Anti-PASS refreshed toast. Fix: **`tauri-plugin-global-shortcut` Escape** registered only while Rust `docs_vf_session_live` (bypass WV); tray Cancel + Esc accel → `request_docs_vf_cancel_native`; immediate `bulk().cancel`; keep HOLD (no bare Stopping); UIA labelledby + unnamed chrome. ProductVersion **1.0.206**. No tip-install/pack.
 

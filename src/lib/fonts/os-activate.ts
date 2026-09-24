@@ -1311,9 +1311,7 @@ let docsVfSyncCancelToasted = false;
  * Cancel must treat chrome as docs even if sticky/ownsJob raced false.
  */
 let docsCancelChromePresented = false;
-/** Increments only on docs cancel path — Gate D reads `data-fm-cancel-seq`. */
-let docsCancelSeq = 0;
-/** Teardown scheduled once per arm (pointerdown + click must not double-schedule). */
+/** Teardown scheduled once per arm (a second click must not double-schedule). */
 let docsCancelTeardownScheduled = false;
 /** Cancel IPC already fired for this arm (pointerdown beats purge; teardown must not re-fire). */
 let docsCancelIpcFired = false;
@@ -1363,7 +1361,7 @@ export function clearDocsVfSyncCancelPending() {
   docsVfSyncSessionLive = false;
 }
 
-/** True after pointerdown/click armed docs cancel (click may no-op). */
+/** True after the docs Cancel button armed this refresh (a second click is a no-op). */
 export function isDocsCancelArmed(): boolean {
   return docsVfSyncCancelPending && docsCancelTeardownScheduled;
 }
@@ -1400,40 +1398,6 @@ export function setDocsCancelChromePresented(presented: boolean) {
   docsCancelChromePresented = Boolean(presented);
 }
 
-export function getDocsCancelSeq(): number {
-  return docsCancelSeq;
-}
-
-/** Bump seq + stamp DOM so Gate D can prove cancelDownloadQueue docs path ran. */
-function bumpDocsCancelSeqInDom() {
-  docsCancelSeq += 1;
-  const seq = String(docsCancelSeq);
-  try {
-    const btn =
-      document.getElementById("fm-cancel-documents-refresh") ||
-      document.querySelector(
-        '[data-testid="activate-bar-cancel"][data-cancel-kind="documents-refresh"]',
-      );
-    if (btn) {
-      // 1.0.206af: seq via data-* / aria-valuetext only — NEVER title/aria-description/aria-valuenow
-      // (WV2 FromPoint/Name went blind when those stole accessible Name from button contents).
-      btn.setAttribute("data-fm-cancel-seq", seq);
-      btn.setAttribute("aria-valuetext", `fm-cancel-seq=${seq}`);
-      btn.removeAttribute("title");
-      btn.removeAttribute("aria-description");
-      btn.removeAttribute("aria-valuenow");
-    }
-    const chrome = document.querySelector("[data-fm-shell-chrome]");
-    if (chrome) {
-      chrome.setAttribute("data-fm-cancel-seq", seq);
-      chrome.removeAttribute("title");
-      chrome.removeAttribute("aria-valuenow");
-    }
-  } catch {
-    /* jsdom / SSR */
-  }
-}
-
 const DOCS_REFRESH_TOAST_ID = "sync-docs-vf";
 
 /** Replace stuck "Refreshing Documents folder…" so Cancel never leaves it forever (206ac). */
@@ -1451,7 +1415,7 @@ function replaceDocsRefreshingToastWithCancelling() {
 }
 
 export type CancelDownloadOpts = {
-  /** True when bar docs Cancel chrome (pointerdown/click/keyboard) — always docs path. */
+  /** True when bar docs Cancel chrome (button, in-window Escape, or tray) — always docs path. */
   fromDocsCancelChrome?: boolean;
 };
 
@@ -1916,20 +1880,18 @@ function finishDocsCancelTeardown() {
 }
 
 /**
- * 1.0.206ad: arm docs Cancel once (pointerdown preferred).
- * Sync: sticky pending + seq + Cancelling toast + **immediate** cancel IPC (beat purge).
- * Deferred: bar teardown via setTimeout(0) (keep 206ac Invoke hang fix).
- * Second call (click after pointerdown) is a no-op aside from seq bump.
+ * 1.0.207: arm docs Cancel once from the in-app button, in-window Escape, or tray.
+ * Sync: sticky pending + Cancelling toast + immediate `cancel_documents_refresh`.
+ * Deferred: bar teardown via setTimeout(0) (sync teardown during a click hung the WebView).
+ * A second call is a no-op.
  */
 function armDocsCancelFromChrome(): boolean {
   if (docsVfSyncCancelPending && docsCancelTeardownScheduled) {
-    bumpDocsCancelSeqInDom();
     return false;
   }
   docsVfSyncCancelPending = true;
   // Keep sessionLive true until sync finally — Escape idempotent mid-await.
   docsVfSyncActive = false;
-  bumpDocsCancelSeqInDom();
   replaceDocsRefreshingToastWithCancelling();
   // Fire cancel IPC NOW — do not wait for setTimeout (206ac deferred IPC lost the mouse race).
   if (!docsCancelIpcFired) {
@@ -1965,14 +1927,12 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
       docsVfSyncCancelPending,
       current: currentSnap,
     });
-  // Idempotent: already armed (pointerdown) — click/Invoke must not double IPC/teardown.
+  // Idempotent: already armed — a second click must not double IPC/teardown.
   if (wasDocsVfSync && docsVfSyncCancelPending && docsCancelTeardownScheduled) {
-    bumpDocsCancelSeqInDom();
     return;
   }
   // Idempotent second docs Cancel when bar already torn down (job idle + pending).
   if (!job.running && !job.paused && docsVfSyncCancelPending && wasDocsVfSync) {
-    bumpDocsCancelSeqInDom();
     replaceDocsRefreshingToastWithCancelling();
     return;
   }

@@ -2,10 +2,11 @@
 - **Documents refresh cancel is not Activate cancel.** `docs_cancel` is checked between family folders and before each purge. After it is set, no further statics are deleted. `cancel_google_downloads` no longer emits `docs-vf-cancel-requested` or overwrites a live refresh label with `Stopping…`.
 - **No system-wide Escape.** Removed `tauri-plugin-global-shortcut`. In-window Escape cancels a refresh only when focus is not in a text field. Tray item has no Esc accelerator.
 - **Library stays on screen.** `shouldHideLibraryFromA11yDuringDocsJob` is always false (hiding ~2100 cards hung UIA hit-testing).
-- **Cancel button** is one click → `cancel_documents_refresh`. No pointerdown race, no cancel-seq HelpText.
+- **Cancel button** is one click → `cancel_documents_refresh`. No pointerdown race, no cancel-seq HelpText, no `data-fm-cancel-seq` DOM stamp.
 - **Did not:** FR_PRIVATE, skip Add, raise `GDIProcessHandleQuota`, pack NSIS here.
 
 ## Fixed in tip / 1.0.206ag
+Superseded by **1.0.207**. The notes below describe that tip only — there is no system-wide Escape shortcut in the current build.
 - **P0 Escape SendKeys into WebView failed (206af Gate D):** mid-job Escape did not arm cancel; Inter static 18→0; success **Documents refreshed — N…**. UIA FindFirst often never HIT Cancel.
 - **Native Escape:** `tauri-plugin-global-shortcut` registers **Escape** only while Rust `docs_vf_session_live` (set at sync start, cleared in finish). Handler → `request_docs_vf_cancel_native` (immediate `bulk().cancel` + `cancel_google_downloads` emit). Bypasses WebView keydown/SendKeys.
 - **Tray:** Cancel Documents refresh + **Esc** accelerator → same native path (session-live gated).
