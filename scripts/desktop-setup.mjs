@@ -100,7 +100,7 @@ if (!which("rustc") || !which("cargo")) {
         "--accept-package-agreements",
         "--accept-source-agreements",
       ],
-      { stdio: "inherit", shell: true },
+      { stdio: "inherit", shell: false },
     );
     if (winget.status !== 0) {
       fail(

@@ -136,6 +136,9 @@ if (existsSync(cargoBin) && !process.env.PATH?.includes(cargoBin)) {
   process.env.PATH = `${cargoBin}${delimiter}${process.env.PATH ?? ""}`;
 }
 console.log(`  Node ${process.version}`);
+if (!existsSync(join(ROOT, ".git"))) {
+  console.log("  No .git folder (GitHub Download ZIP). Build still runs. TIP_SHA.txt will say source=no-git, not a commit.");
+}
 console.log(`  ${existsSync(join(cargoBin, WIN ? "cargo.exe" : "cargo")) ? "Rust cargo on PATH" : "Rust will install in step 2 if missing"}`);
 
 log("2/4", "Install deps + compile release (Tauri)");
@@ -196,7 +199,7 @@ if (copied.length) {
 
 const openDir = existsSync(outDir) ? outDir : existsSync(bundleDir) ? bundleDir : existsSync(releaseDir) ? releaseDir : null;
 if (!noOpen && openDir) {
-  if (WIN) spawnSync("explorer", [openDir], { shell: true, stdio: "ignore" });
+  if (WIN) spawnSync("explorer", [openDir], { shell: false, stdio: "ignore" });
   else if (platform() === "darwin") spawnSync("open", [openDir], { stdio: "ignore" });
   else spawnSync("xdg-open", [openDir], { stdio: "ignore" });
   console.log(`  ${openDir}`);

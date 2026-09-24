@@ -4,6 +4,7 @@
 - **Library stays on screen.** `shouldHideLibraryFromA11yDuringDocsJob` is always false (hiding ~2100 cards hung UIA hit-testing).
 - **Cancel button** is one click → `cancel_documents_refresh`. No pointerdown race, no cancel-seq HelpText, no `data-fm-cancel-seq` DOM stamp.
 - **Did not:** FR_PRIVATE, skip Add, raise `GDIProcessHandleQuota`, pack NSIS here.
+- **GitHub zip can build.** `write-tip-sha.mjs` no longer fails `tauri build` when `.git` is missing. Stamp is `sha=unknown` / `source=no-git`. A real checkout still writes the commit.
 
 ## Fixed in tip / 1.0.206ag
 Superseded by **1.0.207**. The notes below describe that tip only — there is no system-wide Escape shortcut in the current build.

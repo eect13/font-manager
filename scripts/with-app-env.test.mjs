@@ -15,6 +15,8 @@ import {
   readAppEnv,
   resolveCommand,
   spawnUsesShell,
+  quoteWinArg,
+  winShellLine,
   withLocalBinPath,
 } from "./with-app-env.mjs";
 
@@ -147,6 +149,12 @@ test("Windows .cmd shims use a shell; absolute binaries do not", () => {
   assert.equal(spawnUsesShell("vite", "win32"), true);
   assert.equal(spawnUsesShell("/usr/bin/node", "win32"), false);
   assert.equal(spawnUsesShell("vite", "linux"), false);
+});
+
+test("Windows shim line is one escaped command (no shell:true args array)", () => {
+  assert.equal(winShellLine("vite", ["build"]), "vite build");
+  assert.equal(quoteWinArg("C:\\Users\\Eric\\font manager"), '"C:\\Users\\Eric\\font manager"');
+  assert.equal(winShellLine("vite", ["build", "--outDir", "C:\\a b"]), 'vite build --outDir "C:\\a b"');
 });
 
 test("bare vite resolves to the local binary on POSIX", () => {

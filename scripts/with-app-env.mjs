@@ -106,13 +106,25 @@ export function resolveCommand(command, root = projectRoot(), platform = process
 }
 
 /**
- * Windows `.cmd` shims need a shell. Absolute binaries (node.exe, /usr/bin/env)
- * must not, or paths with spaces break.
+ * Windows `.cmd` shims need cmd.exe. Absolute binaries (node.exe) must not,
+ * or paths with spaces break. Node DEP0190: do not pass an args array with
+ * `shell: true` (they are concatenated, not escaped). Route shims through
+ * `cmd.exe /d /s /c` with `shell: false` instead.
  */
 export function spawnUsesShell(command, platform = process.platform) {
   if (platform !== "win32") return false;
   if (/\.(cmd|bat|ps1)$/i.test(command)) return true;
   return !isAbsolute(command);
+}
+
+/** One cmd.exe command line. Only quotes args that the shell would split. */
+export function quoteWinArg(value) {
+  const s = String(value);
+  return /[\s&()^<>|]/.test(s) || s.includes('"') ? `"${s.replace(/"/g, '\\"')}"` : s;
+}
+
+export function winShellLine(command, args) {
+  return [command, ...args].map(quoteWinArg).join(" ");
 }
 
 /**
@@ -141,13 +153,21 @@ function main(argv) {
   const root = projectRoot();
   const env = withLocalBinPath(mergeAppEnv(readAppEnv(root), process.env), root);
   const resolved = resolveCommand(command, root);
-  const child = spawn(resolved, args, {
-    stdio: "inherit",
-    env,
-    cwd: root,
-    shell: spawnUsesShell(resolved),
-    windowsHide: true,
-  });
+  const usesCmd = spawnUsesShell(resolved);
+  const child = usesCmd
+    ? spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", winShellLine(resolved, args)], {
+        stdio: "inherit",
+        env,
+        cwd: root,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      })
+    : spawn(resolved, args, {
+        stdio: "inherit",
+        env,
+        cwd: root,
+        windowsHide: true,
+      });
   // The dev server is long-running and is stopped by signalling this wrapper.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));
