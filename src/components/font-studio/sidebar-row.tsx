@@ -8,7 +8,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const MAIN =
-  "flex h-8 min-w-0 w-full items-center gap-2 rounded-md py-0 pl-2.5 pr-2.5 text-left text-sm transition-colors duration-150";
+  "fm-sidebar-row flex min-w-0 w-full items-center gap-2 rounded-md py-0 pl-2.5 pr-2.5 text-left text-sm transition-colors duration-150";
 const COUNT = "min-w-10 shrink-0 text-right tabular-nums text-xs text-muted-foreground";
 
 export function sidebarMainClass(active: boolean) {
@@ -61,7 +61,7 @@ export function SidebarOverflowMenu({
           aria-label={`${label} menu`}
           onClick={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}
-          className="absolute top-0 right-2.5 z-20 flex h-8 w-10 items-center justify-center rounded-md text-muted-foreground opacity-0 pointer-events-none transition-opacity duration-150 hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:opacity-100"
+          className="fm-sidebar-row absolute top-0 right-2.5 z-20 flex w-10 items-center justify-center rounded-md text-muted-foreground opacity-0 pointer-events-none transition-opacity duration-150 hover:text-foreground group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:opacity-100"
         >
           <MoreHorizontal className="size-3.5" />
         </button>

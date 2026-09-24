@@ -80,3 +80,11 @@ test("FitSpecimen does not subscribe after the face is already live", () => {
   assert.match(card, /if \(seen\) return/);
   assert.match(card, /loadingdone/);
 });
+
+test("Google preview hrefs are Google-only (no dual Fontsource fallback)", () => {
+  const start = loader.indexOf("function catalogCssHrefs");
+  const fn = loader.slice(start, loader.indexOf("function fontsourceCssHref"));
+  assert.match(fn, /return \[googlePreviewCssHref\(font, italic\)\];/);
+  assert.doesNotMatch(fn, /\[googlePreviewCssHref\(font, italic\), \.\.\.fontsource\]/);
+});
+
