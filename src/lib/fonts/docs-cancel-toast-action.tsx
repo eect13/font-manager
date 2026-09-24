@@ -23,7 +23,7 @@ export function docsCancelToastAction() {
       "data-cancel-kind": "documents-refresh-toast",
       onClick: (event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault();
-        void cancelDownloadQueue();
+        void cancelDownloadQueue({ fromDocsCancelChrome: true });
         toast.dismiss(DOCS_REFRESH_TOAST_ID);
       },
     },

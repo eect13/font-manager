@@ -1,3 +1,12 @@
+## Fixed in tip / 1.0.206ab
+- **P0 Gate D Cancel still success-toast on 206aa:** FromPoint HIT Name **Cancel Documents refresh** / aid `fm-cancel-documents-refresh`, but click → **Documents refreshed — 18 redundant statics removed** (full purge). Handler fire not proven; sticky pending depended on `docsVfSyncOwnsJob` / `docsVfSyncActive`.
+- **Prove handler:** `data-fm-cancel-seq` bumps only inside docs path of `cancelDownloadQueue` (DOM on button + `[data-fm-shell-chrome]`).
+- **Sticky without ownsJob race:** bar Cancel calls `cancelDownloadQueue({ fromDocsCancelChrome: true })`; `setDocsCancelChromePresented` while docs chrome painted.
+- **Rust:** `docs_vf_sync_execute` returns `cancelled: true` when cancel mid-purge or pre-purge (scan); unit tests on execute path.
+- **FindFirst ≤300ms:** inert header + bottom nav + library during docs (no aria-hidden); Cancel first in chrome; native `<button type="button" role="button">` with visible Name span; region label on shell-chrome.
+- **Honesty kept:** only `raw.cancelled` → Documents refresh cancelled; late-cancel toast; bar-only Gate D id; async cmds; 206x Dismiss.
+- ProductVersion 1.0.206. No tip-install/pack. Smoke-aid only — no pack / tip-install / NSIS / gh release.
+
 ## Fixed in tip / 1.0.206aa
 - **P0 real mid-job Documents Cancel:** 206z Gate D — UIA FromPoint Name **Cancel Documents refresh** / Id `fm-cancel-documents-refresh` HIT, but mouse click did not abort; toast was **Documents refreshed — N redundant statics removed**. Sync `sync_documents_vf_policy` (even with worker+`recv`) held Tauri v2 **main thread**, so sync Cancel IPC queued behind the job.
 - **Amend (Skye HOLD 6.0):** `sync_documents_vf_policy` + `cancel_google_downloads` are **`async`**; purge work in `tauri::async_runtime::spawn_blocking`. Cancel checks during scan + before each purge via shared `run_docs_vf_sync_purge_loop` (unit test calls the real loop — no `docs_vf_sync_loop_sim`).

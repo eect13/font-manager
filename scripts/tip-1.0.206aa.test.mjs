@@ -60,7 +60,9 @@ test("P0-1/P1-5: real purge loop shared by production + unit test (no sim copy)"
     activateRs.indexOf("fn sync_documents_vf_policy_work"),
     activateRs.indexOf("fn finish_docs_vf_sync"),
   );
-  assert.match(work, /run_docs_vf_sync_purge_loop/);
+  // 206ab: work calls docs_vf_sync_execute (which uses the shared purge loop).
+  assert.match(activateRs, /fn docs_vf_sync_execute/);
+  assert.match(work, /docs_vf_sync_execute|run_docs_vf_sync_purge_loop/);
   assert.match(work, /purge_redundant_statics_in_dir/);
   assert.match(work, /scan_cancelled/);
 });
@@ -111,7 +113,7 @@ test("P1-4: docs Cancel onClick only; cancelDownloadQueue docs-idempotent", () =
   assert.match(native[0], /onClick/);
   assert.doesNotMatch(native[0], /onPointerDown/);
   assert.doesNotMatch(native[0], /active:not-disabled:scale/);
-  assert.match(native[0], /cancelDownloadQueue\(\)/);
+  assert.match(native[0], /cancelDownloadQueue\(/);
   const cancelFn = osActivate.slice(
     osActivate.indexOf("export function cancelDownloadQueue"),
     osActivate.indexOf("export function pauseDownloadQueue"),

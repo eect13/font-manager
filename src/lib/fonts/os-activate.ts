@@ -1293,6 +1293,13 @@ let docsVfSyncActive = false;
 let docsVfSyncCancelPending = false;
 /** Set if cancel path toasted docs-cancel early — callers must not double-toast. */
 let docsVfSyncCancelToasted = false;
+/**
+ * 1.0.206ab: download-bar sets true while docs Cancel identity is painted.
+ * Cancel must treat chrome as docs even if sticky/ownsJob raced false.
+ */
+let docsCancelChromePresented = false;
+/** Increments only on docs cancel path — Gate D reads `data-fm-cancel-seq`. */
+let docsCancelSeq = 0;
 let expectKind: "" | "download" | "register" | "remove" = "";
 
 /** Arm sticky docs ownership before opening Refreshing Documents toast Cancel (Should). */
@@ -1328,6 +1335,38 @@ export function clearDocsVfSyncCancelPending() {
   docsVfSyncCancelPending = false;
   docsVfSyncCancelToasted = false;
 }
+
+/** download-bar: docs Cancel Name/id is currently painted (cancellable). */
+export function setDocsCancelChromePresented(presented: boolean) {
+  docsCancelChromePresented = Boolean(presented);
+}
+
+export function getDocsCancelSeq(): number {
+  return docsCancelSeq;
+}
+
+/** Bump seq + stamp DOM so Gate D can prove cancelDownloadQueue docs path ran. */
+function bumpDocsCancelSeqInDom() {
+  docsCancelSeq += 1;
+  const seq = String(docsCancelSeq);
+  try {
+    const btn =
+      document.getElementById("fm-cancel-documents-refresh") ||
+      document.querySelector(
+        '[data-testid="activate-bar-cancel"][data-cancel-kind="documents-refresh"]',
+      );
+    if (btn) btn.setAttribute("data-fm-cancel-seq", seq);
+    const chrome = document.querySelector("[data-fm-shell-chrome]");
+    if (chrome) chrome.setAttribute("data-fm-cancel-seq", seq);
+  } catch {
+    /* jsdom / SSR */
+  }
+}
+
+export type CancelDownloadOpts = {
+  /** True when bar docs Cancel button invoked — always docs path (P0 sticky). */
+  fromDocsCancelChrome?: boolean;
+};
 
 function emitProgress(force = false) {
   if (force) {
@@ -1742,36 +1781,41 @@ async function pumpRemove(myBatch: number) {
   if (myBatch === batchId) finishIfIdle();
 }
 
-export function cancelDownloadQueue() {
+export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
   // 1.0.206w: snapshot BEFORE clearing job / before sync finally races active→false.
   const currentSnap = job.current ?? "";
   // Orphaned sticky while a live non-docs job runs: drop docs ownership so Activate/Deactivate Cancel works.
   if (
     docsVfSyncCancelPending &&
     !docsVfSyncActive &&
+    !docsCancelChromePresented &&
+    !(opts?.fromDocsCancelChrome) &&
     (job.running || job.paused)
   ) {
     docsVfSyncCancelPending = false;
   }
-  const wasDocsVfSync = docsVfSyncOwnsJob({
-    docsVfSyncActive,
-    docsVfSyncCancelPending,
-    current: currentSnap,
-  });
-  // 1.0.206aa nit: idempotent second docs Cancel only when the bar is already torn down
-  // (`!job.running && !job.paused && docsVfSyncCancelPending`). Chosen over
-  // `wasDocsVfSync && pending` so a stale pending never swallows a later live Activate/Deactivate Cancel
-  // (those have running/paused true; orphaned sticky cleared above). Repeated docs Cancel after the
-  // first click cleared the job is still a no-op (no double finalize/IPC).
-  if (!job.running && !job.paused && docsVfSyncCancelPending) {
+  // 1.0.206ab: if bar shows docs Cancel chrome, always docs — do not depend on sticky/ownsJob alone.
+  // (206aa Gate D: FromPoint HIT Cancel Name but success toast — either handler never ran, or
+  // wasDocsVfSync was false so pending never set. Chrome flag closes the ownsJob race.)
+  const wasDocsVfSync =
+    Boolean(opts?.fromDocsCancelChrome) ||
+    docsCancelChromePresented ||
+    docsVfSyncOwnsJob({
+      docsVfSyncActive,
+      docsVfSyncCancelPending,
+      current: currentSnap,
+    });
+  // Idempotent second docs Cancel when bar already torn down (job idle + pending).
+  if (!job.running && !job.paused && docsVfSyncCancelPending && wasDocsVfSync) {
+    bumpDocsCancelSeqInDom(); // still prove Invoke landed
     return;
   }
   const wasRestore = !wasDocsVfSync && /restoring/i.test(currentSnap);
   if (wasDocsVfSync) {
     // Sticky pending → suppress Download cancelled. Callers toast when Rust confirms (or late-cancel).
-    // Avoid cancel-then-success soft-lie (do not toast docs-cancel here).
     docsVfSyncCancelPending = true;
     docsVfSyncActive = false;
+    bumpDocsCancelSeqInDom();
   }
   batchId += 1;
   installQueue.length = 0;

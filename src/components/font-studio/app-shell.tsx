@@ -123,7 +123,11 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
   return (
     <TooltipProvider delayDuration={220}>
       <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-        <header className="fm-shell-header grid grid-cols-[auto_1fr_auto] items-center border-b border-border md:grid-cols-[17rem_1fr_auto]">
+        {/* 1.0.206ab: inert header during docs Cancel so FindFirst ≤300ms (Cancel is in shell-chrome below). */}
+        <header
+          className="fm-shell-header grid grid-cols-[auto_1fr_auto] items-center border-b border-border md:grid-cols-[17rem_1fr_auto]"
+          inert={hideLibraryA11y || undefined}
+        >
           <div className="flex items-center gap-1.5 pl-2 md:pl-3">
             <Button
               size="icon-sm"
@@ -237,14 +241,17 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
         </header>
         {/* 1.0.206z: shell chrome (header already above + DownloadBar) stays outside library inert.
             data-fm-shell-chrome marks the Cancel host region for tip/structure asserts. */}
-        <div data-fm-shell-chrome="" className="shrink-0">
+        <div
+          data-fm-shell-chrome=""
+          className="shrink-0"
+          role="region"
+          aria-label={hideLibraryA11y ? "Documents refresh progress" : undefined}
+        >
           <DownloadBar />
         </div>
 
-        {/* 1.0.206y/aa: inert library during docs sync so FindFirst Cancel ≤300ms.
-            206aa: do NOT set aria-hidden — WebView2 GetClickablePoint hangs ~10s on Cancel when a
-            large sibling is aria-hidden (Skye Gate D). inert alone excludes the subtree from a11y.
-            Cancel (DownloadBar) must never be a descendant of this subtree. */}
+        {/* 1.0.206y/aa/ab: inert library (+ header/nav) during docs sync so FindFirst Cancel ≤300ms.
+            Never aria-hidden on large siblings (GetClickablePoint hang). Cancel stays in shell-chrome. */}
         <div
           data-fm-library-inert=""
           className="relative flex min-h-0 flex-1 overflow-hidden"
@@ -263,7 +270,10 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
           <FontInspector />
         </div>
 
-        <nav className="grid grid-cols-4 border-t border-border bg-card lg:hidden">
+        <nav
+          className="grid grid-cols-4 border-t border-border bg-card lg:hidden"
+          inert={hideLibraryA11y || undefined}
+        >
           {NAV.map((item) => {
             const Icon = item.icon;
             const active = item.match(pathname);

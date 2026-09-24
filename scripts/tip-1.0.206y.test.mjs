@@ -84,10 +84,13 @@ test("app-shell hides route/library during docs; DownloadBar outside inert", () 
   assert.match(appShell, /inert=\{hideLibraryA11y/);
   assert.match(appShell, /aria-busy=\{hideLibraryA11y/);
   const barAt = appShell.indexOf("<DownloadBar");
-  const inertAt = appShell.indexOf("inert={hideLibraryA11y");
-  assert.ok(barAt >= 0 && inertAt > barAt, "DownloadBar above inert content");
-  const barBlock = appShell.slice(barAt, inertAt);
-  assert.doesNotMatch(barBlock, /inert=\{hideLibraryA11y/);
+  const libraryInertAt = appShell.indexOf("data-fm-library-inert");
+  assert.ok(barAt >= 0 && libraryInertAt > barAt, "DownloadBar above library inert");
+  // 206ab: header/nav may also be inert; Cancel chrome itself must not wrap DownloadBar in inert.
+  const chromeAt = appShell.indexOf("data-fm-shell-chrome");
+  assert.ok(chromeAt >= 0 && chromeAt < barAt);
+  const chromeBlock = appShell.slice(chromeAt, libraryInertAt);
+  assert.doesNotMatch(chromeBlock, /inert=\{hideLibraryA11y/);
 });
 
 test("download-bar Cancel spreads cancelChromeA11y id onto Button (real <button>)", () => {
