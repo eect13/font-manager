@@ -17,6 +17,7 @@ import {
 import {
   advanceDocsCancelChrome,
   cancelChromeA11y,
+  cancelChromeVisibleLabel,
 } from "@/lib/fonts/docs-vf-sync-ownership.mjs";
 
 function clampPct(n: number) {
@@ -180,7 +181,7 @@ export function DownloadBar() {
             </span>
           ) : null}
           <span className="text-muted-foreground">
-            {settledIdle || holdDismissChrome
+            {settledIdle || holdDismissChrome || docsChrome
               ? ""
               : job.paused
                 ? " · queue held at this percent — Resume continues, does not restart"
@@ -225,8 +226,8 @@ export function DownloadBar() {
             {...cancelChromeA11y({ dismissHold: true })}
             onClick={() => dismissDownloadBar()}
           >
-            <X />
-            Dismiss
+            <X aria-hidden="true" />
+            {cancelChromeVisibleLabel({ dismissHold: true })}
           </Button>
         ) : job.running || job.paused ? (
           <>
@@ -246,7 +247,8 @@ export function DownloadBar() {
               size="sm"
               variant="ghost"
               className="h-7 px-2"
-              /* 1.0.206x/y: stable key + latched docs Cancel; a11y from cancelChromeA11y spreads id onto this <button> (WebView2 AutomationId). */
+              /* 1.0.206z: visible label = UIA Name (WebView2 often ignores aria-label for Name);
+                 cancelChromeA11y spreads unique id onto this real <button> (toast omits DOM id). */
               data-testid="activate-bar-cancel"
               {...cancelChromeA11y({
                 showDocsCancelIdentity: docsChrome,
@@ -254,8 +256,11 @@ export function DownloadBar() {
               })}
               onClick={() => cancelDownloadQueue()}
             >
-              <X />
-              Cancel
+              <X aria-hidden="true" />
+              {cancelChromeVisibleLabel({
+                showDocsCancelIdentity: docsChrome,
+                restoring,
+              })}
             </Button>
           </>
         ) : null}

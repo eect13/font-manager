@@ -1,18 +1,17 @@
 /**
- * 1.0.206y — docs-owned toast Cancel uses the same Name/AutomationId as the
- * progress-bar Cancel (`cancelChromeA11y`). Sonner Action only exposes label/onClick,
- * so we pass a React element (ValidElement path) with id on the real <button>.
+ * 1.0.206z amend (Skye HOLD) — docs-owned toast Cancel is a real <button> that calls
+ * `cancelDownloadQueue` (honesty: mid-job → Documents refresh cancelled). Gate D UIA
+ * Name/AutomationId stay on the **progress bar only** — toast uses short Name **Cancel**
+ * with no bar Gate D id / data-automation-id / long Name (avoids dual FindFirst miss).
  */
 import { createElement, type MouseEvent } from "react";
 import { toast } from "sonner";
-import { cancelChromeA11y } from "@/lib/fonts/docs-vf-sync-ownership.mjs";
 import { cancelDownloadQueue } from "@/lib/fonts/os-activate";
 
 const DOCS_REFRESH_TOAST_ID = "sync-docs-vf";
 
-/** Toast action button with docs Cancel identity (Gate D UIA). */
+/** Toast action: short Cancel only — Gate D identity is bar-only. */
 export function docsCancelToastAction() {
-  const a11y = cancelChromeA11y({ showDocsCancelIdentity: true });
   return createElement(
     "button",
     {
@@ -20,7 +19,8 @@ export function docsCancelToastAction() {
       "data-button": true,
       "data-action": true,
       "data-testid": "docs-toast-cancel",
-      ...a11y,
+      "aria-label": "Cancel",
+      "data-cancel-kind": "documents-refresh-toast",
       onClick: (event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault();
         void cancelDownloadQueue();

@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import {
   advanceDocsCancelChrome,
   cancelChromeA11y,
+  cancelChromeVisibleLabel,
   cancelToastKind,
+  docsCancelChromeHosts,
   docsVfSyncOwnsJob,
   isDocsRefreshJobCurrent,
   shouldHideLibraryFromA11yDuringDocsJob,
@@ -43,79 +45,60 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
-test("206y keeps ProductVersion 1.0.206", () => {
+test("206z keeps ProductVersion 1.0.206", () => {
   assert.equal(pkg.version, "1.0.206");
   assert.equal(tauri.version, "1.0.206");
   assert.match(version, /1\.0\.206/);
 });
 
-test("shouldHideLibraryFromA11yDuringDocsJob — docs+cancellable only", () => {
+test("bar Gate D visible Name via cancelChromeVisibleLabel", () => {
   assert.equal(
-    shouldHideLibraryFromA11yDuringDocsJob({
-      docsOwns: true,
-      cancelChromeEligible: true,
-    }),
-    true,
+    cancelChromeVisibleLabel({ showDocsCancelIdentity: true }),
+    "Cancel Documents refresh",
   );
-  assert.equal(
-    shouldHideLibraryFromA11yDuringDocsJob({
-      docsOwns: true,
-      cancelChromeEligible: false,
-    }),
-    false,
-    "post-end / idle must not keep library aria-hidden",
-  );
-  assert.equal(
-    shouldHideLibraryFromA11yDuringDocsJob({
-      docsOwns: false,
-      cancelChromeEligible: true,
-    }),
-    false,
-    "Activate scan must not hide library",
-  );
-  assert.match(ownership, /shouldHideLibraryFromA11yDuringDocsJob/);
+  assert.equal(cancelChromeVisibleLabel({ dismissHold: true }), "Dismiss");
+  assert.equal(cancelChromeVisibleLabel({ restoring: true }), "Cancel session restore");
+  assert.equal(cancelChromeVisibleLabel({}), "Cancel");
+  assert.match(ownership, /cancelChromeVisibleLabel/);
+  assert.match(downloadBar, /cancelChromeVisibleLabel/);
 });
 
-test("app-shell hides route/library during docs; DownloadBar outside aria-hidden", () => {
-  assert.match(appShell, /shouldHideLibraryFromA11yDuringDocsJob/);
-  assert.match(appShell, /isDocsVfSyncJob\(\)/);
-  assert.match(appShell, /hideLibraryA11y/);
-  assert.match(appShell, /aria-hidden=\{hideLibraryA11y/);
-  assert.match(appShell, /inert=\{hideLibraryA11y/);
-  assert.match(appShell, /aria-busy=\{hideLibraryA11y/);
-  // DownloadBar must appear before the aria-hidden content wrapper
-  const barAt = appShell.indexOf("<DownloadBar");
-  const hideAt = appShell.indexOf("aria-hidden={hideLibraryA11y");
-  assert.ok(barAt >= 0 && hideAt > barAt, "DownloadBar above aria-hidden content");
-  // Content wrapper (not DownloadBar) carries aria-hidden
-  const barBlock = appShell.slice(barAt, hideAt);
-  assert.doesNotMatch(barBlock, /aria-hidden/);
-});
-
-test("download-bar Cancel spreads cancelChromeA11y id onto Button (real <button>)", () => {
-  assert.match(downloadBar, /cancelChromeA11y\(/);
+test("download-bar docs Cancel uses Gate D visible Name + cancelChromeA11y id", () => {
+  assert.match(downloadBar, /cancelChromeVisibleLabel\(\{/);
   assert.match(downloadBar, /showDocsCancelIdentity:\s*docsChrome/);
-  assert.match(downloadBar, /data-testid="activate-bar-cancel"/);
-  // id comes from helper spread — not hardcoded wrapper
-  assert.match(ownership, /id:\s*"fm-cancel-documents-refresh"/);
-  const docs = cancelChromeA11y({ showDocsCancelIdentity: true });
-  assert.equal(docs.id, "fm-cancel-documents-refresh");
-  assert.equal(docs["aria-label"], "Cancel Documents refresh");
-  assert.equal(docs["data-automation-id"], "fm-cancel-documents-refresh");
-  // Suppress aria-live storms during docs chrome
-  assert.match(downloadBar, /aria-live=\{docsChrome \|\| holdDismissChrome/);
-  // job.current family names still suppressed during docs
-  assert.match(downloadBar, /!scanning && !restoring && !docsChrome/);
+  assert.match(downloadBar, /cancelChromeA11y\(/);
+  const cancelBtn = downloadBar.match(
+    /key="activate-bar-cancel"[\s\S]*?<\/Button>/,
+  );
+  assert.ok(cancelBtn, "activate-bar-cancel Button present");
+  assert.match(cancelBtn[0], /cancelChromeVisibleLabel/);
+  assert.doesNotMatch(
+    cancelBtn[0],
+    />\s*Cancel\s*</,
+    "bare Cancel text node would make UIA Name miss Gate D",
+  );
+  assert.match(cancelBtn[0], /X aria-hidden/);
+  const barDocs = cancelChromeA11y({ showDocsCancelIdentity: true });
+  assert.equal(barDocs.id, "fm-cancel-documents-refresh");
+  assert.equal(barDocs["aria-label"], "Cancel Documents refresh");
+  assert.equal(barDocs["data-automation-id"], "fm-cancel-documents-refresh");
 });
 
-test("toast Cancel while docs-owned is real button + cancelDownloadQueue (Gate D Name bar-only since 206z amend)", () => {
-  // 206z amend (Skye HOLD): Gate D Name/id on progress bar only; toast = short Cancel.
+test("toast Cancel is short Cancel only — no Gate D Name/id/data-automation-id", () => {
   assert.match(toastAction, /createElement\(\s*"button"/);
   assert.match(toastAction, /cancelDownloadQueue/);
+  assert.match(toastAction, /data-testid":\s*"docs-toast-cancel"/);
+  // Short visible + accessible Cancel (attrs + children only — ignore file header comments)
   const body = toastAction.slice(toastAction.indexOf("export function docsCancelToastAction"));
+  assert.match(body, /"aria-label":\s*"Cancel"/);
+  assert.match(body, /,\s*"Cancel",?\s*\)/);
+  // Must NOT carry Gate D identity on the toast button
   assert.doesNotMatch(body, /Cancel Documents refresh/);
   assert.doesNotMatch(body, /fm-cancel-documents-refresh/);
   assert.doesNotMatch(body, /data-automation-id/);
+  assert.doesNotMatch(body, /showDocsCancelIdentity/);
+  assert.doesNotMatch(body, /cancelChromeA11y/);
+  assert.doesNotMatch(body, /cancelChromeVisibleLabel/);
   assert.match(activateToggle, /docsCancelToastAction\(\)/);
   assert.match(desktopSettings, /docsCancelToastAction\(\)/);
   const refreshToast = activateToggle.match(
@@ -129,6 +112,31 @@ test("toast Cancel while docs-owned is real button + cancelDownloadQueue (Gate D
   );
 });
 
+test("app-shell: Cancel chrome outside library inert/aria-hidden", () => {
+  const hosts = docsCancelChromeHosts();
+  assert.match(appShell, new RegExp(hosts.shellChromeAttr));
+  assert.match(appShell, new RegExp(hosts.libraryInertAttr));
+  assert.match(appShell, /shouldHideLibraryFromA11yDuringDocsJob/);
+  assert.match(appShell, /aria-hidden=\{hideLibraryA11y/);
+  assert.match(appShell, /inert=\{hideLibraryA11y/);
+
+  const chromeAt = appShell.indexOf(`data-fm-shell-chrome`);
+  const barAt = appShell.indexOf("<DownloadBar");
+  const inertAt = appShell.indexOf(`data-fm-library-inert`);
+  const hideAt = appShell.indexOf("aria-hidden={hideLibraryA11y");
+  assert.ok(chromeAt >= 0 && barAt > chromeAt, "DownloadBar inside shell chrome marker");
+  assert.ok(inertAt > barAt, "library inert wrapper after DownloadBar");
+  assert.ok(hideAt > barAt, "aria-hidden after DownloadBar");
+  const chromeBlock = appShell.slice(chromeAt, inertAt);
+  assert.doesNotMatch(chromeBlock, /aria-hidden/);
+  assert.doesNotMatch(chromeBlock, /\binert=/);
+  const inertBlock = appShell.slice(inertAt, inertAt + 280);
+  assert.match(inertBlock, /aria-hidden=\{hideLibraryA11y/);
+  assert.match(inertBlock, /inert=\{hideLibraryA11y/);
+  assert.equal(hosts.cancelName, "Cancel Documents refresh");
+  assert.equal(hosts.toastCancelName, "Cancel");
+});
+
 test("showDocsCancelIdentity only while cancellable (206x honesty kept)", () => {
   const t0 = 2_000_000;
   let s = advanceDocsCancelChrome({
@@ -137,6 +145,10 @@ test("showDocsCancelIdentity only while cancellable (206x honesty kept)", () => 
     now: t0,
   });
   assert.equal(s.showDocsCancelIdentity, true);
+  assert.equal(
+    cancelChromeVisibleLabel({ showDocsCancelIdentity: s.showDocsCancelIdentity }),
+    "Cancel Documents refresh",
+  );
   s = advanceDocsCancelChrome({
     docsOwns: false,
     cancelChromeEligible: false,
@@ -178,15 +190,6 @@ test("206w ownership matrix — Activate scan ≠ docs Cancel toast", () => {
     "documents-refresh",
   );
   assert.equal(
-    cancelToastKind({
-      docsVfSyncActive: false,
-      docsVfSyncCancelPending: false,
-      current: "Restoring 52/53",
-    }),
-    "session-restore",
-  );
-  // Hide helper must not fire for bare Activate scan
-  assert.equal(
     shouldHideLibraryFromA11yDuringDocsJob({
       docsOwns: false,
       cancelChromeEligible: true,
@@ -195,16 +198,17 @@ test("206w ownership matrix — Activate scan ≠ docs Cancel toast", () => {
   );
 });
 
-test("docs mark 206y; no tip-install/pack; cancelChromeA11y SoT", () => {
-  assert.match(readme, /1\.0\.206y/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206y/);
-  assert.match(bugs, /shouldHideLibraryFromA11yDuringDocsJob|aria-hidden|FindFirst/);
-  assert.match(readme, /shouldHideLibraryFromA11yDuringDocsJob|aria-hidden|≤300ms|FindFirst/);
+test("docs mark 206z amend; bar-only Gate D; no tip-install/pack", () => {
+  assert.match(readme, /1\.0\.206z/);
+  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206z/);
+  assert.match(bugs, /bar-only|bar only|Gate D identity on \*\*bar only\*\*|progress bar only/i);
+  assert.match(readme, /bar-only|bar only|Gate D.*bar|progress bar only/i);
+  assert.match(bugs, /cancelChromeVisibleLabel|data-fm-shell-chrome/);
+  assert.match(readme, /cancelChromeVisibleLabel|FindFirst/);
   assert.match(bugs, /No tip-install\/pack/);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /cancelChromeA11y/);
-  assert.match(readme, /cancelChromeA11y/);
-  // 206x kept
+  assert.match(readme, /1\.0\.206y/);
+  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206y/);
   assert.match(readme, /1\.0\.206x/);
   assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
 });

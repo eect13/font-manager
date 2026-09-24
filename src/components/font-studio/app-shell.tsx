@@ -235,11 +235,16 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
             </HelpTip>
           </div>
         </header>
-        <DownloadBar />
+        {/* 1.0.206z: shell chrome (header already above + DownloadBar) stays outside library inert.
+            data-fm-shell-chrome marks the Cancel host region for tip/structure asserts. */}
+        <div data-fm-shell-chrome="" className="shrink-0">
+          <DownloadBar />
+        </div>
 
-        {/* 1.0.206y: hide library/main from a11y during docs sync so UIA FindFirst Cancel ≤300ms.
-            DownloadBar stays outside this subtree. */}
+        {/* 1.0.206y/z: hide library/main from a11y during docs sync so UIA FindFirst Cancel ≤300ms.
+            Cancel (DownloadBar + toast portal) must never be a descendant of this subtree. */}
         <div
+          data-fm-library-inert=""
           className="relative flex min-h-0 flex-1 overflow-hidden"
           aria-hidden={hideLibraryA11y || undefined}
           inert={hideLibraryA11y || undefined}

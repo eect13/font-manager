@@ -1,3 +1,10 @@
+## Fixed in tip / 1.0.206z
+- **P0 Gate D UIA FindFirst-HIT (honest Name + AutomationId on bar):** 206y PARTIAL — visual Cancel present, but FindFirst(Name **Cancel Documents refresh** / Id `fm-cancel-documents-refresh`) never HIT. WebView2/WRY UIA Name often follows **button contents**, not `aria-label`. `cancelChromeVisibleLabel` + `cancelChromeA11y` on the **progress bar** — visible Name **Cancel Documents refresh** + HTML `id` / `data-automation-id` while docs cancellable.
+- **Amend (Skye HOLD — bar-only Gate D identity):** dual UIA Name (bar + toast both **Cancel Documents refresh**) can miss/wrong-hit FindFirst. Toast Cancel is short **Cancel** only — no Gate D Name, no `fm-cancel-documents-refresh` id, no `data-automation-id`. Gate D identity on **bar only**.
+- **DOM: Cancel outside inert library:** `data-fm-shell-chrome` wraps DownloadBar; `data-fm-library-inert` carries 206y `aria-hidden`+`inert` on sidebar/main/inspector only — Cancel never a descendant. Sonner toast portal stays outside AppShell inert subtree.
+- **206x/y honesty kept:** mid-job Cancel → **Documents refresh cancelled**; post-end hold = Dismiss / `fm-dismiss-documents-refresh`; 206w ownership matrix; library a11y shrink while docs cancellable.
+- ProductVersion 1.0.206. No tip-install/pack. Smoke-aid only — no pack / tip-install / NSIS / gh release.
+
 ## Fixed in tip / 1.0.206y
 - **P0 Gate D UIA Cancel ≤300ms — no FindFirst hang:** shrink a11y tree while docs sync is cancellable so UIA `FindFirst` for Name **Cancel Documents refresh** / AutomationId `fm-cancel-documents-refresh` does not walk ~2100 library card Descendants. Helper `shouldHideLibraryFromA11yDuringDocsJob` → `app-shell` sets `aria-hidden` + `inert` on the route/library content wrapper (sidebar + main + inspector); **DownloadBar stays outside** that subtree. Optional `aria-busy` on `<main>` during docs sync.
 - **Cancel id on real `<button>`:** `cancelChromeA11y` still SoT; download-bar spreads `id` / `data-automation-id` / `aria-label` onto the Button (renders `<button>` — WebView2 AutomationId). Suppress percent `aria-live` + `job.current` family names during docs chrome (no live storms).
