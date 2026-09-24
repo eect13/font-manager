@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { applyDesktopPrefs } from "@/lib/desktop/prefs";
-import { armDocsVfSyncOwnership, cancelDownloadQueue, didDocsVfSyncCancelToast, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, didDocsVfSyncCancelToast, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { useFontStore } from "@/lib/fonts/store";
 import { toast } from "sonner";
@@ -86,49 +86,66 @@ export function DesktopSettings() {
             data-testid="refresh-documents-settings"
             onClick={() => {
               void (async () => {
-                armDocsVfSyncOwnership();
-                toast.message("Refreshing Documents folder…", {
-                  id: "sync-docs-vf",
-                  description: "Cancel from the progress bar if needed.",
-                  duration: 8_000,
-                  action: docsCancelToastAction(),
-                });
-                const result = await syncDocumentsVfPolicy();
-                if (!result) return;
-                await syncManagedDocumentsRoot();
-                if (result.cancelled) {
-                  // 1.0.206w amend: skip if cancel already toasted; else toast on Rust cancelled.
-                  if (!didDocsVfSyncCancelToast()) {
-                    toast.message("Documents refresh cancelled", {
-                      id: "sync-docs-vf",
-                      description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
-                    });
+                try {
+                  armDocsVfSyncOwnership();
+                  toast.message("Refreshing Documents folder…", {
+                    id: "sync-docs-vf",
+                    description: "Cancel from the progress bar if needed.",
+                    duration: 8_000,
+                    action: docsCancelToastAction(),
+                  });
+                  const result = await syncDocumentsVfPolicy();
+                  if (!result) return;
+                  await syncManagedDocumentsRoot();
+                  if (result.cancelled) {
+                    if (!didDocsVfSyncCancelToast()) {
+                      toast.message("Documents refresh cancelled", {
+                        id: "sync-docs-vf",
+                        description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
+                      });
+                    }
+                    return;
                   }
-                  return;
-                }
-                if (result.locked > 0) {
-                  toast.error(
-                    `${result.locked.toLocaleString()} face${result.locked === 1 ? "" : "s"} locked — deactivate fonts or quit Adobe/Word, then Repair`,
+                  if (result.cancelArrivedLate) {
+                    didDocsVfSyncCancelToast();
+                    const n = result.staticsDeleted;
+                    toast.message(
+                      n === 0
+                        ? "Cancel arrived after Documents refresh finished — no redundant statics removed"
+                        : `Cancel arrived after Documents refresh finished — ${n.toLocaleString()} redundant statics removed`,
+                      {
+                        id: "sync-docs-vf",
+                        description: `${result.familiesSeen.toLocaleString()} folders checked before Cancel landed.`,
+                      },
+                    );
+                    return;
+                  }
+                  if (result.locked > 0) {
+                    toast.error(
+                      `${result.locked.toLocaleString()} face${result.locked === 1 ? "" : "s"} locked — deactivate fonts or quit Adobe/Word, then Repair`,
+                      {
+                        id: "sync-docs-vf-locked",
+                        description:
+                          "Illustrator, fontdrvhost, or another app is holding static TTFs during Refresh. Quit those apps (or Deactivate), then Refresh or Repair again.",
+                        duration: 24_000,
+                      },
+                    );
+                  }
+                  toast.success(
+                    `Documents refreshed — ${result.staticsDeleted.toLocaleString()} redundant statics removed`,
                     {
-                      id: "sync-docs-vf-locked",
-                      description:
-                        "Illustrator, fontdrvhost, or another app is holding static TTFs during Refresh. Quit those apps (or Deactivate), then Refresh or Repair again.",
-                      duration: 24_000,
+                      id: "sync-docs-vf",
+                      description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated${
+                        result.locked
+                          ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`
+                          : ""
+                      }.`,
+                      duration: 12_000,
                     },
                   );
+                } finally {
+                  clearDocsVfSyncCancelPending();
                 }
-                toast.success(
-                  `Documents refreshed — ${result.staticsDeleted.toLocaleString()} redundant statics removed`,
-                  {
-                    id: "sync-docs-vf",
-                    description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated${
-                      result.locked
-                        ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`
-                        : ""
-                    }.`,
-                    duration: 12_000,
-                  },
-                );
               })();
             }}
           >

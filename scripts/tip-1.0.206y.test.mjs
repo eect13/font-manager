@@ -76,20 +76,18 @@ test("shouldHideLibraryFromA11yDuringDocsJob — docs+cancellable only", () => {
   assert.match(ownership, /shouldHideLibraryFromA11yDuringDocsJob/);
 });
 
-test("app-shell hides route/library during docs; DownloadBar outside aria-hidden", () => {
+test("app-shell hides route/library during docs; DownloadBar outside inert", () => {
   assert.match(appShell, /shouldHideLibraryFromA11yDuringDocsJob/);
   assert.match(appShell, /isDocsVfSyncJob\(\)/);
   assert.match(appShell, /hideLibraryA11y/);
-  assert.match(appShell, /aria-hidden=\{hideLibraryA11y/);
+  // 206aa: inert only (aria-hidden on large sibling hangs WebView2 GetClickablePoint)
   assert.match(appShell, /inert=\{hideLibraryA11y/);
   assert.match(appShell, /aria-busy=\{hideLibraryA11y/);
-  // DownloadBar must appear before the aria-hidden content wrapper
   const barAt = appShell.indexOf("<DownloadBar");
-  const hideAt = appShell.indexOf("aria-hidden={hideLibraryA11y");
-  assert.ok(barAt >= 0 && hideAt > barAt, "DownloadBar above aria-hidden content");
-  // Content wrapper (not DownloadBar) carries aria-hidden
-  const barBlock = appShell.slice(barAt, hideAt);
-  assert.doesNotMatch(barBlock, /aria-hidden/);
+  const inertAt = appShell.indexOf("inert={hideLibraryA11y");
+  assert.ok(barAt >= 0 && inertAt > barAt, "DownloadBar above inert content");
+  const barBlock = appShell.slice(barAt, inertAt);
+  assert.doesNotMatch(barBlock, /inert=\{hideLibraryA11y/);
 });
 
 test("download-bar Cancel spreads cancelChromeA11y id onto Button (real <button>)", () => {

@@ -621,7 +621,13 @@ export type SyncDocsResult = {
   familiesPurged: number;
   staticsDeleted: number;
   locked: number;
+  /** Only true when Rust reports cancelled — never OR'd with sticky pending (206aa amend). */
   cancelled: boolean;
+  /**
+   * Cancel was clicked but Rust already finished (`cancelled: false`).
+   * Callers must toast honest late-cancel copy — never "Documents refresh cancelled".
+   */
+  cancelArrivedLate: boolean;
 };
 
 /** 1.0.206u: Refresh Documents — purge redundant statics when intact VF present. */
@@ -636,6 +642,7 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
       staticsDeleted: 0,
       locked: 0,
       cancelled: true,
+      cancelArrivedLate: false,
     };
   }
   // Arm sticky BEFORE beginOwnedJob so Cancel during shared "Scanning Documents…" is docs-owned.
@@ -660,6 +667,7 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
       staticsDeleted: 0,
       locked: 0,
       cancelled: true,
+      cancelArrivedLate: false,
     };
   }
   startGooglePoll("download");
@@ -675,15 +683,20 @@ export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
       cancelled?: boolean;
     }>("sync_documents_vf_policy");
     if (!raw) return null;
+    // 1.0.206aa amend (Skye HOLD): only raw.cancelled may mean "Documents refresh cancelled".
+    // Sticky pending + finished Rust → cancelArrivedLate (honest late toast), never soft-lie cancelled.
+    const cancelled = Boolean(raw.cancelled);
+    const cancelArrivedLate = !cancelled && docsVfSyncCancelPending;
     const result = {
       familiesSeen: raw.familiesSeen ?? raw.families_seen ?? 0,
       familiesPurged: raw.familiesPurged ?? raw.families_purged ?? 0,
       staticsDeleted: raw.staticsDeleted ?? raw.statics_deleted ?? 0,
       locked: raw.locked ?? 0,
-      cancelled: Boolean(raw.cancelled),
+      cancelled,
+      cancelArrivedLate,
     };
-    // Success path: drop sticky cancel ownership. Cancelled: leave pending for caller toast.
-    if (!result.cancelled) {
+    // Clean success: drop sticky. Cancelled / late-cancel: leave pending for caller toast helpers.
+    if (!cancelled && !cancelArrivedLate) {
       docsVfSyncCancelPending = false;
       docsVfSyncCancelToasted = false;
     }
@@ -1310,6 +1323,12 @@ export function didDocsVfSyncCancelToast(): boolean {
   return toasted;
 }
 
+/** Drop sticky docs-cancel pending (Refresh handler `finally` — never leave pending for later Cancel). */
+export function clearDocsVfSyncCancelPending() {
+  docsVfSyncCancelPending = false;
+  docsVfSyncCancelToasted = false;
+}
+
 function emitProgress(force = false) {
   if (force) {
     if (progressEmitTimer) {
@@ -1726,15 +1745,31 @@ async function pumpRemove(myBatch: number) {
 export function cancelDownloadQueue() {
   // 1.0.206w: snapshot BEFORE clearing job / before sync finally races active→false.
   const currentSnap = job.current ?? "";
+  // Orphaned sticky while a live non-docs job runs: drop docs ownership so Activate/Deactivate Cancel works.
+  if (
+    docsVfSyncCancelPending &&
+    !docsVfSyncActive &&
+    (job.running || job.paused)
+  ) {
+    docsVfSyncCancelPending = false;
+  }
   const wasDocsVfSync = docsVfSyncOwnsJob({
     docsVfSyncActive,
     docsVfSyncCancelPending,
     current: currentSnap,
   });
+  // 1.0.206aa nit: idempotent second docs Cancel only when the bar is already torn down
+  // (`!job.running && !job.paused && docsVfSyncCancelPending`). Chosen over
+  // `wasDocsVfSync && pending` so a stale pending never swallows a later live Activate/Deactivate Cancel
+  // (those have running/paused true; orphaned sticky cleared above). Repeated docs Cancel after the
+  // first click cleared the job is still a no-op (no double finalize/IPC).
+  if (!job.running && !job.paused && docsVfSyncCancelPending) {
+    return;
+  }
   const wasRestore = !wasDocsVfSync && /restoring/i.test(currentSnap);
   if (wasDocsVfSync) {
-    // Sticky pending → suppress Download cancelled. Callers toast docs-cancel when Rust confirms.
-    // Avoid cancel-then-success flip (do not toast docs-cancel here).
+    // Sticky pending → suppress Download cancelled. Callers toast when Rust confirms (or late-cancel).
+    // Avoid cancel-then-success soft-lie (do not toast docs-cancel here).
     docsVfSyncCancelPending = true;
     docsVfSyncActive = false;
   }
@@ -1760,7 +1795,6 @@ export function cancelDownloadQueue() {
   markJobClock(false, false);
   emit();
   unlockUi();
-  void tauriInvoke("cancel_google_downloads").catch(() => undefined);
   if (pollTimer) {
     window.clearInterval(pollTimer);
     pollTimer = 0;
@@ -1771,10 +1805,16 @@ export function cancelDownloadQueue() {
   }, 600);
   // Flush+mark any queued ready families before clearPending; reset timer/cumulative with that.
   void finalizeReadyAndClearPending();
-  // Docs path already toasted — never emit Download cancelled.
+  // Docs path: fire-and-forget cancel IPC. With async sync_documents_vf_policy +
+  // async cancel_google_downloads (206aa amend), Cancel is not queued behind the purge job
+  // on the main thread — no need to block the click handler on the invoke.
   if (wasDocsVfSync) {
+    void tauriInvoke("cancel_google_downloads").catch(() => {
+      /* web / ACL — pending drives late-cancel toast if Rust already finished */
+    });
     return;
   }
+  void tauriInvoke("cancel_google_downloads").catch(() => undefined);
   // 1.0.206j: Cancel Deactivate — confirm Off only for unloaded prefix; restore Live for remainder.
   // Toast must match store (no "stay Live" if already confirmDeactivated-all at spawn).
   // 1.0.206k: wasRemove always runs prefix confirm + restoreRemoveRemainderLive — independent of

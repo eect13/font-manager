@@ -9010,12 +9010,16 @@ pub struct SyncDocsResult {
     pub cancelled: bool,
 }
 
-/// 1.0.206u: manual Refresh / sync Documents — reconcile installed folders to
-/// VF-primary policy (remove redundant statics when intact VF present). Does
-/// **not** surprise-download the full catalog. Progress on `font-download`;
-/// Cancel via `cancel_google_downloads`.
+/// 1.0.206u / 1.0.206aa: manual Refresh / sync Documents — reconcile installed
+/// folders to VF-primary policy (remove redundant statics when intact VF present).
+/// Does **not** surprise-download the full catalog. Progress on `font-download`.
+///
+/// Cancel via `cancel_google_downloads` (shared `bulk().cancel` AtomicBool).
+/// 1.0.206aa amend (Skye HOLD): **async** command + `spawn_blocking` so the main
+/// thread is free to run `cancel_google_downloads` while purge work runs. Sync
+/// `fn` + `rx.recv()` still held the main thread (Tauri v2 runs sync commands there).
 #[tauri::command]
-pub fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String> {
+pub async fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String> {
     let state = bulk();
     if state.running.load(Ordering::SeqCst) {
         return Err(
@@ -9043,24 +9047,39 @@ pub fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String
     }
     emit_progress_force(&app);
 
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for_family_dirs(&app, |dir| {
-        dirs.push(dir.to_path_buf());
-    });
-    let total = dirs.len() as u32;
-    if let Ok(mut p) = state.progress.lock() {
-        p.total = total;
-        p.current = format!("Syncing Documents (0/{total})");
+    // Clone for join-error cleanup — `app` moves into the blocking closure.
+    let app_join = app.clone();
+    match tauri::async_runtime::spawn_blocking(move || sync_documents_vf_policy_work(app)).await {
+        Ok(result) => result,
+        Err(e) => {
+            // Must reset running/progress or the app sticks on "already running".
+            let _ = finish_docs_vf_sync(&app_join, 0, 0, 0, 0, false);
+            Err(format!("Documents refresh worker join failed: {e}"))
+        }
     }
-    emit_progress_force(&app);
+}
 
+/// Per-dir purge loop — shared by production + unit tests.
+/// Cancel checked at the start of each iteration and again immediately before `purge`
+/// (after `prepare`). Returns (cancelled, families_purged, statics_deleted, locked, done).
+fn run_docs_vf_sync_purge_loop<Prep, Purge>(
+    dirs: &[PathBuf],
+    cancel: &AtomicBool,
+    mut prepare: Prep,
+    mut purge: Purge,
+) -> (bool, u32, u32, u32, u32)
+where
+    Prep: FnMut(&Path, &str),
+    Purge: FnMut(&Path, &str) -> (usize, usize),
+{
     let mut families_purged = 0u32;
     let mut statics_deleted = 0u32;
     let mut locked = 0u32;
     let mut cancelled = false;
+    let mut done = 0u32;
 
-    for (i, dir) in dirs.iter().enumerate() {
-        if state.cancel.load(Ordering::SeqCst) {
+    for dir in dirs {
+        if cancel.load(Ordering::SeqCst) {
             cancelled = true;
             break;
         }
@@ -9069,31 +9088,101 @@ pub fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String
             .and_then(|s| s.to_str())
             .unwrap_or("font")
             .to_string();
-        migrate_download_source_stamp(dir);
-        let (del, lock) = purge_redundant_statics_in_dir(dir, &name);
+        prepare(dir, &name);
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
+        let (del, lock) = purge(dir, &name);
         if del > 0 || lock > 0 {
             families_purged = families_purged.saturating_add(1);
         }
         statics_deleted = statics_deleted.saturating_add(del as u32);
         locked = locked.saturating_add(lock as u32);
-        let done = (i + 1) as u32;
-        if let Ok(mut p) = state.progress.lock() {
-            p.done = done;
-            p.total = total.max(done);
-            p.running = true;
-            p.kind = "download".into();
-            p.current = if del > 0 {
-                format!("Synced {name} (−{del} static)")
-            } else {
-                format!("Syncing {name}")
-            };
-            if lock > 0 {
-                p.failed = p.failed.saturating_add(lock as u32);
-            }
-        }
-        emit_progress(&app);
+        done = done.saturating_add(1);
     }
 
+    (cancelled, families_purged, statics_deleted, locked, done)
+}
+
+/// Inner Documents VF sync — cancel-aware; uses `run_docs_vf_sync_purge_loop`.
+fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, String> {
+    let state = bulk();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut scan_cancelled = false;
+    for_family_dirs(&app, |dir| {
+        if state.cancel.load(Ordering::SeqCst) {
+            scan_cancelled = true;
+            return;
+        }
+        dirs.push(dir.to_path_buf());
+    });
+    if scan_cancelled || state.cancel.load(Ordering::SeqCst) {
+        return Ok(finish_docs_vf_sync(
+            &app,
+            dirs.len() as u32,
+            0,
+            0,
+            0,
+            true,
+        ));
+    }
+
+    let total = dirs.len() as u32;
+    if let Ok(mut p) = state.progress.lock() {
+        p.total = total;
+        p.current = format!("Syncing Documents (0/{total})");
+    }
+    emit_progress_force(&app);
+
+    let total_cap = total;
+    let (cancelled, families_purged, statics_deleted, locked, _done) =
+        run_docs_vf_sync_purge_loop(
+            &dirs,
+            &state.cancel,
+            |dir, _name| {
+                migrate_download_source_stamp(dir);
+            },
+            |dir, name| {
+                let (del, lock) = purge_redundant_statics_in_dir(dir, name);
+                if let Ok(mut p) = state.progress.lock() {
+                    p.done = p.done.saturating_add(1);
+                    p.total = total_cap.max(p.done);
+                    p.running = true;
+                    p.kind = "download".into();
+                    p.current = if del > 0 {
+                        format!("Synced {name} (−{del} static)")
+                    } else {
+                        format!("Syncing {name}")
+                    };
+                    if lock > 0 {
+                        p.failed = p.failed.saturating_add(lock as u32);
+                    }
+                }
+                emit_progress(&app);
+                (del, lock)
+            },
+        );
+
+    Ok(finish_docs_vf_sync(
+        &app,
+        total,
+        families_purged,
+        statics_deleted,
+        locked,
+        cancelled,
+    ))
+}
+
+fn finish_docs_vf_sync(
+    app: &AppHandle,
+    families_seen: u32,
+    families_purged: u32,
+    statics_deleted: u32,
+    locked: u32,
+    cancelled: bool,
+) -> SyncDocsResult {
+    let state = bulk();
     state.running.store(false, Ordering::SeqCst);
     if let Ok(mut p) = state.progress.lock() {
         p.running = false;
@@ -9106,15 +9195,14 @@ pub fn sync_documents_vf_policy(app: AppHandle) -> Result<SyncDocsResult, String
             )
         };
     }
-    emit_progress_force(&app);
-
-    Ok(SyncDocsResult {
-        families_seen: total,
+    emit_progress_force(app);
+    SyncDocsResult {
+        families_seen,
         families_purged,
         statics_deleted,
         locked,
         cancelled,
-    })
+    }
 }
 
 #[tauri::command]
@@ -9347,8 +9435,9 @@ pub fn resume_google_downloads(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 1.0.206aa amend: async so Cancel is never queued behind a sync main-thread command.
 #[tauri::command]
-pub fn cancel_google_downloads() -> Result<(), String> {
+pub async fn cancel_google_downloads() -> Result<(), String> {
     let state = bulk();
     state.cancel.store(true, Ordering::SeqCst);
     state.pause.store(false, Ordering::SeqCst);
@@ -10282,6 +10371,76 @@ mod install_path_tests {
         assert_eq!(keys, vec![varf.to_string()]);
         assert!(dir_is_complete(&dir));
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn docs_vf_sync_loop_stops_before_further_purges_when_cancelled() {
+        // 1.0.206aa amend: exercise real `run_docs_vf_sync_purge_loop` (not a sim copy).
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let dirs: Vec<PathBuf> = (0..10).map(|i| PathBuf::from(format!("dir-{i}"))).collect();
+        let cancel = AtomicBool::new(false);
+        let purge_calls = AtomicUsize::new(0);
+
+        let (cancelled, _fam, statics, _lock, done) = run_docs_vf_sync_purge_loop(
+            &dirs,
+            &cancel,
+            |_dir, _name| {},
+            |_dir, _name| {
+                let n = purge_calls.fetch_add(1, Ordering::SeqCst);
+                if n == 2 {
+                    // After third purge starts counting from 0: cancel before next
+                    cancel.store(true, Ordering::SeqCst);
+                }
+                (1usize, 0usize)
+            },
+        );
+        assert!(cancelled, "cancel after 3rd purge must stop further dirs");
+        assert_eq!(purge_calls.load(Ordering::SeqCst), 3, "dirs 0..=2 purged only");
+        assert_eq!(done, 3);
+        assert_eq!(statics, 3);
+
+        let cancel2 = AtomicBool::new(true);
+        let purge2 = AtomicUsize::new(0);
+        let dirs2: Vec<PathBuf> = (0..5).map(|i| PathBuf::from(format!("x-{i}"))).collect();
+        let (cancelled2, _, statics2, _, done2) = run_docs_vf_sync_purge_loop(
+            &dirs2,
+            &cancel2,
+            |_, _| {},
+            |_, _| {
+                purge2.fetch_add(1, Ordering::SeqCst);
+                (1, 0)
+            },
+        );
+        assert!(cancelled2);
+        assert_eq!(purge2.load(Ordering::SeqCst), 0, "pre-set cancel skips all purges");
+        assert_eq!(statics2, 0);
+        assert_eq!(done2, 0);
+
+        // Cancel set in prepare (before purge) at index 3 — purges 0..=2 only.
+        let cancel3 = AtomicBool::new(false);
+        let purge3 = AtomicUsize::new(0);
+        let idx = AtomicUsize::new(0);
+        let dirs3: Vec<PathBuf> = (0..8).map(|i| PathBuf::from(format!("p-{i}"))).collect();
+        let (cancelled3, _, statics3, _, done3) = run_docs_vf_sync_purge_loop(
+            &dirs3,
+            &cancel3,
+            |_, _| {
+                let i = idx.fetch_add(1, Ordering::SeqCst);
+                if i == 3 {
+                    cancel3.store(true, Ordering::SeqCst);
+                }
+            },
+            |_, _| {
+                purge3.fetch_add(1, Ordering::SeqCst);
+                (1, 0)
+            },
+        );
+        assert!(cancelled3);
+        assert_eq!(purge3.load(Ordering::SeqCst), 3);
+        assert_eq!(statics3, 3);
+        assert_eq!(done3, 3);
     }
 
     #[test]

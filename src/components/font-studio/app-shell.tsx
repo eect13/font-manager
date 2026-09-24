@@ -241,12 +241,13 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
           <DownloadBar />
         </div>
 
-        {/* 1.0.206y/z: hide library/main from a11y during docs sync so UIA FindFirst Cancel ≤300ms.
-            Cancel (DownloadBar + toast portal) must never be a descendant of this subtree. */}
+        {/* 1.0.206y/aa: inert library during docs sync so FindFirst Cancel ≤300ms.
+            206aa: do NOT set aria-hidden — WebView2 GetClickablePoint hangs ~10s on Cancel when a
+            large sibling is aria-hidden (Skye Gate D). inert alone excludes the subtree from a11y.
+            Cancel (DownloadBar) must never be a descendant of this subtree. */}
         <div
           data-fm-library-inert=""
           className="relative flex min-h-0 flex-1 overflow-hidden"
-          aria-hidden={hideLibraryA11y || undefined}
           inert={hideLibraryA11y || undefined}
         >
           <Sidebar

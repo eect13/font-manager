@@ -112,26 +112,23 @@ test("toast Cancel is short Cancel only — no Gate D Name/id/data-automation-id
   );
 });
 
-test("app-shell: Cancel chrome outside library inert/aria-hidden", () => {
+test("app-shell: Cancel chrome outside library inert", () => {
   const hosts = docsCancelChromeHosts();
   assert.match(appShell, new RegExp(hosts.shellChromeAttr));
   assert.match(appShell, new RegExp(hosts.libraryInertAttr));
   assert.match(appShell, /shouldHideLibraryFromA11yDuringDocsJob/);
-  assert.match(appShell, /aria-hidden=\{hideLibraryA11y/);
   assert.match(appShell, /inert=\{hideLibraryA11y/);
+  // 206aa: no aria-hidden on library (GetClickablePoint hang)
+  assert.doesNotMatch(appShell, /aria-hidden=\{hideLibraryA11y/);
 
   const chromeAt = appShell.indexOf(`data-fm-shell-chrome`);
   const barAt = appShell.indexOf("<DownloadBar");
   const inertAt = appShell.indexOf(`data-fm-library-inert`);
-  const hideAt = appShell.indexOf("aria-hidden={hideLibraryA11y");
   assert.ok(chromeAt >= 0 && barAt > chromeAt, "DownloadBar inside shell chrome marker");
   assert.ok(inertAt > barAt, "library inert wrapper after DownloadBar");
-  assert.ok(hideAt > barAt, "aria-hidden after DownloadBar");
   const chromeBlock = appShell.slice(chromeAt, inertAt);
-  assert.doesNotMatch(chromeBlock, /aria-hidden/);
   assert.doesNotMatch(chromeBlock, /\binert=/);
   const inertBlock = appShell.slice(inertAt, inertAt + 280);
-  assert.match(inertBlock, /aria-hidden=\{hideLibraryA11y/);
   assert.match(inertBlock, /inert=\{hideLibraryA11y/);
   assert.equal(hosts.cancelName, "Cancel Documents refresh");
   assert.equal(hosts.toastCancelName, "Cancel");

@@ -145,8 +145,10 @@ test("cancelDownloadQueue suppresses Download cancelled on docs path (no early D
   assert.match(cancel, /docsVfSyncOwnsJob/);
   // Amend: Documents refresh cancelled toast deferred to Rust-confirmed cancelled (callers).
   assert.doesNotMatch(cancel, /Documents refresh cancelled/);
-  assert.match(cancel, /if \(wasDocsVfSync\) \{\s*return;/);
-  const earlyReturn = cancel.search(/if \(wasDocsVfSync\) \{\s*return;/);
+  // 206aa amend: fire-and-forget cancel IPC (async cmds; not queued behind purge on main thread)
+  assert.match(cancel, /if \(wasDocsVfSync\)/);
+  assert.match(cancel, /tauriInvoke\("cancel_google_downloads"\)/);
+  const earlyReturn = cancel.search(/if \(wasDocsVfSync\)/);
   const titleAssign = cancel.indexOf('"Download cancelled"');
   assert.ok(earlyReturn >= 0 && titleAssign > earlyReturn);
   assert.match(cancel, /Download cancelled/);

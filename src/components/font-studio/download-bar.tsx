@@ -242,26 +242,43 @@ export function DownloadBar() {
                 Pause
               </Button>
             )}
-            <Button
-              key="activate-bar-cancel"
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2"
-              /* 1.0.206z: visible label = UIA Name (WebView2 often ignores aria-label for Name);
-                 cancelChromeA11y spreads unique id onto this real <button> (toast omits DOM id). */
-              data-testid="activate-bar-cancel"
-              {...cancelChromeA11y({
-                showDocsCancelIdentity: docsChrome,
-                restoring,
-              })}
-              onClick={() => cancelDownloadQueue()}
-            >
-              <X aria-hidden="true" />
-              {cancelChromeVisibleLabel({
-                showDocsCancelIdentity: docsChrome,
-                restoring,
-              })}
-            </Button>
+            {docsChrome ? (
+              /* 1.0.206aa amend: native <button type="button"> — no press-scale (GetClickablePoint);
+                 onClick only (UIA Invoke + keyboard fire click); cancelDownloadQueue is idempotent. */
+              <button
+                type="button"
+                key="activate-bar-cancel"
+                className="inline-flex h-7 items-center justify-center gap-2 whitespace-nowrap rounded-md px-2 text-xs font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4 [&_svg]:shrink-0"
+                data-testid="activate-bar-cancel"
+                {...cancelChromeA11y({ showDocsCancelIdentity: docsChrome })}
+                onClick={(e) => {
+                  e.preventDefault();
+                  cancelDownloadQueue();
+                }}
+              >
+                <X aria-hidden="true" />
+                {cancelChromeVisibleLabel({ showDocsCancelIdentity: docsChrome })}
+              </button>
+            ) : (
+              <Button
+                key="activate-bar-cancel"
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                data-testid="activate-bar-cancel"
+                {...cancelChromeA11y({
+                  showDocsCancelIdentity: docsChrome,
+                  restoring,
+                })}
+                onClick={() => cancelDownloadQueue()}
+              >
+                <X aria-hidden="true" />
+                {cancelChromeVisibleLabel({
+                  showDocsCancelIdentity: docsChrome,
+                  restoring,
+                })}
+              </Button>
+            )}
           </>
         ) : null}
         {!job.running && !job.paused && job.failedNames.length ? (

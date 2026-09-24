@@ -2,7 +2,7 @@ import { Power, RefreshCw, ScanSearch } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { armDocsVfSyncOwnership, cancelDownloadQueue, didDocsVfSyncCancelToast, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, didDocsVfSyncCancelToast, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
@@ -472,57 +472,76 @@ export function RefreshDocumentsMenuItem() {
       data-testid="refresh-documents"
       onSelect={() => {
         void (async () => {
-          // Arm sticky before toast Cancel so mid-scan Cancel is docs-owned (not Download cancelled).
-          armDocsVfSyncOwnership();
-          toast.message("Refreshing Documents folder…", {
-            id: "sync-docs-vf",
-            description:
-              "Removes redundant statics when a variable font is present. Keeps static-only families. Cancel from the progress bar.",
-            duration: 8_000,
-            action: docsCancelToastAction(),
-          });
-          const result = await syncDocumentsVfPolicy();
-          if (!result) {
-            toast.error("Could not refresh Documents", {
+          try {
+            // Arm sticky before toast Cancel so mid-scan Cancel is docs-owned (not Download cancelled).
+            armDocsVfSyncOwnership();
+            toast.message("Refreshing Documents folder…", {
               id: "sync-docs-vf",
-              description: "Activate/download may be running — Cancel or wait, then try again.",
+              description:
+                "Removes redundant statics when a variable font is present. Keeps static-only families. Cancel from the progress bar.",
+              duration: 8_000,
+              action: docsCancelToastAction(),
             });
-            return;
-          }
-          // Rescan honesty after purge.
-          await syncManagedDocumentsRoot();
-          if (result.cancelled) {
-            // 1.0.206w amend: skip if cancel already toasted; else toast on Rust cancelled.
-            if (!didDocsVfSyncCancelToast()) {
-              toast.message("Documents refresh cancelled", {
+            const result = await syncDocumentsVfPolicy();
+            if (!result) {
+              toast.error("Could not refresh Documents", {
                 id: "sync-docs-vf",
-                description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
+                description: "Activate/download may be running — Cancel or wait, then try again.",
               });
+              return;
             }
-            return;
-          }
-          if (result.locked > 0) {
-            toast.error(
-              `${result.locked.toLocaleString()} face${result.locked === 1 ? "" : "s"} locked — deactivate fonts or quit Adobe/Word, then Repair`,
+            // Rescan honesty after purge.
+            await syncManagedDocumentsRoot();
+            if (result.cancelled) {
+              // Only raw.cancelled (206aa amend) — never soft-lie from pending.
+              if (!didDocsVfSyncCancelToast()) {
+                toast.message("Documents refresh cancelled", {
+                  id: "sync-docs-vf",
+                  description: `Checked ${result.familiesSeen.toLocaleString()} folders · removed ${result.staticsDeleted.toLocaleString()} statics before cancel.`,
+                });
+              }
+              return;
+            }
+            if (result.cancelArrivedLate) {
+              didDocsVfSyncCancelToast(); // clear sticky; do not show fake cancelled
+              const n = result.staticsDeleted;
+              toast.message(
+                n === 0
+                  ? "Cancel arrived after Documents refresh finished — no redundant statics removed"
+                  : `Cancel arrived after Documents refresh finished — ${n.toLocaleString()} redundant statics removed`,
+                {
+                  id: "sync-docs-vf",
+                  description: `${result.familiesSeen.toLocaleString()} folders checked before Cancel landed.`,
+                },
+              );
+              return;
+            }
+            if (result.locked > 0) {
+              toast.error(
+                `${result.locked.toLocaleString()} face${result.locked === 1 ? "" : "s"} locked — deactivate fonts or quit Adobe/Word, then Repair`,
+                {
+                  id: "sync-docs-vf-locked",
+                  description:
+                    "Illustrator, fontdrvhost, or another app is holding static TTFs during Refresh. Quit those apps (or Deactivate), then Refresh or Repair again.",
+                  duration: 24_000,
+                },
+              );
+            }
+            const lockBit = result.locked
+              ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`
+              : "";
+            toast.success(
+              `Documents refreshed — ${result.staticsDeleted.toLocaleString()} redundant statics removed`,
               {
-                id: "sync-docs-vf-locked",
-                description:
-                  "Illustrator, fontdrvhost, or another app is holding static TTFs during Refresh. Quit those apps (or Deactivate), then Refresh or Repair again.",
-                duration: 24_000,
+                id: "sync-docs-vf",
+                description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated${lockBit}. Static-only families kept.`,
+                duration: 12_000,
               },
             );
+          } finally {
+            // Always drop sticky so a throw before toast cannot leave Cancel docs-owned forever.
+            clearDocsVfSyncCancelPending();
           }
-          const lockBit = result.locked
-            ? ` · ${result.locked.toLocaleString()} locked (Deactivate / quit Adobe, then Repair)`
-            : "";
-          toast.success(
-            `Documents refreshed — ${result.staticsDeleted.toLocaleString()} redundant statics removed`,
-            {
-              id: "sync-docs-vf",
-              description: `${result.familiesSeen.toLocaleString()} folders · ${result.familiesPurged.toLocaleString()} VF families updated${lockBit}. Static-only families kept.`,
-              duration: 12_000,
-            },
-          );
         })();
       }}
     >
