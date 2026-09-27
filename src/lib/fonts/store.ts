@@ -9,7 +9,7 @@ import { idbDelete, idbGet, idbPutMany } from "./idb";
 import { loadFont, unloadLocalFont } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { bindAxesPersist, setLiveAxis } from "./live-axes";
-import { clearSessionGdiRefused, removeUploadFromDisk, saveUploadToDisk, syncFontOnSystem, syncFontsOnSystem, uninstallFontOnSystem } from "./os-activate";
+import { clearSessionGdiRefused, DEACTIVATE_TOAST_ID, enqueueDiskDeletes, enqueueUninstalls, removeUploadFromDisk, saveUploadToDisk, syncFontOnSystem, syncFontsOnSystem } from "./os-activate";
 import { scheduleSaveLocalFontsMeta } from "./persist-local";
 import type {
   Collection,
@@ -262,36 +262,70 @@ function withUnloadStuck(unloadStuckIds: string[]) {
 
 /** Pending-off honesty timeout (Word may lock Remove). Keep Live; never fake Off. */
 const PENDING_OFF_TIMEOUT_MS = 8_000;
-const pendingOffTimers = new Map<string, number>();
+/** After the first wait, only toast if Remove has been quiet this long. */
+const PENDING_OFF_QUIET_MS = 15_000;
+let pendingOffTimer = 0;
+let pendingOffHeartbeat = 0;
+const pendingOffArmed = new Set<string>();
+let pendingOffGet: (() => any) | null = null;
+let pendingOffSet: ((fn: any) => void) | null = null;
+
+/** Remove progress heartbeat — one stuck toast, not one per face. */
+export function noteRemoveProgress() {
+  pendingOffHeartbeat = Date.now();
+}
+
+function schedulePendingOffCheck(delay: number) {
+  if (pendingOffTimer) window.clearTimeout(pendingOffTimer);
+  pendingOffTimer = window.setTimeout(runPendingOffCheck, delay);
+}
+
+function runPendingOffCheck() {
+  pendingOffTimer = 0;
+  const get = pendingOffGet;
+  const set = pendingOffSet;
+  if (!get || !set) return;
+  const s = get();
+  const still = [...pendingOffArmed].filter((id) => s.pendingDeactivateSet.has(id));
+  pendingOffArmed.clear();
+  for (const id of still) pendingOffArmed.add(id);
+  if (!still.length) {
+    pendingOffHeartbeat = 0;
+    return;
+  }
+  const quietFor = Date.now() - (pendingOffHeartbeat || 0);
+  if (quietFor < PENDING_OFF_QUIET_MS) {
+    schedulePendingOffCheck(PENDING_OFF_QUIET_MS - quietFor);
+    return;
+  }
+  set((st: any) => ({
+    ...withUnloadStuck(Array.from(new Set([...st.unloadStuckIds, ...still]))),
+  }));
+  toast.message(
+    still.length === 1 ? "Still unloading" : `Still unloading ${still.length.toLocaleString()}`,
+    {
+      id: DEACTIVATE_TOAST_ID,
+      description:
+        "Windows has not confirmed Remove yet (Word/Adobe may be locking the face). Live stays on — retry Deactivate when the app releases the font.",
+      duration: 12_000,
+    },
+  );
+}
 
 function armPendingOffTimeout(ids: string[], get: () => any, set: (fn: any) => void) {
-  for (const id of ids) {
-    const prev = pendingOffTimers.get(id);
-    if (prev) window.clearTimeout(prev);
-    const handle = window.setTimeout(() => {
-      pendingOffTimers.delete(id);
-      const s = get();
-      if (!s.pendingDeactivateSet.has(id)) return;
-      // Still pending-off — surface stuck; keep Live honest.
-      set((st: any) => ({
-        ...withUnloadStuck(Array.from(new Set([...st.unloadStuckIds, id]))),
-      }));
-      toast.message("Still unloading", {
-        id: `unload-stuck-${id}`,
-        description:
-          "Windows has not confirmed Remove yet (Word/Adobe may be locking the face). Live stays on — retry Deactivate when the app releases the font.",
-        duration: 12_000,
-      });
-    }, PENDING_OFF_TIMEOUT_MS);
-    pendingOffTimers.set(id, handle);
-  }
+  pendingOffGet = get;
+  pendingOffSet = set;
+  if (!pendingOffHeartbeat) pendingOffHeartbeat = Date.now();
+  for (const id of ids) pendingOffArmed.add(id);
+  if (!pendingOffTimer) schedulePendingOffCheck(PENDING_OFF_TIMEOUT_MS);
 }
 
 function clearPendingOffTimeout(ids: string[]) {
-  for (const id of ids) {
-    const prev = pendingOffTimers.get(id);
-    if (prev) window.clearTimeout(prev);
-    pendingOffTimers.delete(id);
+  for (const id of ids) pendingOffArmed.delete(id);
+  if (pendingOffArmed.size === 0 && pendingOffTimer) {
+    window.clearTimeout(pendingOffTimer);
+    pendingOffTimer = 0;
+    pendingOffHeartbeat = 0;
   }
 }
 
@@ -946,8 +980,11 @@ export const useFontStore = create<FontState>()(
         for (const font of doomed) {
           void unloadLocalFont(font.id);
           void idbDelete(font.id);
-          if (opts?.deleteFromDisk) void removeUploadFromDisk(font);
-          else void uninstallFontOnSystem(font);
+        }
+        // One queue — never N overlapping GDI unloads (that hung Close).
+        if (doomed.length) {
+          if (opts?.deleteFromDisk) enqueueDiskDeletes(doomed);
+          else enqueueUninstalls(doomed);
         }
         return { folders: impact.folderIds.length, fonts: impact.localFontIds.length };
       },
@@ -1049,7 +1086,8 @@ export const useFontStore = create<FontState>()(
 
             const waveRecords: FontRecord[] = [];
             const waveBlobs: { id: string; blob: Blob }[] = [];
-            const waveIds: string[] = [];
+            const diskSaves: { ids: string[]; family: string; fileName: string; buffer: ArrayBuffer }[] = [];
+            const diskSaveAt = new Map<string, number>();
             const savedDisk = new Set<string>();
             for (let i = 0; i < parsedList.length; i += 1) {
               const item = parsedList[i]!;
@@ -1101,20 +1139,28 @@ export const useFontStore = create<FontState>()(
                   metrics: parsed.metrics,
                 };
                 waveRecords.push(record);
-                waveIds.push(id);
                 newIds.push(id);
                 added += 1;
                 folderOf.set(
                   id,
                   folderPathForFile(file ?? ({ webkitRelativePath: "" } as File), opts?.collectionName),
                 );
-                if (!originSlice?.[i] && file && !savedDisk.has(file.name)) {
-                  savedDisk.add(file.name);
-                  void saveUploadToDisk({
-                    family: parsed.family,
-                    fileName: parsed.fileName || file.name,
-                    buffer: parsed.buffer,
-                  });
+                // One disk write per file. Extra faces in a collection share that Add.
+                if (!originSlice?.[i] && file) {
+                  const fileKey = parsed.fileName || file.name;
+                  if (!savedDisk.has(fileKey)) {
+                    savedDisk.add(fileKey);
+                    diskSaveAt.set(fileKey, diskSaves.length);
+                    diskSaves.push({
+                      ids: [id],
+                      family: parsed.family,
+                      fileName: fileKey,
+                      buffer: parsed.buffer,
+                    });
+                  } else {
+                    const at = diskSaveAt.get(fileKey);
+                    if (at != null) diskSaves[at]!.ids.push(id);
+                  }
                 }
               }
             }
@@ -1129,6 +1175,10 @@ export const useFontStore = create<FontState>()(
                 for (let i = waveRecords.length - 1; i >= 0; i -= 1) {
                   if (drop.has(waveRecords[i]!.id)) waveRecords.splice(i, 1);
                 }
+                const kept = new Set(waveRecords.map((r) => r.id));
+                for (let i = newIds.length - 1; i >= 0; i -= 1) {
+                  if (!kept.has(newIds[i]!)) newIds.splice(i, 1);
+                }
               }
             }
 
@@ -1137,6 +1187,11 @@ export const useFontStore = create<FontState>()(
               if (collectionId) {
                 const exists = get().collections.some((c) => c.id === collectionId);
                 if (!exists) collectionId = undefined;
+              }
+              const kept = new Set(waveRecords.map((r) => r.id));
+              const keptIds: string[] = [];
+              for (const job of diskSaves) {
+                for (const id of job.ids) if (kept.has(id)) keptIds.push(id);
               }
               set((s) => {
                 let collections = s.collections.slice();
@@ -1171,19 +1226,30 @@ export const useFontStore = create<FontState>()(
                 collectionId = rootId ?? collectionId;
                 return {
                   localFonts: [...waveRecords, ...s.localFonts],
-                  ...(!opts?.originPaths?.length
-                    ? withActivated(Array.from(new Set([...s.activated, ...waveIds])))
+                  // Live only after Add. Pending until saveUploadToDisk registers.
+                  ...(!opts?.originPaths?.length && keptIds.length
+                    ? withPending(Array.from(new Set([...s.pendingActivate, ...keptIds])))
                     : {}),
                   collections,
                   scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,
                 };
               });
+              for (const job of diskSaves) {
+                const ids = job.ids.filter((id) => kept.has(id));
+                if (!ids.length) continue;
+                void saveUploadToDisk({
+                  family: job.family,
+                  fileName: job.fileName,
+                  buffer: job.buffer,
+                  ids,
+                });
+              }
               if (!primed) {
                 primed = true;
                 const local = get().localFonts;
                 const google = get().googleFonts;
-                waveIds.slice(0, 2).forEach((id) => {
-                  const font = findFont(id, local, google);
+                waveRecords.slice(0, 2).forEach((row) => {
+                  const font = findFont(row.id, local, google);
                   if (font) void loadFont(font);
                 });
               }
@@ -1373,7 +1439,7 @@ export const useFontStore = create<FontState>()(
           ),
           scope: s.scope === "uploaded" ? "all" : s.scope,
         }));
-        for (const font of fonts) void removeUploadFromDisk(font);
+        enqueueDiskDeletes(fonts);
         return ids.length;
       },
       resetLibrary: async () => {
@@ -1393,7 +1459,8 @@ export const useFontStore = create<FontState>()(
           inspectorOpen: false,
           customTags: {},
         });
-        for (const font of prev) void uninstallFontOnSystem(font);
+        const googleLeft = prev.filter((font) => font.source !== "local");
+        if (googleLeft.length) enqueueUninstalls(googleLeft);
         return n;
       },
     }),
@@ -1838,13 +1905,16 @@ export function sortLibrary(fonts: FontRecord[], sort: LibrarySort = "name-asc")
       .map((row) => row.font);
   }
   if (sort === "popular") {
+    // Rank is a number. Name is only a tie-break — do not use Intl.Collator
+    // here. A folder of uploads is all popularity 9999, so Collator turned
+    // Popular into a full locale sort and stalled the library.
     const keyed = fonts.map((font, index) => ({
       font,
       index,
       pop: font.popularity ?? 9999,
-      name: font.family,
+      name: (font.family || "").toLowerCase(),
     }));
-    keyed.sort((a, b) => a.pop - b.pop || collator.compare(a.name, b.name) || a.index - b.index);
+    keyed.sort((a, b) => a.pop - b.pop || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || a.index - b.index);
     return keyed.map((row) => row.font);
   }
   const desc = sort === "name-desc";

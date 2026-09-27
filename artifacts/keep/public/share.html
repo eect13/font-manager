@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shared file — Potion</title>
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body class="share-body">
+  <div class="auth-card share-card">
+    <span class="mark">K</span>
+    <p class="mono">Shared with Potion</p>
+    <h1 id="title">…</h1>
+    <p id="meta" class="lede"></p>
+    <form id="gate" class="hidden">
+      <label>Password<input id="pw" type="password" /></label>
+      <button class="btn" type="submit">Unlock</button>
+    </form>
+    <a class="btn hidden" id="dl">Download</a>
+    <p id="err" class="err"></p>
+  </div>
+  <script>
+    const token = location.pathname.split("/").pop();
+    const title = document.getElementById("title");
+    const meta = document.getElementById("meta");
+    const gate = document.getElementById("gate");
+    const dl = document.getElementById("dl");
+    const err = document.getElementById("err");
+    function fmt(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+      if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
+      return (n / 1073741824).toFixed(2) + " GB";
+    }
+    async function load() {
+      const r = await fetch("/api/share/" + token);
+      const d = await r.json();
+      if (!r.ok) { title.textContent = "Link gone"; meta.textContent = d.error || ""; return; }
+      title.textContent = d.name;
+      meta.textContent = (d.kind === "folder" ? "Folder" : fmt(d.size)) + (d.expiresAt ? " · expires " + new Date(d.expiresAt).toLocaleString() : "");
+      if (d.locked) gate.classList.remove("hidden");
+      else {
+        dl.href = "/s/" + token + "/download";
+        dl.classList.remove("hidden");
+      }
+    }
+    gate.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      const r = await fetch("/api/share/" + token + "/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: document.getElementById("pw").value }),
+      });
+      const d = await r.json();
+      if (!r.ok) { err.textContent = d.error; return; }
+      dl.href = "/s/" + token + "/download?p=" + encodeURIComponent(d.pass);
+      dl.classList.remove("hidden");
+      gate.classList.add("hidden");
+    });
+    load();
+  </script>
+</body>
+</html>

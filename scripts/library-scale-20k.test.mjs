@@ -60,7 +60,7 @@ test("Activated pool is O(live) — no 22k concat on facet/Activated tick", () =
 test("source: poolForScope + gfonts grid + activated count is length", () => {
   assert.match(store, /export function poolForScope/);
   assert.match(store, /scope === "activated"/);
-  assert.match(grid, /poolForScope\(scope, localPool, googleFonts, systemFonts, liveIds\)/);
+  assert.match(grid, /poolForScope\(scope, localPool, deferredGoogle, systemFonts, liveIds\)/);
   assert.match(sidebar, /poolForScope\(scope, skipLocals \? \[\] : localFonts, googleFonts, systemFonts, liveIds\)/);
   assert.match(sidebar, /activated: activated\.length/);
   assert.match(sidebar, /scope === "activated" \? activated : EMPTY_IDS/);

@@ -1,3 +1,16 @@
+## Fixed in tip / 1.0.207 (activate honesty follow-up)
+- **Upload was Live before Windows Add.** Import no longer puts the new ids in `activated`. They stay pending until `register_font_path` returns Add>0, then Live. Add=0 clears pending. A dropped IndexedDB row is not left as a ghost id.
+- **Upload restarted Font Cache.** That call is gone. `flush_font_cache` is still the explicit restart, and it is `spawn_blocking` so it cannot freeze the window thread.
+- **Single local Activate double-registered.** The card path no longer also starts `activate_families_on_disk`. One queue writes or registers the file. `register_font_path` binds the family so Deactivate can Remove an origin-folder face.
+- **Popular sort stalled a big folder.** Tie-break is a plain name compare. Uploads are all rank 9999, so Intl.Collator was sorting the whole folder. The grid keeps the previous list up until the new sort is ready.
+- **CSS export labeled every local file woff2** and used one shared family, so Helvetica cuts collided. Format follows the extension. A distinct full name is the CSS family.
+- **Did not:** FR_PRIVATE, skip Add, raise `GDIProcessHandleQuota`, wipe Font Cache, pack NSIS.
+
+## Fixed in tip / 1.0.207 (remove and close)
+- **Too many toasts on Remove.** Deactivate queue, “Still unloading”, cancel, and “Deactivated N” share `deactivate-job` (one card, updated). Folder delete no longer fires one Recycle Bin toast per face — one `recycle-batch` toast. Stuck warning is one toast for the whole pending-off set, and it waits until Remove has been quiet for 15s.
+- **Hang after Remove / cannot Close.** `unload_font_family` and `uninstall_font_family` are `spawn_blocking` (same idea as path register). Folder delete and library reset enqueue one GDI worker instead of N parallel uninstalls. Live Deactivate does **not** restart the Font Cache service. Close still hides first; `session_end` cancels an in-flight Remove between families.
+- **Did not:** FR_PRIVATE, skip Add, raise `GDIProcessHandleQuota`, wipe Font Cache, pack NSIS.
+
 ## Fixed in tip / 1.0.207
 - **Documents refresh cancel is not Activate cancel.** `docs_cancel` is checked between family folders and before each purge. After it is set, no further statics are deleted. `cancel_google_downloads` no longer emits `docs-vf-cancel-requested` or overwrites a live refresh label with `Stopping…`.
 - **No system-wide Escape.** Removed `tauri-plugin-global-shortcut`. In-window Escape cancels a refresh only when focus is not in a text field. Tray item has no Esc accelerator.

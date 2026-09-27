@@ -2,7 +2,7 @@ import { Power, RefreshCw, ScanSearch } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, didDocsVfSyncCancelToast, peekDocsVfSyncCancelPending, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
+import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPending, DEACTIVATE_TOAST_ID, didDocsVfSyncCancelToast, peekDocsVfSyncCancelPending, pruneUnknownFolders, repairIncompleteFamilies, syncDocumentsVfPolicy, syncManagedDocumentsRoot } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
@@ -261,7 +261,10 @@ export function deactivateSet(ids: string[], label: string) {
       pendingOff
         ? `Queuing ${pendingOff.toLocaleString()} off in ${label}`
         : `${label} off`,
-      { description: "Remove bar tracks unload. Files stay in Documents." },
+      {
+        id: DEACTIVATE_TOAST_ID,
+        description: "Remove bar tracks unload. Files stay in Documents.",
+      },
     );
   });
 }

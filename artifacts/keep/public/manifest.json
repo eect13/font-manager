@@ -1,0 +1,12 @@
+{
+  "name": "Potion",
+  "short_name": "Potion",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0b0a",
+  "theme_color": "#0a0b0a",
+  "description": "Self-hosted drive",
+  "icons": [
+    { "src": "/assets/mark.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

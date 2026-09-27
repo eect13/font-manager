@@ -94,6 +94,10 @@ export function LibraryGrid() {
   const LIST_H = densityLayout.listH;
   const sortMode =
     scope === "system" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
+  // Sort and import waves are heavy. Keep the last list on screen until the next one is ready.
+  const deferredSort = useDeferredValue(sortMode);
+  const deferredLocal = useDeferredValue(localFonts);
+  const deferredGoogle = useDeferredValue(googleFonts);
 
   useEffect(() => {
     let alive = true;
@@ -126,9 +130,9 @@ export function LibraryGrid() {
     () => {
       const skip = hideDupIds.length ? new Set(hideDupIds) : null;
       const localPool =
-        scope === "gfonts" || scope === "google" || scope === "system" ? EMPTY_FONTS : localFonts;
+        scope === "gfonts" || scope === "google" || scope === "system" ? EMPTY_FONTS : deferredLocal;
       const list = filterLibrary(
-        poolForScope(scope, localPool, googleFonts, systemFonts, liveIds),
+        poolForScope(scope, localPool, deferredGoogle, systemFonts, liveIds),
         scope,
         deferredQuery,
         favorites,
@@ -139,9 +143,9 @@ export function LibraryGrid() {
         recentIds,
       );
       const next = skip ? list.filter((f) => !skip.has(f.id)) : list;
-      return scope === "recent" ? next : sortLibrary(next, sortMode);
+      return scope === "recent" ? next : sortLibrary(next, deferredSort);
     },
-    [localFonts, googleFonts, systemFonts, scope, deferredQuery, favorites, liveIds, collections, customTags, sortMode, hideDupIds, facet, recentIds],
+    [deferredLocal, deferredGoogle, systemFonts, scope, deferredQuery, favorites, liveIds, collections, customTags, deferredSort, hideDupIds, facet, recentIds],
   );
 
   const inner = Math.max(280, box.width - 24);

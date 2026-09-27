@@ -167,9 +167,10 @@ function GroupTree({
     if (result.fonts) {
       toast.success(
         `Removed ${name} and ${result.fonts.toLocaleString()} typeface${result.fonts === 1 ? "" : "s"} from the library`,
+        { id: "library-remove" },
       );
     } else {
-      toast.success(`Removed ${name}`);
+      toast.success(`Removed ${name}`, { id: "library-remove" });
     }
   }
 

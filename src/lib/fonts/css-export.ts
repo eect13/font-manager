@@ -22,18 +22,33 @@ export function exportFontFamilies(fonts: FontRecord[]): string {
     .join("\n\n");
 }
 
+function cssFaceName(font: FontRecord): string {
+  const named =
+    font.fullName && font.fullName !== font.family ? font.fullName : font.cssFamily || font.family;
+  return named.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function faceFormat(fileName: string): string {
+  const n = fileName.toLowerCase();
+  if (n.endsWith(".otf")) return "opentype";
+  if (n.endsWith(".woff2")) return "woff2";
+  if (n.endsWith(".woff")) return "woff";
+  return "truetype";
+}
+
 export function exportLocalFaces(fonts: FontRecord[]): string {
   const locals = fonts.filter((f) => f.source === "local");
   if (!locals.length) return "";
   return locals
     .map((font) => {
-      const family = font.cssFamily || font.family;
+      const family = cssFaceName(font);
       const weight = font.weights[0] ?? 400;
       const style = font.italic ? "italic" : "normal";
-      const file = font.fileName || `${family}.woff2`;
+      const file = font.fileName || `${family}.ttf`;
+      const format = faceFormat(file);
       return `@font-face {
   font-family: "${family}";
-  src: url("/fonts/${file}") format("woff2");
+  src: url("/fonts/${file}") format("${format}");
   font-weight: ${weight};
   font-style: ${style};
   font-display: swap;

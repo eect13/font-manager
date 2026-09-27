@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eric Emerson Tan — Studio</title>
+  <meta name="description" content="Multimedia arts graduate in the Philippines. Logos, vector identity, 3D prints, and local-first tools. Designing from the messy process of learning." />
+  <meta property="og:title" content="Eric Emerson Tan — Studio" />
+  <meta property="og:description" content="Design and tech. Digital identities, physical prints, and tools built at home." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="assets/mark.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Outfit:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="loader" class="loader">
+    <div class="loader-inner">
+      <span class="mark-chip" aria-hidden="true">EE</span>
+      <p class="mono loader-kicker">Establishing scene</p>
+      <div class="loader-bar"><i id="loader-fill"></i></div>
+    </div>
+  </div>
+
+  <canvas id="webgl" aria-hidden="true"></canvas>
+  <div class="grain" aria-hidden="true"></div>
+  <div class="cursor" id="cursor" aria-hidden="true"><i></i></div>
+
+  <header class="top">
+    <a class="brand" href="#top" data-cursor="hover">
+      <span class="mark-chip" title="Logo placeholder">EE</span>
+      <span class="brand-copy">
+        <strong>Eric Emerson</strong>
+        <small>Logo placeholder</small>
+      </span>
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a href="#about" data-cursor="hover">About</a>
+      <a href="#work" data-cursor="hover">Work</a>
+      <a href="#studio" data-cursor="hover">Studio</a>
+      <a href="#life" data-cursor="hover">Off-screen</a>
+      <a href="#hello" class="nav-cta" data-cursor="hover">Say hello</a>
+    </nav>
+    <button class="menu-btn" id="menu-btn" type="button" aria-label="Open menu">
+      <span></span><span></span>
+    </button>
+  </header>
+
+  <div class="mobile-nav" id="mobile-nav">
+    <a href="#about">About</a>
+    <a href="#work">Work</a>
+    <a href="#studio">Studio</a>
+    <a href="#life">Off-screen</a>
+    <a href="#hello">Say hello</a>
+  </div>
+
+  <main id="top">
+    <section class="hero" data-section="00">
+      <p class="kicker mono reveal">Design &amp; tech enthusiast · Las Piñas</p>
+      <h1 class="hero-title">
+        <span class="line reveal" data-delay="80"><em>Eric</em></span>
+        <span class="line lime reveal" data-delay="180">Emerson</span>
+      </h1>
+      <p class="hero-lede reveal" data-delay="280">
+        Multimedia arts graduate translating ambigrams, negative space, and
+        optical tricks into identities you can print — and tools you can live in.
+      </p>
+      <div class="hero-actions reveal" data-delay="360">
+        <a class="btn" href="#work" data-cursor="hover">See the work</a>
+        <a class="btn ghost" href="atrium/" data-cursor="hover">Launch Atrium</a>
+      </div>
+      <p class="scroll-hint mono">Scroll to explore</p>
+    </section>
+
+    <section id="about" class="section about">
+      <div class="sec-head">
+        <span class="idx mono">01</span>
+        <h2>About me</h2>
+      </div>
+      <div class="about-grid">
+        <figure class="portrait reveal">
+          <img src="assets/eeky.jpg" alt="Eric Emerson Tan" width="800" height="1212" onerror="this.src='https://eect13.netlify.app/eeky.png'" />
+          <figcaption class="mono">Philippines · home studio</figcaption>
+        </figure>
+        <div class="about-copy">
+          <h3 class="reveal">I am <em>not an expert</em> in anything yet.</h3>
+          <p class="reveal">
+            I am a Multimedia Arts graduate designing from my home in the Philippine province.
+            I’ll be the first to admit that I am simply someone who loves the messy process of learning.
+          </p>
+          <p class="reveal">
+            I’m drawn to clever visual frameworks — ambigrams, optical illusions, and negative space —
+            and I am actively trying to translate those principles into scalable digital identities
+            and tangible 3D prints. Every day is just a practice in trying to make things a little bit cleaner.
+          </p>
+          <ul class="facts">
+            <li class="reveal"><span>Focus</span> Identity, vectors, mesh</li>
+            <li class="reveal"><span>Hardware</span> Creality K2 Pro</li>
+            <li class="reveal"><span>Stack</span> SVG · Three.js · local-first apps</li>
+            <li class="reveal"><span>Timezone</span> Asia / Manila</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="work" class="section work">
+      <div class="sec-head">
+        <span class="idx mono">02</span>
+        <h2>Selected work</h2>
+      </div>
+      <p class="sec-lede reveal">
+        Tools I actually use, plus early identity studies. Atrium is wired into this site as a live demo.
+      </p>
+
+      <article class="project featured reveal">
+        <div class="project-meta mono">01 · Command center · Live</div>
+        <div class="project-body">
+          <h3>Atrium</h3>
+          <p>
+            Local-first personal command center — Fantastical-style calendar with ICS,
+            sticky notes, finance watcher, and an RSS briefing. No account. Data stays in the browser.
+          </p>
+          <p class="tags"><span>Vanilla JS</span><span>ICS / iCal</span><span>Open-Meteo</span><span>CoinGecko</span></p>
+          <div class="project-links">
+            <a class="btn" href="atrium/" data-cursor="hover">Open Atrium</a>
+            <a class="text-link" href="https://github.com/eect13/atrium" target="_blank" rel="noopener">GitHub</a>
+          </div>
+        </div>
+        <div class="project-visual atrium-preview" aria-hidden="true">
+          <div class="preview-chrome">
+            <i></i><i></i><i></i>
+            <span>Atrium — command center</span>
+          </div>
+          <div class="preview-grid">
+            <div><small>Today</small><b>Agenda</b></div>
+            <div><small>PHP</small><b>Finance</b></div>
+            <div><small>PH news</small><b>Briefing</b></div>
+            <div><small>⌘K</small><b>Command</b></div>
+          </div>
+        </div>
+      </article>
+
+      <div class="project-row">
+        <article class="project reveal">
+          <div class="project-meta mono">02 · Desktop type</div>
+          <h3>Font Manager</h3>
+          <p>
+            FontBase-style Windows library. Browse Google Fonts, upload TTF/OTF,
+            activate faces so Word, Adobe, and Figma see them for the session.
+          </p>
+          <p class="tags"><span>Tauri 2</span><span>React</span><span>Rust</span></p>
+          <div class="project-links">
+            <a class="btn ghost" href="https://font-manager-eta.vercel.app" target="_blank" rel="noopener" data-cursor="hover">Live preview</a>
+            <a class="text-link" href="https://github.com/eect13/font-manager" target="_blank" rel="noopener">GitHub</a>
+          </div>
+        </article>
+
+        <article class="project reveal">
+          <div class="project-meta mono">03 · Ledger · WIP</div>
+          <h3>Finance Manager</h3>
+          <p>
+            Personal ledger still in progress — cash, budgets, and the same
+            money-watching instinct that lives inside Atrium’s finance rack.
+          </p>
+          <p class="tags"><span>TypeScript</span><span>Vibe-coded</span></p>
+          <div class="project-links">
+            <a class="text-link" href="https://github.com/eect13/finance-manager" target="_blank" rel="noopener">GitHub</a>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="studio" class="section studio">
+      <div class="sec-head">
+        <span class="idx mono">03</span>
+        <h2>Current focus</h2>
+      </div>
+      <div class="split">
+        <article class="panel reveal">
+          <h3>Digital canvas</h3>
+          <ol>
+            <li>Practicing how to avoid generic ideas to build more memorable logos that stay recognizable even when scaled down.</li>
+            <li>Broadening pattern knowledge and practicing vector graphics (.svg) to achieve perfectly clean curves.</li>
+            <li>Learning how to export pristine outputs with true transparent or white backgrounds.</li>
+          </ol>
+        </article>
+        <article class="panel reveal">
+          <h3>Physical space</h3>
+          <ol>
+            <li>Trying to wrap my head around advanced slicer configurations.</li>
+            <li>Running endless parameter matrix tests (and failing often).</li>
+            <li>Learning the basics of tuning and maintaining hardware. Currently operating a Creality K2 Pro.</li>
+          </ol>
+        </article>
+      </div>
+
+      <div class="studies">
+        <article class="study reveal">
+          <div class="glyph" aria-hidden="true">
+            <svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="26" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M22 40h36M40 22v36" stroke="currentColor" stroke-width="1.2"/><path d="M28 28l24 24M52 28L28 52" stroke="currentColor" stroke-width="1.2"/></svg>
+          </div>
+          <p class="mono">Vector identity</p>
+          <h3>Ambigram draft</h3>
+          <p>Practicing symmetrical geometry and optical illusions for personal branding. Clever without losing readability.</p>
+        </article>
+        <article class="study reveal">
+          <div class="glyph" aria-hidden="true">
+            <svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="14" fill="currentColor"/><circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+          </div>
+          <p class="mono">Conceptual draft</p>
+          <h3>Negative space</h3>
+          <p>Exploring how the absence of elements can create stronger, more intelligent visual metaphors in modern logo design.</p>
+        </article>
+        <article class="study reveal">
+          <div class="glyph" aria-hidden="true">
+            <svg viewBox="0 0 80 80"><path d="M40 12l24 14v28L40 68 16 54V26z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M40 12v28l24 14M40 40L16 54" stroke="currentColor" stroke-width="1.2"/></svg>
+          </div>
+          <p class="mono">Mesh prototype</p>
+          <h3>From vector to object</h3>
+          <p>Translating digital vector work into physical objects by testing infill densities and slicing parameters on the K2 Pro.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="life" class="section life">
+      <div class="sec-head">
+        <span class="idx mono">04</span>
+        <h2>Off-screen</h2>
+      </div>
+      <div class="life-grid">
+        <article class="reveal">
+          <h3>Audio fidelity</h3>
+          <p>Evaluating sound signatures and technical performance. Currently listening on the Xenns Top and the Binary EP321. Edifier M90 on the desk, sub-out for precise low-end.</p>
+        </article>
+        <article class="reveal">
+          <h3>Music &amp; focus</h3>
+          <p>Workflow soundtrack leans into high-gloss electronic production and laid-back grooves — Disclosure, Satin Jackets, Post Malone.</p>
+        </article>
+        <article class="reveal">
+          <h3>Racquet sports</h3>
+          <p>Badminton on a Li-Ning Axforce 90 New (Li-Ning No.1 strings). Recently picked up a Diadem Edge BluCore Pro 16mm for pickleball.</p>
+        </article>
+        <article class="reveal">
+          <h3>Strategy &amp; travel</h3>
+          <p>Chess frameworks and PSE equity tracking. Designated planner for family trips — Yunnan done, Vietnam itinerary for four in October 2026.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="hello" class="section hello">
+      <div class="sec-head">
+        <span class="idx mono">05</span>
+        <h2>Say hello</h2>
+      </div>
+      <p class="hello-line reveal">
+        If you want to talk identity, prints, or tools that stay on your machine —
+        <em>write.</em>
+      </p>
+      <div class="hello-links reveal">
+        <a href="mailto:eect13@gmail.com" data-cursor="hover">eect13@gmail.com</a>
+        <a href="https://github.com/eect13" target="_blank" rel="noopener" data-cursor="hover">GitHub</a>
+        <a href="https://x.com/EricEmersonTan" target="_blank" rel="noopener" data-cursor="hover">X</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span class="mono">© 2026 Eric Emerson Tan</span>
+    <span class="mono">Mark is a placeholder · Three.js scene</span>
+  </footer>
+
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

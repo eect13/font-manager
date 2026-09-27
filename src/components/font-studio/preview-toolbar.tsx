@@ -1,3 +1,4 @@
+import { startTransition } from "react";
 import { AlignCenter, AlignLeft, AlignRight, Check, ChevronsUpDown, Italic, LayoutGrid, List, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -164,7 +165,9 @@ export function PreviewToolbar() {
                         ? "Catalog rank. Your files have no rank, so they stay together."
                         : undefined
                   }
-                  onSelect={() => setPreview({ sort: id })}
+                  onSelect={() => {
+                    startTransition(() => setPreview({ sort: id }));
+                  }}
                 >
                   <span className="flex-1">{SORT_LABEL[id]}</span>
                   {sort === id && <Check className="size-3.5" />}

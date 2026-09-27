@@ -26,10 +26,11 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
-/// Hide first so X feels instant. Do **not** block the event loop on unload —
-/// that froze single-instance IPC (second launch hung → two processes, no window).
-/// Unload runs on a worker; a path-scaled watchdog is only a hung-GDI backstop
-/// (worker exits(0) when session_end finishes).
+/// Hide first so X feels instant. Unload commands are async, so CloseRequested
+/// can run while a Deactivate worker still holds GDI. Do **not** block this
+/// thread on unload — that froze single-instance IPC. `session_end` sets cancel
+/// so an in-flight Remove stops between families, then unloads the rest.
+/// A path-scaled watchdog is only a hung-GDI backstop.
 fn quit_gracefully(app: &tauri::AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;

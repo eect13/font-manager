@@ -2052,10 +2052,20 @@ pub fn font_cache_restart_budget() -> Duration {
 }
 
 /// When to schedule a FontCache flush after Removes.
-/// Quit and live Deactivate both flush when we attempted any unload; quit path
-/// must stay inside `font_cache_restart_budget()` (no HWND_BROADCAST).
+/// Quit recovery and startup leftover unload flush when we attempted any unload.
+/// Live card Deactivate must not — see `plan_live_deactivate_font_cache_restart`.
 pub fn plan_font_cache_flush(attempted_removes: usize) -> bool {
     attempted_removes > 0
+}
+
+/// Live Deactivate (one card or a folder) must not STOP+START Font Cache.
+/// That held the GDI lock for up to 8s and made Close look dead.
+/// Startup recovery and the explicit `flush_font_cache` command still restart.
+/// `family_count` is accepted so a later bulk policy can opt in without pretending
+/// a one-family Remove flushed the service.
+pub fn plan_live_deactivate_font_cache_restart(family_count: usize) -> bool {
+    let _ = family_count;
+    false
 }
 
 /// Toast / eprintln copy when Documents TTFs stay locked after flush attempt.
@@ -7733,15 +7743,16 @@ pub fn remove_library_file(app: AppHandle, family: String, file_name: String) ->
 }
 
 /// Add one on-disk file for this session. Off the UI thread so Activate / Close
-/// are not stuck behind GDI.
+/// are not stuck behind GDI. `family` binds the path so Deactivate can Remove it
+/// (origin folders are not named after the face). Add=0 is an error — never Ok.
 #[tauri::command]
-pub async fn register_font_path(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || register_font_path_blocking(path))
+pub async fn register_font_path(path: String, family: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || register_font_path_blocking(path, family))
         .await
         .map_err(|err| err.to_string())?
 }
 
-fn register_font_path_blocking(path: String) -> Result<(), String> {
+fn register_font_path_blocking(path: String, family: Option<String>) -> Result<(), String> {
     let p = PathBuf::from(path);
     let lower = p.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
     if lower.contains("\\windows\\fonts") {
@@ -7750,20 +7761,52 @@ fn register_font_path_blocking(path: String) -> Result<(), String> {
     if !ttf_intact(&p) {
         return Err("file is not an intact font".into());
     }
-    register_path(&p);
+    if !register_path(&p) {
+        return Err("Windows did not add this font (AddFontResourceExW returned 0)".into());
+    }
+    #[cfg(windows)]
+    {
+        let bound = family
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                p.parent()
+                    .and_then(|d| d.file_name())
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+                    .filter(|name| {
+                        !name.eq_ignore_ascii_case("Font Manager")
+                            && !name.eq_ignore_ascii_case("gdi-maps")
+                    })
+            });
+        if let Some(name) = bound {
+            winfont::bind(&name, &p);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = family;
+    }
     notify_fonts_changed_maybe();
     Ok(())
 }
 
+/// Explicit Font Cache restart. Not used by upload or live Deactivate —
+/// those must not freeze Explorer. Off the window thread if something calls it.
 #[tauri::command]
-pub fn flush_font_cache() -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        winfont::flush_local();
-        let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
-        winfont::flush_cache();
-    }
-    Ok(())
+pub async fn flush_font_cache() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        #[cfg(windows)]
+        {
+            winfont::flush_local();
+            let _ = winfont::restart_font_cache_service(font_cache_restart_budget());
+            winfont::flush_cache();
+        }
+    })
+    .await
+    .map_err(|err| err.to_string())
 }
 
 fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
@@ -7979,14 +8022,14 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
         gdi_flush_local();
         #[cfg(windows)]
         {
-            let access_denied = if plan_font_cache_flush(unloaded_paths.len().max(n as usize)) {
+            // 1.0.208: live Deactivate notifies apps only. Do not restart Font Cache
+            // (service STOP+START held this lock and froze Close).
+            let access_denied = if plan_live_deactivate_font_cache_restart(families.len()) {
                 let outcome = winfont::restart_font_cache_service(font_cache_restart_budget());
                 matches!(outcome, winfont::FontCacheRestartOutcome::AccessDenied)
             } else {
                 false
             };
-            // Live Deactivate: notify apps after cache restart so WM_FONTCHANGE
-            // does not immediately re-pinch Documents handles in Font Cache.
             notify_fonts_changed();
             let still = filter_still_write_locked(&unloaded_paths);
             if !still.is_empty() || access_denied {
@@ -8020,10 +8063,13 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
     n
 }
 
+/// Off the window thread. Callers that delete next still await this result
+/// so DeleteFile cannot race GDI. Close can hide while the worker runs.
 #[tauri::command]
-pub fn unload_font_family(app: AppHandle, family: String) -> Result<u32, String> {
-    // Sync — callers that delete next must finish Remove before DeleteFile.
-    Ok(unload_now(&app, &[family], false))
+pub async fn unload_font_family(app: AppHandle, family: String) -> Result<u32, String> {
+    tauri::async_runtime::spawn_blocking(move || unload_now(&app, &[family], false))
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -8065,14 +8111,17 @@ pub fn unload_font_families(app: AppHandle, families: Vec<String>) -> Result<u32
     Ok(n)
 }
 
+/// Unload then delete off the window thread. The command resolves only after
+/// Remove finishes, so the Recycle Bin move cannot race GDI.
 #[tauri::command]
-pub fn uninstall_font_family(app: AppHandle, family: String) -> Result<(), String> {
-    // Await unload on this thread before DeleteFile — do not race GDI.
-    let _ = unload_now(&app, &[family.clone()], false);
-    gdi_flush_local();
-    purge_family_files_result(&app, &family)?;
-    // Empty after Explorer-delete is success (missing = already gone).
-    Ok(())
+pub async fn uninstall_font_family(app: AppHandle, family: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = unload_now(&app, &[family.clone()], false);
+        gdi_flush_local();
+        purge_family_files_result(&app, &family)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -12618,6 +12667,10 @@ mod session_sidecar_tests {
         assert!(!plan_font_cache_flush(0));
         assert!(plan_font_cache_flush(1));
         assert!(plan_font_cache_flush(50));
+        // Live Deactivate never restarts Font Cache — Close must stay available.
+        assert!(!plan_live_deactivate_font_cache_restart(0));
+        assert!(!plan_live_deactivate_font_cache_restart(1));
+        assert!(!plan_live_deactivate_font_cache_restart(40));
     }
 
     #[test]

@@ -11,8 +11,8 @@ import { isKnownGdiSessionIncapable } from "./gdi-incapable.ts";
 
 /**
  * @param {string} id
- * @param {{ id: string }[]} local
- * @param {{ id: string }[]} google
+ * @param {{ id: string, family: string, source: string }[]} local
+ * @param {{ id: string, family: string, source: string }[]} google
  */
 function findFontRecord(id, local, google) {
   return local.find((f) => f.id === id) ?? google.find((f) => f.id === id);
@@ -38,8 +38,10 @@ export function activateQueueIds(ids, state) {
     if (state.pendingDeactivateSet.has(id)) continue;
     const font = findFontRecord(id, state.localFonts, state.googleFonts);
     if (!font || font.source === "system") continue;
-    if (state.settledFamilySet.has(font.family.trim().toLowerCase())) continue;
-    if (isKnownGdiSessionIncapable(font.family)) continue;
+    const family = String(font.family ?? "");
+    if (!family) continue;
+    if (state.settledFamilySet.has(family.trim().toLowerCase())) continue;
+    if (isKnownGdiSessionIncapable(family)) continue;
     usable.push(id);
   }
   return usable;
@@ -47,9 +49,9 @@ export function activateQueueIds(ids, state) {
 
 /**
  * Catalog / library "Activate remaining" — must call activateQueueIds.
- * @param {{ id: string, family: string, source: string }[]} fonts
+ * @param {{ id: string, family?: string, source?: string }[]} fonts
  * @param {Parameters<typeof activateQueueIds>[1]} state
- * @param {((font: { id: string, family: string, source: string }) => boolean)=} filter
+ * @param {((font: any) => boolean)=} filter
  * @returns {number}
  */
 export function catalogMenuRemaining(fonts, state, filter) {

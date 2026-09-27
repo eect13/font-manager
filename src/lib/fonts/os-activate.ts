@@ -15,6 +15,9 @@ export {
 /** Progress owner — download vs on-disk register vs remove must not share one sticky bar. */
 export type ProgressOwner = "idle" | "download" | "register" | "remove";
 
+/** One sonner id for queue, stuck, cancel, and done — updates, never stacks. */
+export const DEACTIVATE_TOAST_ID = "deactivate-job";
+
 export type DownloadJobState = {
   running: boolean;
   paused: boolean;
@@ -1024,7 +1027,7 @@ async function writeAndRegister(
   }
   const { documentDir, join } = await import("@tauri-apps/api/path");
   const abs = await join(await documentDir(), "Font Manager", fam, file);
-  await tauriInvoke("register_font_path", { path: abs });
+  await tauriInvoke("register_font_path", { path: abs, family });
   installedCache.add(family.toLowerCase());
 }
 
@@ -1482,6 +1485,9 @@ function applyPayload(p: {
           : job.owner !== "idle"
             ? job.owner
             : "download";
+  if (kind === "remove") {
+    void import("./store").then(({ noteRemoveProgress }) => noteRemoveProgress());
+  }
   const sig = [
     p.running ? 1 : 0,
     p.paused ? 1 : 0,
@@ -1587,7 +1593,8 @@ function applyPayload(p: {
           clearRemoveBatch();
           if (n > 0) {
             toast.success(`Deactivated ${n.toLocaleString()} — files kept in Documents`, {
-              description: n > 8 ? "Windows is catching up in the background." : undefined,
+              id: DEACTIVATE_TOAST_ID,
+              description: n > 8 ? "Windows is catching up in the background." : "Files stay in Documents.",
             });
           }
         }
@@ -1698,10 +1705,12 @@ function startGooglePoll(kind?: "download" | "register" | "remove") {
   void bindDownloadEvents();
   ignoreProgress = false;
   unlockUi();
-  // New job only — Resume must not reset ready marks or the percent clock.
-  const restartFlush = flushReadyFamilies();
-  resetReadyBatching();
-  void restartFlush;
+  // Remove must not wipe an in-flight Activate ready batch.
+  if (kind !== "remove") {
+    const restartFlush = flushReadyFamilies();
+    resetReadyBatching();
+    void restartFlush;
+  }
   if (!(job.running || job.paused)) rustSeenRunning = false;
   if (pollTimer) {
     window.clearInterval(pollTimer);
@@ -1728,7 +1737,10 @@ function finishIfIdle() {
   unlockUi();
   if (snapshot.total > 0 && snapshot.done + snapshot.failed > 0) {
     if (wasRemove) {
-      toast.success(`Deactivated ${snapshot.done.toLocaleString()} — files kept in Documents`);
+      toast.success(`Deactivated ${snapshot.done.toLocaleString()} — files kept in Documents`, {
+        id: DEACTIVATE_TOAST_ID,
+        description: "Files stay in Documents.",
+      });
     } else {
       notifyDownloadResult(snapshot.done, snapshot.failed, snapshot.failedNames, snapshot.failedDetails, snapshot.settledNames ?? []);
     }
@@ -1738,7 +1750,7 @@ function finishIfIdle() {
 async function installOne(font: FontRecord, lean: boolean) {
   if (cacheHas(font.family)) return;
   if (font.originPath) {
-    await tauriInvoke("register_font_path", { path: font.originPath });
+    await tauriInvoke("register_font_path", { path: font.originPath, family: font.family });
     installedCache.add(font.family.toLowerCase());
     return;
   }
@@ -1807,41 +1819,59 @@ function kickInstall() {
   for (let i = 0; i < need; i += 1) void pumpInstall(myBatch);
 }
 
+let removePumping = false;
+
+/** One Remove worker. A second kick while one is running only enqueues. */
+function kickRemove() {
+  if (removePumping || !removeQueue.length) return;
+  removePumping = true;
+  void pumpRemove(batchId);
+}
+
 async function pumpRemove(myBatch: number) {
   workers += 1;
-  while (myBatch === batchId) {
-    while (job.paused && myBatch === batchId) {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
+  try {
+    while (myBatch === batchId) {
+      while (job.paused && myBatch === batchId) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
+      }
+      if (myBatch !== batchId) break;
+      const font = removeQueue.shift();
+      if (!font) break;
+      // Only paint remove chrome when remove owns the bar (split owners).
+      if (!(job.running && job.owner !== "remove" && job.owner !== "idle")) {
+        beginOwnedJob("remove", {
+          total: Math.max(1, job.owner === "remove" ? job.total : removeQueue.length + 1),
+          current: font.family,
+        });
+      } else {
+        job = { ...job, current: font.family };
+        paint();
+      }
+      try {
+        await tauriInvoke("unload_font_family", { family: font.family });
+        installedCache.delete(font.family.toLowerCase());
+        job = { ...job, done: job.done + 1 };
+        const { useFontStore, noteRemoveProgress } = await import("./store");
+        noteRemoveProgress();
+        useFontStore.getState().confirmDeactivated([font.id]);
+      } catch {
+        job = { ...job, failed: job.failed + 1 };
+        const { useFontStore } = await import("./store");
+        // Unload failed — clear pending-off so user can retry; keep Live honest.
+        useFontStore.getState().clearPendingDeactivate([font.id]);
+      }
+      await yieldUi();
     }
-    if (myBatch !== batchId) break;
-    const font = removeQueue.shift();
-    if (!font) break;
-    // Only paint remove chrome when remove owns the bar (split owners).
-    if (!(job.running && job.owner !== "remove" && job.owner !== "idle")) {
-      beginOwnedJob("remove", {
-        total: Math.max(1, job.owner === "remove" ? job.total : removeQueue.length + 1),
-        current: font.family,
-      });
-    } else {
-      job = { ...job, current: font.family };
-      paint();
+  } finally {
+    workers -= 1;
+    removePumping = false;
+    if (myBatch === batchId && removeQueue.length) {
+      kickRemove();
+    } else if (myBatch === batchId) {
+      finishIfIdle();
     }
-    try {
-      await tauriInvoke("unload_font_family", { family: font.family });
-      installedCache.delete(font.family.toLowerCase());
-      job = { ...job, done: job.done + 1 };
-      const { useFontStore } = await import("./store");
-      useFontStore.getState().confirmDeactivated([font.id]);
-    } catch {
-      job = { ...job, failed: job.failed + 1 };
-      const { useFontStore } = await import("./store");
-      // Unload failed — clear pending-off so user can retry; keep Live honest.
-      useFontStore.getState().clearPendingDeactivate([font.id]);
-    }
-    await yieldUi();
   }
-  workers -= 1;
-  if (myBatch === batchId) finishIfIdle();
 }
 
 /**
@@ -2012,6 +2042,7 @@ export function cancelDownloadQueue(opts?: CancelDownloadOpts) {
         ? "Session restore cancelled"
         : "Download cancelled";
     toast.message(title, {
+      id: wasRemove ? DEACTIVATE_TOAST_ID : undefined,
       description,
       action: { label: "Open folder", onClick: () => void openActivatedFolder() },
     });
@@ -2037,45 +2068,69 @@ export function resumeDownloadQueue() {
   toast.message("Resumed", { description: "Same queue, same percent." });
 }
 
-const uploadQueue: { family: string; fileName: string; bytes: Uint8Array }[] = [];
+const uploadQueue: { family: string; fileName: string; bytes: Uint8Array; ids: string[] }[] = [];
 let uploadPumping = false;
-let uploadsSaved = 0;
 
 async function pumpUploads() {
   if (uploadPumping) return;
   uploadPumping = true;
+  const savedIds: string[] = [];
+  const failedIds: string[] = [];
+  let savedFiles = 0;
   while (uploadQueue.length) {
     const item = uploadQueue.shift();
     if (!item) break;
     try {
       await writeAndRegister(item.family, item.fileName, item.bytes);
-      uploadsSaved += 1;
+      savedFiles += 1;
+      savedIds.push(...item.ids);
     } catch (err) {
       console.error(err);
+      failedIds.push(...item.ids);
     }
     await yieldUi();
   }
   uploadPumping = false;
-  if (uploadsSaved) {
-    await tauriInvoke("flush_font_cache").catch(() => undefined);
-    toast.success(
-      uploadsSaved === 1 ? "Upload saved to Documents" : `${uploadsSaved} uploads saved to Documents`,
-      { description: "Documents → Font Manager → FamilyName. Other apps may need a restart." },
-    );
-    uploadsSaved = 0;
+  if (savedIds.length || failedIds.length) {
+    const { useFontStore } = await import("./store");
+    const store = useFontStore.getState();
+    // Live only after Add>0. Add=0 throws from register_font_path — stay off.
+    if (savedIds.length) store.markLiveActivated(savedIds);
+    if (failedIds.length) store.clearPendingActivate(failedIds);
   }
+  if (savedFiles) {
+    toast.success(
+      savedFiles === 1 ? "Upload saved to Documents" : `${savedFiles} uploads saved to Documents`,
+      { description: "Documents → Font Manager → FamilyName. Other apps see them while this window is open." },
+    );
+  } else if (failedIds.length) {
+    toast.error("Upload did not activate", {
+      description: "Windows did not add the file. It stays in the library — try Activate again.",
+    });
+  }
+  if (uploadQueue.length) void pumpUploads();
 }
 
 export async function saveUploadToDisk(opts: {
   family: string;
   fileName: string;
   buffer: ArrayBuffer;
+  ids?: string[];
 }): Promise<void> {
-  if (!(await inDesktopShell())) return;
+  const ids = (opts.ids ?? []).filter(Boolean);
+  if (!(await inDesktopShell())) {
+    // Browser preview has no GDI. Mark the cards on so the specimen can load.
+    if (ids.length) {
+      const { useFontStore } = await import("./store");
+      useFontStore.getState().markLiveActivated(ids);
+    }
+    return;
+  }
   uploadQueue.push({
     family: opts.family,
     fileName: opts.fileName,
     bytes: new Uint8Array(opts.buffer),
+    ids,
   });
   void pumpUploads();
 }
@@ -2153,11 +2208,13 @@ export async function installFontOnSystem(font: FontRecord): Promise<boolean> {
     await queueGoogleFamilyDownload(font.family, fetchIntentFor(font));
     return true;
   }
-  // Already on this PC (folder or upload). Register for other apps — do not say Downloading.
+  // Already on this PC (folder or upload). One register queue — do not also
+  // start Rust activate_families_on_disk. That worker can fail the family,
+  // clear pending, and this queue's later Add cannot mark Live. It also
+  // double-Adds the same file.
   if (!(job.running || job.paused)) {
     beginOwnedJob("register", { total: 1, current: font.family });
   }
-  void startActivateOnDisk([font.family]);
   installQueue.push({ font, lean: false });
   kickInstall();
   return true;
@@ -2185,7 +2242,7 @@ export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   if (job.running && (job.mode === "download" || job.mode === "register" || job.owner === "download" || job.owner === "register")) {
     await dropDownloadFamilies([font.family]);
     removeQueue.push(font);
-    void pumpRemove(batchId);
+    kickRemove();
     return;
   }
   await syncFontsOnSystem([font], false);
@@ -2202,15 +2259,18 @@ function invokeError(err: unknown): string {
 }
 
 /** Delete family folder from Documents after unload. Surfaces locks — no silent success. */
-export async function deleteFontFiles(font: FontRecord): Promise<boolean> {
+export async function deleteFontFiles(font: FontRecord, opts?: { quiet?: boolean }): Promise<boolean> {
+  const quiet = Boolean(opts?.quiet);
   if (font.source === "system") {
-    toast.message("System fonts are read-only", {
-      description: "Font Manager never deletes C:\\Windows\\Fonts.",
-    });
+    if (!quiet) {
+      toast.message("System fonts are read-only", {
+        description: "Font Manager never deletes C:\\Windows\\Fonts.",
+      });
+    }
     return false;
   }
   if (!(await inDesktopShell())) {
-    toast.message("Delete files needs the desktop app");
+    if (!quiet) toast.message("Delete files needs the desktop app");
     return false;
   }
   try {
@@ -2218,29 +2278,157 @@ export async function deleteFontFiles(font: FontRecord): Promise<boolean> {
     installedCache.delete(font.family.toLowerCase());
     const { useFontStore } = await import("./store");
     const s = useFontStore.getState();
-    s.setActivatedMany([font.id], false);
+    // Already unloaded inside uninstall — do not start a second Remove.
+    s.confirmDeactivated([font.id]);
     const next = s.diskFamilies.filter((n) => n.toLowerCase() !== font.family.toLowerCase());
     s.setDiskFamilies(next);
-    const local = font.source === "local";
-    toast.success(`Moved ${font.family} to the Recycle Bin`, {
-      id: `recycle-${font.id}`,
-      description: local
-        ? "Removed from the library. Restore from Recycle Bin if you need it back."
-        : "Restore from Recycle Bin if you need the files back. Catalog entry stays.",
-    });
+    if (!quiet) {
+      const local = font.source === "local";
+      toast.success(`Moved ${font.family} to the Recycle Bin`, {
+        id: `recycle-${font.id}`,
+        description: local
+          ? "Removed from the library. Restore from Recycle Bin if you need it back."
+          : "Restore from Recycle Bin if you need the files back. Catalog entry stays.",
+      });
+    }
     return true;
   } catch (err) {
-    toast.error(`Could not move ${font.family} to the Recycle Bin`, {
-      id: `recycle-${font.id}`,
-      description: invokeError(err),
-      duration: 20_000,
-      action: { label: "Open folder", onClick: () => void openActivatedFolder() },
-    });
+    if (!quiet) {
+      toast.error(`Could not move ${font.family} to the Recycle Bin`, {
+        id: `recycle-${font.id}`,
+        description: invokeError(err),
+        duration: 20_000,
+        action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+      });
+    }
     return false;
   }
 }
 
 export const removeUploadFromDisk = deleteFontFiles;
+
+const diskDeleteQueue: FontRecord[] = [];
+let diskDeletePumping = false;
+
+/** Recycle Bin moves, one family at a time. One toast id for the whole batch. */
+export function enqueueDiskDeletes(fonts: FontRecord[]) {
+  for (const font of fonts) {
+    if (font.source === "system") continue;
+    diskDeleteQueue.push(font);
+  }
+  void pumpDiskDeletes();
+}
+
+async function pumpDiskDeletes() {
+  if (diskDeletePumping) return;
+  diskDeletePumping = true;
+  if (!(await inDesktopShell())) {
+    const n = diskDeleteQueue.length;
+    diskDeleteQueue.length = 0;
+    diskDeletePumping = false;
+    if (n) {
+      toast.message("Delete files needs the desktop app", {
+        id: "recycle-batch",
+        description: "The browser preview cannot move Documents folders to the Recycle Bin.",
+      });
+    }
+    return;
+  }
+  let ok = 0;
+  let failed = 0;
+  let firstFail = "";
+  try {
+    while (diskDeleteQueue.length) {
+      const font = diskDeleteQueue.shift();
+      if (!font) break;
+      const n = ok + failed + 1;
+      const all = n + diskDeleteQueue.length;
+      toast.message(`Moving ${n.toLocaleString()} of ${all.toLocaleString()} to the Recycle Bin`, {
+        id: "recycle-batch",
+        description: font.family,
+      });
+      const good = await deleteFontFiles(font, { quiet: true });
+      if (good) ok += 1;
+      else {
+        failed += 1;
+        if (!firstFail) firstFail = font.family;
+      }
+      await yieldUi();
+    }
+  } finally {
+    diskDeletePumping = false;
+  }
+  if (!ok && !failed) {
+    if (diskDeleteQueue.length) void pumpDiskDeletes();
+    return;
+  }
+  if (failed) {
+    toast.error(
+      failed === 1
+        ? `Could not move ${firstFail || "1 typeface"} to the Recycle Bin`
+        : `Could not move ${failed.toLocaleString()} typefaces to the Recycle Bin`,
+      {
+        id: "recycle-batch",
+        description: ok
+          ? `Moved ${ok.toLocaleString()}. ${firstFail} is still on disk — close Word/Adobe, then retry.`
+          : `${firstFail} is still on disk — close Word/Adobe, then retry.`,
+        duration: 20_000,
+        action: { label: "Open folder", onClick: () => void openActivatedFolder() },
+      },
+    );
+  } else {
+    toast.success(
+      ok === 1
+        ? "Moved 1 typeface to the Recycle Bin"
+        : `Moved ${ok.toLocaleString()} typefaces to the Recycle Bin`,
+      {
+        id: "recycle-batch",
+        description: "Restore from the Recycle Bin if you need them back.",
+      },
+    );
+  }
+  if (diskDeleteQueue.length) void pumpDiskDeletes();
+}
+
+const uninstallBatches: FontRecord[][] = [];
+let uninstallDraining = false;
+
+function removeBusy() {
+  return (
+    removePumping ||
+    removeQueue.length > 0 ||
+    ((job.running || job.paused) && (job.owner === "remove" || job.mode === "remove"))
+  );
+}
+
+/** Folder / reset Removes — one batch at a time, never N parallel GDI calls. */
+export function enqueueUninstalls(fonts: FontRecord[]) {
+  const list = fonts.filter((font) => font.source !== "system");
+  if (!list.length) return;
+  uninstallBatches.push(list);
+  void drainUninstalls();
+}
+
+async function drainUninstalls() {
+  if (uninstallDraining) return;
+  uninstallDraining = true;
+  try {
+    while (uninstallBatches.length) {
+      while (removeBusy()) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
+      }
+      const batch = uninstallBatches.shift();
+      if (!batch?.length) continue;
+      await syncFontsOnSystem(batch, false);
+      while (removeBusy()) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
+      }
+    }
+  } finally {
+    uninstallDraining = false;
+    if (uninstallBatches.length) void drainUninstalls();
+  }
+}
 
 export async function syncFontOnSystem(font: FontRecord, on: boolean): Promise<void> {
   if (on) await installFontOnSystem(font);
@@ -2271,7 +2459,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     // complete (never confirmDeactivated(all) at spawn).
     if (!canOwn) {
       for (const font of fonts) removeQueue.push(font);
-      void pumpRemove(batchId);
+      kickRemove();
       unlockUi();
       return;
     }
@@ -2284,7 +2472,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     } catch {
       clearRemoveBatch();
       for (const font of fonts) removeQueue.push(font);
-      void pumpRemove(batchId);
+      kickRemove();
     }
     unlockUi();
     return;
