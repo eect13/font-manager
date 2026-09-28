@@ -31,7 +31,6 @@ const CATEGORY: Record<string, FontCategory> = {
 };
 
 const FONTSOURCE_LIST = "https://api.fontsource.org/v1/fonts";
-const GOOGLE_META = "https://fonts.google.com/metadata/fonts";
 const CATALOG_CACHE_ID = "catalog:live";
 const BUNDLED_COUNT = GOOGLE_FONTS.length;
 const FETCH_MS = 10_000;
@@ -244,33 +243,11 @@ async function fetchFontsourceList(force: boolean): Promise<FontsourceItem[] | n
   }
 }
 
-async function fetchGoogleDirectory(): Promise<Set<string>> {
-  const dir = GOOGLE_DIRECTORY;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_MS);
-  try {
-    const res = await fetch(GOOGLE_META, {
-      signal: ctrl.signal,
-      cache: "no-store",
-    });
-    if (!res.ok) return dir;
-    const text = await res.text();
-    const json = JSON.parse(text.replace(/^\)\]\}'\n?/, "")) as {
-      familyMetadataList?: { family?: string }[];
-    };
-    for (const item of json.familyMetadataList ?? []) {
-      if (item.family) dir.add(familyKey(item.family));
-    }
-  } catch {
-    /* shipped directory still classifies */
-  } finally {
-    clearTimeout(timer);
-  }
-  return dir;
-}
-
 export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncResult | null> {
-  const [data, dir] = await Promise.all([fetchFontsourceList(force), fetchGoogleDirectory()]);
+  // Google's metadata endpoint sends no CORS headers, so the shipped directory
+  // (refreshed by scripts/regen-shipped-catalogs.mjs) is the lane source.
+  const data = await fetchFontsourceList(force);
+  const dir = GOOGLE_DIRECTORY;
   if (!data) return null;
 
   const rows = data.filter((item) => item.family);
