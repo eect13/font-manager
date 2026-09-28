@@ -7,6 +7,7 @@ export const Route = createFileRoute("/playground")({ component: () => null });
 export function PlaygroundPage() {
   return (
     <UploadDropzone>
+      <h1 className="sr-only">Playground</h1>
       <Playground />
     </UploadDropzone>
   );
