@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
 import test from "node:test";
 import { previewWghtAxis } from "../src/lib/fonts/axes.ts";
-import { googleCssUrl, googlePreviewCssHref } from "../src/lib/fonts/loader.ts";
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (
+      (specifier.startsWith("./") || specifier.startsWith("../")) &&
+      !/\.(?:mjs|cjs|js|json|ts|tsx|css)$/.test(specifier)
+    ) {
+      return nextResolve(`${specifier}.ts`, context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const { googleCssUrl, googlePreviewCssHref } = await import("../src/lib/fonts/loader.ts");
 
 function catalogFace(family, extra = {}) {
   return {
