@@ -117,8 +117,9 @@ export function axesForFont(font: Pick<FontRecord, "weights" | "variable" | "ita
 
 /**
  * Card/inspector weight slider for preview. Disk fvar wins.
- * Catalog VF (facet) gets a 100–900 (or listed weights) span so the slider
+ * Catalog VF with a listed weight range gets that span so the slider
  * exists before Activate — badge `font.variable` stays disk-only.
+ * A single catalog weight is not a range: do not invent 100–900.
  */
 export function previewWghtAxis(
   font: Pick<FontRecord, "weights" | "variable" | "italic" | "axes" | "catalogVariable">,
@@ -127,12 +128,10 @@ export function previewWghtAxis(
   if (real && real.max > real.min) return real;
   if (!font.catalogVariable && !font.variable) return null;
   const ws = font.weights?.filter((n) => Number.isFinite(n) && n > 0) ?? [];
+  if (ws.length > 0 && Math.min(...ws) === Math.max(...ws)) return null;
   let min = ws.length ? Math.min(...ws) : 100;
   let max = ws.length ? Math.max(...ws) : 900;
-  if (!(max > min)) {
-    min = 100;
-    max = 900;
-  }
+  if (!(max > min)) return null;
   const def = ws.includes(400) ? 400 : min <= 400 && max >= 400 ? 400 : min;
   return { tag: "wght", name: "Weight", min, max, def };
 }

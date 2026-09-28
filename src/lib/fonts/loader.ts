@@ -377,8 +377,11 @@ function previewFamilyParam(font: FontRecord, italic = false): string {
   if (isSpecialPreviewFont(font)) return `family=${family}`;
   if (previewIsVf(font)) {
     const wght = axesForFont(font).find((a) => a.tag === "wght") ?? previewWghtAxis(font);
-    const min = Math.round(wght?.min ?? 100);
-    const max = Math.round(wght?.max ?? 900);
+    // No real wght axis and no listed range: bare family=. Inventing
+    // wght@100..900 makes Google Fonts return 400 (Chrome ORB).
+    if (!wght || !(wght.max > wght.min)) return `family=${family}`;
+    const min = Math.round(wght.min);
+    const max = Math.round(wght.max);
     if (italic && font.italic) return `family=${family}:ital,wght@1,${min}..${max}`;
     // ital=0 (not a bare :wght@ range) so Google serves the roman VF face.
     if (font.italic) return `family=${family}:ital,wght@0,${min}..${max}`;
@@ -408,13 +411,15 @@ export function googlePreviewTextQuery(family: string) {
 }
 
 export function googlePreviewCssHref(
-  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights">,
+  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights" | "axes">,
   italic = false,
 ) {
   const family = font.family.replace(/ /g, "+");
   const span = previewWghtAxis(font);
-  const face =
-    italic && font.italic
+  const bareVf = Boolean(font.variable || font.catalogVariable) && (!span || !(span.max > span.min));
+  const face = bareVf
+    ? `family=${family}`
+    : italic && font.italic
       ? span
         ? `family=${family}:ital,wght@1,${Math.round(span.min)}..${Math.round(span.max)}`
         : `family=${family}:ital,wght@1,400`
