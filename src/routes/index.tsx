@@ -3,7 +3,12 @@ import { LibraryGrid } from "@/components/font-studio/library-grid";
 import { PreviewToolbar } from "@/components/font-studio/preview-toolbar";
 import { UploadDropzone } from "@/components/font-studio/upload-dropzone";
 
-export const Route = createFileRoute("/")({ component: () => null });
+export const Route = createFileRoute("/")({
+  head: () => ({
+    links: [{ rel: "canonical", href: "https://font-manager-eta.vercel.app/" }],
+  }),
+  component: () => null,
+});
 
 export function LibraryPage() {
   return (
