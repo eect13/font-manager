@@ -8,6 +8,7 @@ export const Route = createFileRoute("/")({ component: () => null });
 export function LibraryPage() {
   return (
     <UploadDropzone>
+      <h1 className="sr-only">Font library</h1>
       <PreviewToolbar />
       <div data-library-scroll className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         <LibraryGrid />
