@@ -65,7 +65,7 @@ export function SearchChips() {
             )}
           >
             {chip.label}
-            {n > 0 ? <span className="tabular-nums opacity-70">{n.toLocaleString()}</span> : null}
+            {n > 0 ? <span className="tabular-nums">{n.toLocaleString()}</span> : null}
           </button>
         );
       })}

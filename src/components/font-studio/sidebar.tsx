@@ -391,7 +391,7 @@ export function Sidebar({
                 >
                   <Tag className="size-2.5" />
                   {tag}
-                  <span className="tabular-nums opacity-70">{counts.tags.get(tag)}</span>
+                  <span className="tabular-nums">{counts.tags.get(tag)}</span>
                 </button>
               ))}
             </div>

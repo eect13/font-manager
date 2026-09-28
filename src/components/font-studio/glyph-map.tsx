@@ -269,7 +269,7 @@ export function GlyphMap() {
                   )}
                 >
                   <span className="block truncate">{block.label}</span>
-                  <span className="tabular-nums opacity-70">{block.glyphs.length}</span>
+                  <span className="tabular-nums">{block.glyphs.length}</span>
                 </button>
               ))}
             </nav>
