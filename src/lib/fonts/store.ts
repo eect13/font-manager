@@ -35,6 +35,14 @@ const STORAGE_KEY = "font-manager:v1";
 
 /** False until rehydrate finishes. Earlier writes saved the empty defaults over the library. */
 let persistReady = false;
+/** Set when the saved library failed to load: writes stay off for the session. */
+let persistBlocked = false;
+
+/** Saved library failed to load — never let this session's defaults overwrite it. */
+export function blockPersistWrites() {
+  persistBlocked = true;
+  persistReady = false;
+}
 
 function persistStorage(): StateStorage {
   return createPersistStorage({
@@ -442,7 +450,7 @@ export const useFontStore = create<FontState>()(
       desktopPrefs: { ...DEFAULT_DESKTOP_PREFS },
       setHydrated: (value) => {
         // Flip before set() so the hydrated write itself persists.
-        if (value) persistReady = true;
+        if (value && !persistBlocked) persistReady = true;
         set({ hydrated: value });
       },
       setGoogleFonts: (fonts) =>
