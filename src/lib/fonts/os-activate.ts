@@ -2135,7 +2135,7 @@ export async function saveUploadToDisk(opts: {
   void pumpUploads();
 }
 
-let webPreviewTold = new Set<string>();
+const webPreviewTold = new Set<string>();
 
 function tellWebPreview(font?: FontRecord) {
   const kind = !font ? "local" : isFontsourceOnly(font) ? "other" : isGoogleCatalog(font) ? "google" : "local";
@@ -2237,7 +2237,13 @@ export async function dropDownloadFamilies(families: string[]): Promise<void> {
 
 export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   if (font.source === "system") return;
-  if (!(await inDesktopShell())) return;
+  if (!(await inDesktopShell())) {
+    // Website has no GDI. The bulk path confirms Off; this single-font path
+    // used to return first and leave the button on "Deactivating" plus a
+    // Windows "Still unloading" toast.
+    await syncFontsOnSystem([font], false);
+    return;
+  }
   // P1: Deactivate while download/register running — drop that family's slot, then Remove.
   if (job.running && (job.mode === "download" || job.mode === "register" || job.owner === "download" || job.owner === "register")) {
     await dropDownloadFamilies([font.family]);

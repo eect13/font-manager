@@ -323,7 +323,7 @@ export const FontCard = memo(function FontCard({
       title="Italic file"
       aria-label="Italic file"
       aria-pressed
-      className="relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded border border-current bg-current/15"
+      className="relative z-20 inline-flex size-6 shrink-0 items-center justify-center rounded border border-current bg-current/15"
     >
       <Italic className="size-3" />
     </button>
@@ -349,7 +349,7 @@ export const FontCard = memo(function FontCard({
         }
       }}
       className={cn(
-        "relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded border",
+        "relative z-20 inline-flex size-6 shrink-0 items-center justify-center rounded border",
         italicOn ? "border-current bg-current/15" : "border-current/30",
       )}
     >
@@ -361,7 +361,7 @@ export const FontCard = memo(function FontCard({
       title="No italic face"
       aria-label="No italic face"
       disabled
-      className="relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded border border-current/15 opacity-35"
+      className="relative z-20 inline-flex size-6 shrink-0 items-center justify-center rounded border border-current/15 opacity-35"
     >
       <Italic className="size-3" />
     </button>
@@ -400,21 +400,18 @@ export const FontCard = memo(function FontCard({
   return (
     <article
       ref={ref}
-      role="button"
-      tabIndex={0}
-      onClick={() => selectFont(font.id)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          selectFont(font.id);
-        }
-      }}
       className={cn(
-        "fm-font-card group relative w-full cursor-pointer overflow-hidden rounded-xl text-left shadow-border",
+        "fm-font-card group relative w-full overflow-hidden rounded-xl text-left shadow-border",
         layout === "list" ? "fm-layout-list flex flex-col" : "fm-layout-grid flex flex-col",
         THEME[preview.theme],
       )}
     >
+      <button
+        type="button"
+        className="absolute inset-0 z-0 cursor-pointer"
+        aria-label={`Open ${font.fullName || font.family}`}
+        onClick={() => selectFont(font.id)}
+      />
       {hasCollections ? (
         <button
           type="button"

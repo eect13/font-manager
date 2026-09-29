@@ -32,6 +32,9 @@ import { snapAxes } from "./axes";
 const STORAGE_KEY = "font-manager:v1";
 /** Persist version. v1 key kept so existing libraries don't vanish. v3 adds facet. */
 
+/** False until rehydrate finishes. Earlier writes saved the empty defaults over the library. */
+let persistReady = false;
+
 function persistStorage(): StateStorage {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let last: { name: string; value: string } | null = null;
@@ -56,6 +59,7 @@ function persistStorage(): StateStorage {
       return localStorage.getItem(name);
     },
     setItem: (name, value) => {
+      if (!persistReady) return;
       last = { name, value };
       if (timer) clearTimeout(timer);
       timer = setTimeout(flush, 400);
@@ -494,7 +498,10 @@ export const useFontStore = create<FontState>()(
       recentIds: [],
       featurePrefs: {},
       desktopPrefs: { ...DEFAULT_DESKTOP_PREFS },
-      setHydrated: (value) => set({ hydrated: value }),
+      setHydrated: (value) => {
+        if (value) persistReady = true;
+        set({ hydrated: value });
+      },
       setGoogleFonts: (fonts) =>
         set((s) => {
           const prevById = new Map(s.googleFonts.map((f) => [f.id, f] as const));
@@ -873,7 +880,7 @@ export const useFontStore = create<FontState>()(
           for (const row of rows) {
             const n = row.name.trim();
             if (!n) continue;
-            if (Boolean(row.has_variable ?? row.hasVariable)) {
+            if (row.has_variable ?? row.hasVariable) {
               vf.add(n.toLowerCase());
             }
             if (row.settled) settledNames.push(n);
@@ -1555,7 +1562,7 @@ export const useFontStore = create<FontState>()(
                 ? (p.scope as LibraryFacet)
                 : "",
           autoHideDuplicates: Boolean(p.autoHideDuplicates),
-          duplicateHideIds: Boolean(p.autoHideDuplicates)
+          duplicateHideIds: p.autoHideDuplicates
             ? familyDuplicateHideIds(p.localFonts ?? current.localFonts, current.googleFonts, current.systemFonts)
             : [],
           recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : current.recentIds,

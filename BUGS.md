@@ -1,3 +1,14 @@
+## Fixed in tip / 1.0.207 (review 2026-09-30)
+
+- **`/duplicates` wiped the library.** The auto-hide effect wrote `duplicateHideIds` before `persist.rehydrate()`. Zustand then saved the empty defaults over favorites, activated, and collections. The effect now waits for `hydrated`. `persistStorage` also drops writes until `setHydrated(true)` (the flag flips first, so the rehydrated state is the one that is saved).
+- **Website Deactivate stuck on “Deactivating”.** The single-font path returned before the web branch could call `confirmDeactivated`, then the Windows “Still unloading” toast fired on a site with no GDI. The website now takes the same confirm-Off path as a bulk deactivate.
+- **Agu Display (and other variable families with no `wght` axis) requested `css2?family=…:wght@100..900`.** Google answers 400, so the card stayed on a fallback face. A CSS2 range is a real `fvar` `wght` span, or two or more listed weights on a variable family. One listed weight is `family=Name` only. A static family stays `wght@400`. The card slider can still draw a synthetic axis; the URL does not.
+- **320 px header.** Files and Folder sit on a second row instead of past the viewport. The library route brand is a visible `h1`.
+- **Names and targets.** Playground samples, size sliders, and the pairing scroller have accessible names and a visible focus ring. Facet counts use `text-foreground` (not 3:1 `opacity-70`). Italic toggles are 24 px. A card is an `article`; Open is its own button, so actions are not nested inside `role="button"`.
+- **Catalog fetch.** The page no longer requests `fonts.google.com/metadata/fonts` (no ACAO). Classification uses the shipped directory. The Node regen script can still fetch it.
+- **Lint errors** that blocked a clean `npm run lint` are cleared (empty catch, control-character regexes, constant `||` assertion, regex spaces, `prefer-const`, redundant `Boolean()`).
+- **Not fixed here:** React hydration error #418 (cause not isolated). Activate All of a full catalog is still one GDI family at a time. NSIS is still not packed from this tree.
+
 ## Fixed in tip / 1.0.207 (activate honesty follow-up)
 - **Upload was Live before Windows Add.** Import no longer puts the new ids in `activated`. They stay pending until `register_font_path` returns Add>0, then Live. Add=0 clears pending. A dropped IndexedDB row is not left as a ghost id.
 - **Upload restarted Font Cache.** That call is gone. `flush_font_cache` is still the explicit restart, and it is `spawn_blocking` so it cannot freeze the window thread.

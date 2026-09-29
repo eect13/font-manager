@@ -6,4 +6,5 @@
 - GitHub repo https://github.com/eect13/studio created for the portfolio [2026-09-18]
 - Featured work to show: Atrium (private GH eect13/atrium), Font Manager (eect13/font-manager, font-manager-eta.vercel.app), Finance Manager (eect13/finance-manager, WIP) [2026-09-18]
 - Font Manager current branch is tip/1.0.207 at /workspace; uncommitted 1.0.208-style remove/close fix (async unload, one deactivate toast, no live FontCache restart). origin/main squash f18ff56 dropped Helvetica private preview + Recent mtime sort. No NSIS from this tree. Constraints: Inter VF stays, no FR_PRIVATE, no FontCache wipe, temporary GDI maps only. [2026-09-27]
+- CourtWire 1.29.0 live desk overlay: ESPN kona season projection (statSourceId 1) replaces the file line when complete; ESPN ROTO/STANDARD ranks replace the September ECR list when 80+ names match; coach sentences come from ESPN roster coach + board minutes + injury list. File snapshot stays if a bag is thin. Site courtwire.netlify.app / eect13/courtwire. [2026-09-27]
 - Contact: eect13@gmail.com · GitHub eect13 · X @EricEmersonTan · portrait at eect13.netlify.app/eeky.png [2026-09-18]

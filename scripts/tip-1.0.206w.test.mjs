@@ -176,7 +176,7 @@ test("sticky arm before Refresh toast Cancel + sync arms before beginOwnedJob", 
   assert.ok(activeAt >= 0 && beginCall > activeAt, "sticky before beginOwnedJob");
   assert.match(sync, /finally \{[\s\S]*docsVfSyncActive = false/);
   assert.doesNotMatch(
-    sync.match(/finally \{[\s\S]*?\n  \}/)[0],
+    sync.match(/finally \{[\s\S]*?\n {2}\}/)[0],
     /docsVfSyncCancelToasted = false/,
     "finally must not clear toasted sticky",
   );
