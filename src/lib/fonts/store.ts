@@ -32,6 +32,9 @@ import { snapAxes } from "./axes";
 const STORAGE_KEY = "font-manager:v1";
 /** Persist version. v1 key kept so existing libraries don't vanish. v3 adds facet. */
 
+/** False until rehydrate finishes. Earlier writes saved the empty defaults over the library. */
+let persistReady = false;
+
 function persistStorage(): StateStorage {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let last: { name: string; value: string } | null = null;
@@ -56,6 +59,7 @@ function persistStorage(): StateStorage {
       return localStorage.getItem(name);
     },
     setItem: (name, value) => {
+      if (!persistReady) return;
       last = { name, value };
       if (timer) clearTimeout(timer);
       timer = setTimeout(flush, 400);
@@ -460,7 +464,11 @@ export const useFontStore = create<FontState>()(
       recentIds: [],
       featurePrefs: {},
       desktopPrefs: { ...DEFAULT_DESKTOP_PREFS },
-      setHydrated: (value) => set({ hydrated: value }),
+      setHydrated: (value) => {
+        // Flip before set() so the hydrated write itself persists.
+        if (value) persistReady = true;
+        set({ hydrated: value });
+      },
       setGoogleFonts: (fonts) =>
         set((s) => {
           const prevById = new Map(s.googleFonts.map((f) => [f.id, f] as const));
