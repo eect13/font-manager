@@ -48,3 +48,16 @@ jobs:
         with:
           workspaces: src-tauri
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+  rust-windows:
+    name: Rust on Windows (cargo test, src-tauri)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust stable (MSVC)
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
