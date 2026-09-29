@@ -29,6 +29,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Playwright Chromium (for e2e)
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
 
   rust:
     name: Rust (cargo test, src-tauri)
