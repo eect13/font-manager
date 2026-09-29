@@ -40,7 +40,12 @@ function normKey(key) {
 export function orderPreferKeys(keys, waves = {}) {
   if (!keys.length) return [];
   const fold = Boolean(waves.caseFold);
-  const norm = fold ? normKey : (k) => String(k ?? "");
+  /** @param {unknown} value */
+  const norm = (value) => {
+    const raw = String(value ?? "");
+    return fold ? normKey(raw) : raw;
+  };
+  /** @param {readonly unknown[] | undefined} list */
   const toSet = (list) => {
     const s = new Set();
     for (const item of list ?? []) {
@@ -96,6 +101,7 @@ export function orderPreferKeys(keys, waves = {}) {
 export function activatePreferIdSet(ids, ctx = {}) {
   const idSet = new Set(ids);
   const prefer = new Set();
+  /** @param {string | null | undefined} id */
   const add = (id) => {
     if (id && idSet.has(id)) prefer.add(id);
   };
@@ -116,7 +122,9 @@ export function activatePreferIdSet(ids, ctx = {}) {
  */
 export function splitPreferRemainderIds(orderedIds, ctx = {}) {
   const preferSet = activatePreferIdSet(orderedIds, ctx);
+  /** @type {string[]} */
   const prefer = [];
+  /** @type {string[]} */
   const remainder = [];
   for (const id of orderedIds) {
     (preferSet.has(id) ? prefer : remainder).push(id);

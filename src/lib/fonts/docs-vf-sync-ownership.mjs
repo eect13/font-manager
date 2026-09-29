@@ -12,7 +12,9 @@
 /** Min time docs Cancel Name/AutomationId stay findable after first paint (Gate D smoke). */
 export const DOCS_CANCEL_MIN_DISPLAY_MS = 1000;
 
-/** Progress currents Activate never uses (belt-and-suspenders vs sticky race). */
+/** Progress currents Activate never uses (belt-and-suspenders vs sticky race).
+ * @param {string} [current]
+ */
 export function isDocsRefreshJobCurrent(current) {
   // Docs mid-abort owned via docsVfSyncCancelPending + docsVfSyncSessionLive — never bare
   // "Stopping…" (shared cancel_google_downloads sets that for Activate too — soft-lie).
@@ -70,6 +72,14 @@ export function cancelToastKind({
  *
  * inMinDisplayHold / holdDismissChrome — post-end min window: delay bar hide until
  * paintedAt+minMs; download-bar routes to cancelChromeA11y({ dismissHold: true }).
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.docsOwns]
+ * @param {boolean} [opts.cancelChromeEligible]
+ * @param {number} [opts.now]
+ * @param {number|null} [opts.paintedAt]
+ * @param {boolean} [opts.latched]
+ * @param {number} [opts.minMs]
  */
 export function advanceDocsCancelChrome({
   docsOwns = false,
