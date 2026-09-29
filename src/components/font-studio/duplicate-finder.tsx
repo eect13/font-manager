@@ -128,6 +128,9 @@ export function DuplicateFinder() {
   }, [hydrated, localFonts, googleFonts, systemFonts]);
 
   useEffect(() => {
+    // Mount used to write duplicateHideIds before rehydrate, and persist then
+    // saved the empty defaults over favorites, activated, and collections.
+    if (!hydrated) return;
     if (!autoHide || !groups.length) {
       if (!autoHide) useFontStore.setState({ duplicateHideIds: [] });
       return;
@@ -135,7 +138,7 @@ export function DuplicateFinder() {
     const hide = hideIdsFromDuplicateGroups(groups);
     useFontStore.setState({ duplicateHideIds: hide });
     if (hide.length) useFontStore.getState().setActivatedMany(hide, false);
-  }, [autoHide, groups]);
+  }, [hydrated, autoHide, groups]);
 
   if (!hydrated || scanning) {
     return (
