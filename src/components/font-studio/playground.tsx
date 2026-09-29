@@ -150,12 +150,13 @@ export function Playground() {
         />
       </div>
 
-      <div className="fm-scroll grid min-h-0 flex-1 gap-px overflow-auto bg-border lg:grid-cols-2">
+      <div className="fm-scroll grid min-h-0 flex-1 gap-px overflow-auto bg-border lg:grid-cols-2" tabIndex={0} aria-label="Pairing preview">
         <article className={cn("fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 md:p-10", surface)}>
           <textarea
             value={heading}
+            aria-label="Heading sample"
             onChange={(e) => setHeading(e.target.value)}
-            className="fm-scroll w-full resize-none bg-transparent outline-none"
+            className="fm-scroll w-full resize-none bg-transparent outline-none focus-visible:ring-2 focus-visible:ring-ring"
             rows={3}
             style={{
               fontFamily: left ? cssFamilyStack(left) : undefined,
@@ -168,8 +169,9 @@ export function Playground() {
           />
           <textarea
             value={body}
+            aria-label="Body sample"
             onChange={(e) => setBody(e.target.value)}
-            className="fm-scroll mt-4 w-full resize-none bg-transparent outline-none"
+            className="fm-scroll mt-4 w-full resize-none bg-transparent outline-none focus-visible:ring-2 focus-visible:ring-ring"
             rows={8}
             style={{
               fontFamily: right ? cssFamilyStack(right) : undefined,
@@ -276,7 +278,13 @@ function PaneControls({
       <FontPicker value={fontId} onChange={onFont} label={label} />
       <div className="flex items-center gap-3">
         <span className="w-10 text-xs tabular-nums text-muted-foreground">{size}</span>
-        <Slider min={12} max={96} value={[size]} onValueChange={([v]) => { if (typeof v === "number") onSize(v); }} />
+        <Slider
+          min={12}
+          max={96}
+          value={[size]}
+          aria-label={`${label} size`}
+          onValueChange={([v]) => { if (typeof v === "number") onSize(v); }}
+        />
       </div>
       {axes.length ? (
         <AxisSliders axes={axes} values={axisValues} onChange={onAxis} instances={instances} />
