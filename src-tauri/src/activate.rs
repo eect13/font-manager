@@ -9940,7 +9940,12 @@ mod complete_marker_tests {
         assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans".into()));
         assert_eq!(fs_only_google_vf_folder("Finlandica Text"), Some("finlandicatext".into()));
         assert_eq!(fs_only_google_vf_folder("Finlandica Headline"), Some("finlandicaheadline".into()));
-        assert!(fs_only_google_vf_folder("Finlandica").is_none());
+        // Plain "Finlandica" has no fixed folder; it maps only when the shipped
+        // fontsource-other catalog marks it variable (it does as of 1.0.207).
+        assert_eq!(
+            fs_only_google_vf_folder("Finlandica"),
+            fontsource_other_is_variable("Finlandica").then(|| "finlandica".to_string())
+        );
         assert_eq!(
             fs_only_google_vf_folder("Big Shoulders Display"),
             Some("bigshouldersdisplay".into())
