@@ -1,7 +1,7 @@
 import type { FontRecord } from "./types";
 import { idbGet, idbPutPreview, previewCacheId } from "./idb";
 import { isEmojiFamily } from "./emoji";
-import { axesForFont, previewWghtAxis } from "./axes";
+import { axesForFont } from "./axes";
 import { isSpecialPreviewFont, notifyIfUnusual } from "./color-font";
 import { cssFamilyStack as stackFor } from "./fallback";
 import { scriptProbe, scriptSampleText, scriptSubset } from "./scripts";
@@ -372,17 +372,40 @@ function googleCssHref(param: string, display: string) {
   return `https://fonts.googleapis.com/css2?${param}&display=${display}`;
 }
 
+/**
+ * Real wght span for a CSS2 URL. A catalog variable family with one listed
+ * weight (Agu Display, MORF only) must not become wght@100..900 — Google
+ * answers 400 and the card stays on the fallback face.
+ * Multiple listed weights on a variable family (Inter 100–900) still get a range
+ * before disk axes exist. A static family does not — it stays wght@400.
+ */
+export function css2WghtSpan(
+  font: Pick<FontRecord, "weights" | "variable" | "italic" | "axes" | "catalogVariable">,
+): { min: number; max: number } | null {
+  const real = axesForFont(font).find((a) => a.tag === "wght");
+  if (real && real.max > real.min) return { min: Math.round(real.min), max: Math.round(real.max) };
+  // Static cuts stay wght@400. A range is only for a variable family that lists more than one weight.
+  if (!font.catalogVariable && !font.variable) return null;
+  const ws = (font.weights ?? []).filter((n) => Number.isFinite(n) && n > 0);
+  if (ws.length < 2) return null;
+  const min = Math.round(Math.min(...ws));
+  const max = Math.round(Math.max(...ws));
+  return max > min ? { min, max } : null;
+}
+
 function previewFamilyParam(font: FontRecord, italic = false): string {
   const family = font.family.replace(/ /g, "+");
   if (isSpecialPreviewFont(font)) return `family=${family}`;
   if (previewIsVf(font)) {
-    const wght = axesForFont(font).find((a) => a.tag === "wght") ?? previewWghtAxis(font);
-    const min = Math.round(wght?.min ?? 100);
-    const max = Math.round(wght?.max ?? 900);
-    if (italic && font.italic) return `family=${family}:ital,wght@1,${min}..${max}`;
+    const span = css2WghtSpan(font);
+    if (!span) {
+      if (italic && font.italic) return `family=${family}:ital@1`;
+      return `family=${family}`;
+    }
+    if (italic && font.italic) return `family=${family}:ital,wght@1,${span.min}..${span.max}`;
     // ital=0 (not a bare :wght@ range) so Google serves the roman VF face.
-    if (font.italic) return `family=${family}:ital,wght@0,${min}..${max}`;
-    return `family=${family}:wght@${min}..${max}`;
+    if (font.italic) return `family=${family}:ital,wght@0,${span.min}..${span.max}`;
+    return `family=${family}:wght@${span.min}..${span.max}`;
   }
   if (italic && font.italic) return `family=${family}:ital,wght@1,400`;
   if (font.italic) return `family=${family}:ital,wght@0,400`;
@@ -408,19 +431,22 @@ export function googlePreviewTextQuery(family: string) {
 }
 
 export function googlePreviewCssHref(
-  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights">,
+  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights" | "axes">,
   italic = false,
 ) {
   const family = font.family.replace(/ /g, "+");
-  const span = previewWghtAxis(font);
+  const span = css2WghtSpan(font);
+  const variable = Boolean(font.catalogVariable || font.variable);
   const face =
     italic && font.italic
       ? span
         ? `family=${family}:ital,wght@1,${Math.round(span.min)}..${Math.round(span.max)}`
-        : `family=${family}:ital,wght@1,400`
+        : `family=${family}:ital@1`
       : span
         ? `family=${family}:wght@${Math.round(span.min)}..${Math.round(span.max)}`
-        : `family=${family}:wght@400`;
+        : variable
+          ? `family=${family}`
+          : `family=${family}:wght@400`;
   return `https://fonts.googleapis.com/css2?${face}&text=${googlePreviewTextQuery(font.family)}&display=swap`;
 }
 
