@@ -10454,16 +10454,37 @@ mod install_path_tests {
         let path = dir.join("nunito-variable-wght.ttf");
         fs::write(&path, &mashed).unwrap();
 
-        // Directory not writable → delete/replace fails with PermissionDenied,
+        // Unix: directory not writable → delete/replace fails with PermissionDenied,
         // which `is_lock_err` maps to the same "files locked" path as Win sharing.
+        // Windows ignores read-only on directories, so hold a real sharing lock
+        // instead (read allowed, no write/delete share — like Word or fontdrvhost).
+        #[cfg(not(windows))]
         let mut perms = fs::metadata(&dir).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&dir, perms.clone()).unwrap();
+        #[cfg(not(windows))]
+        {
+            perms.set_readonly(true);
+            fs::set_permissions(&dir, perms.clone()).unwrap();
+        }
+        #[cfg(windows)]
+        let lock = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 0x1;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&path)
+                .unwrap()
+        };
 
         let stats = heal_google_instance_names_in_dir(&dir, "Nunito");
 
-        perms.set_readonly(false);
-        fs::set_permissions(&dir, perms).unwrap();
+        #[cfg(not(windows))]
+        {
+            perms.set_readonly(false);
+            fs::set_permissions(&dir, perms).unwrap();
+        }
+        #[cfg(windows)]
+        drop(lock);
 
         assert_eq!(
             stats.healed, 0,
