@@ -395,6 +395,12 @@ html[data-theme="light"] {
   box-shadow: var(--shadow-border-hover);
   transform: translateY(-1px);
 }
+/* The Open overlay fills the card and overflow:hidden clips its own ring (2.4.7),
+   so draw the focus ring on the card itself. */
+.fm-font-card:has(> .fm-card-open:focus-visible) {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
 
 .fm-weight-slider {
   touch-action: none;

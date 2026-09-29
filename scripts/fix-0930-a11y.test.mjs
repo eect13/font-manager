@@ -42,3 +42,10 @@ test("cards are not role=button with buttons nested inside (4.1.2)", () => {
   assert.doesNotMatch(open, /onClick=/);
   assert.match(card, /aria-label=\{`Open \$\{font\.fullName \|\| font\.family\}`\}/);
 });
+
+test("card focus ring is drawn on the card, not clipped on the overlay (2.4.7)", () => {
+  const card = read("src/components/font-studio/font-card.tsx");
+  assert.match(card, /className="fm-card-open absolute inset-0 z-0 cursor-pointer focus-visible:outline-none"/);
+  const css = read("src/styles.css");
+  assert.match(css, /\.fm-font-card:has\(> \.fm-card-open:focus-visible\) \{\s*outline: 2px solid var\(--color-ring\);\s*outline-offset: 2px;\s*\}/);
+});

@@ -411,7 +411,7 @@ export const FontCard = memo(function FontCard({
     >
       <button
         type="button"
-        className="absolute inset-0 z-0 cursor-pointer"
+        className="fm-card-open absolute inset-0 z-0 cursor-pointer focus-visible:outline-none"
         aria-label={`Open ${font.fullName || font.family}`}
       />
       {hasCollections ? (
