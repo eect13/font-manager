@@ -142,7 +142,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
       <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
         {/* 1.0.206ab: inert header during docs Cancel so FindFirst ≤300ms (Cancel is in shell-chrome below). */}
         <header
-          className="fm-shell-header grid grid-cols-[auto_1fr_auto] items-center border-b border-border md:grid-cols-[17rem_1fr_auto]"
+          className="fm-shell-header grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1 gap-y-1 border-b border-border px-1 py-1 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:px-0 sm:py-0 md:grid-cols-[17rem_minmax(0,1fr)_auto]"
           inert={hideLibraryA11y || undefined}
         >
           <div className="flex items-center gap-1.5 pl-2 md:pl-3">
@@ -155,8 +155,8 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
             >
               <Menu />
             </Button>
-            <Link to="/" className="flex items-baseline gap-2 no-underline">
-              <span className="font-heading text-xl leading-none tracking-tight text-foreground">
+            <Link to="/" className="flex min-w-0 items-baseline gap-2 no-underline">
+              <span className="truncate font-heading text-xl leading-none tracking-tight text-foreground">
                 {APP_NAME}
               </span>
               <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
@@ -227,7 +227,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
               </Button>
             </HelpTip>
           </div>
-          <div className="flex items-center gap-0.5 sm:hidden">
+          <div className="col-span-2 flex items-center justify-end gap-0.5 sm:hidden">
             <ThemeToggle />
             <DesktopSettings />
             <HelpTip label="Export CSS">
