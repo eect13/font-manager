@@ -34,6 +34,11 @@ test("cards are not role=button with buttons nested inside (4.1.2)", () => {
   const card = read("src/components/font-studio/font-card.tsx");
   const article = card.slice(card.indexOf("<article"), card.indexOf("aria-label={`Open"));
   assert.doesNotMatch(article, /role="button"/);
-  assert.doesNotMatch(article, /onClick=/);
+  assert.doesNotMatch(article, /tabIndex=/);
+  assert.doesNotMatch(article, /onKeyDown=/);
+  // One click handler: the Open button's click bubbles to the article, so it must
+  // not also call selectFont itself.
+  const open = card.slice(card.indexOf("aria-label={`Open"), card.indexOf("/>", card.indexOf("aria-label={`Open")));
+  assert.doesNotMatch(open, /onClick=/);
   assert.match(card, /aria-label=\{`Open \$\{font\.fullName \|\| font\.family\}`\}/);
 });

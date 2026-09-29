@@ -400,6 +400,9 @@ export const FontCard = memo(function FontCard({
   return (
     <article
       ref={ref}
+      // Pointer clicks anywhere on the card (specimen included) bubble here; inner
+      // controls isolate(). Keyboard and screen readers use the Open button below.
+      onClick={() => selectFont(font.id)}
       className={cn(
         "fm-font-card group relative w-full overflow-hidden rounded-xl text-left shadow-border",
         layout === "list" ? "fm-layout-list flex flex-col" : "fm-layout-grid flex flex-col",
@@ -410,7 +413,6 @@ export const FontCard = memo(function FontCard({
         type="button"
         className="absolute inset-0 z-0 cursor-pointer"
         aria-label={`Open ${font.fullName || font.family}`}
-        onClick={() => selectFont(font.id)}
       />
       {hasCollections ? (
         <button
