@@ -23,3 +23,9 @@ test("facet chip counts are not dimmed below 4.5:1 (1.4.3)", () => {
   assert.match(chips, /<span className="tabular-nums text-foreground">\{n\.toLocaleString\(\)\}<\/span>/);
   assert.doesNotMatch(chips, /tabular-nums[^"\n]*opacity-70/);
 });
+
+test("italic toggles are at least 24x24 px (2.5.8)", () => {
+  const card = read("src/components/font-studio/font-card.tsx");
+  assert.equal((card.match(/inline-flex size-6 shrink-0 items-center justify-center rounded border/g) || []).length, 3);
+  assert.doesNotMatch(card, /inline-flex size-5 shrink-0 items-center justify-center rounded border/);
+});
