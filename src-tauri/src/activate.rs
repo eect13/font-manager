@@ -44,8 +44,12 @@ fn family_locations(app: &AppHandle, family: &str) -> Vec<PathBuf> {
     let Ok(root) = documents_root(app) else {
         return Vec::new();
     };
+    family_locations_in(&root, family)
+}
+
+fn family_locations_in(root: &Path, family: &str) -> Vec<PathBuf> {
     let key = sanitize(family);
-    let slug = slug_family(family);
+    let slug = family_folder_slug(family);
     let mut dirs = vec![
         root.join(&key),
         root.join(&slug),
@@ -56,11 +60,48 @@ fn family_locations(app: &AppHandle, family: &str) -> Vec<PathBuf> {
     ];
     dirs.sort();
     dirs.dedup();
-    dirs.retain(|p| p.is_dir());
+    // Never hand the Font Manager root, `Activated` or `Library` to a caller as a
+    // "family folder" — callers walk, delete files in, or recycle these dirs.
+    dirs.retain(|p| p.is_dir() && !is_protected_family_dir(root, p));
     if dirs.is_empty() {
-        dirs.push(root.join(key));
+        let fallback = root.join(key);
+        if !is_protected_family_dir(root, &fallback) {
+            dirs.push(fallback);
+        }
     }
     dirs
+}
+
+/// True for paths that must never be treated as (or deleted as) one family's folder:
+/// the Documents root itself, `Activated`, `Library`, anything outside the root, or a
+/// path whose last component is empty / `.` / `..`.
+fn is_protected_family_dir(root: &Path, dir: &Path) -> bool {
+    let reserved = |p: &Path| {
+        p == root
+            || p.file_name().is_none()
+            || p.components().any(|c| {
+                matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)
+            })
+    };
+    if reserved(dir) {
+        return true;
+    }
+    let Ok(rel) = dir.strip_prefix(root) else {
+        return true;
+    };
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    match parts.as_slice() {
+        [] => true,
+        [one] => {
+            one.is_empty()
+                || one.eq_ignore_ascii_case("Activated")
+                || one.eq_ignore_ascii_case("Library")
+        }
+        _ => parts.iter().any(|p| p.is_empty()),
+    }
 }
 
 fn walk_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -2884,6 +2925,24 @@ fn slug_family(family: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>();
     s.trim_matches('-').to_string()
+}
+
+/// Folder-lookup slug that is never empty. `slug_family` stays ASCII-only (and may be
+/// empty) because Fontsource / Google lookups and heal passes use `slug.is_empty()` to
+/// skip names with no ASCII slug. For folder resolution an empty slug would mean
+/// `root.join("")` == the Documents root, so non-ASCII names get a stable
+/// `u-<fnv1a64 hex>` slug of the trimmed, lowercased name instead.
+fn family_folder_slug(family: &str) -> String {
+    let slug = slug_family(family);
+    if !slug.is_empty() {
+        return slug;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in family.trim().to_lowercase().bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("u-{hash:016x}")
 }
 
 fn host_label(url: &str) -> &'static str {
@@ -6876,8 +6935,22 @@ fn purge_family_files(app: &AppHandle, family: &str) {
 }
 
 fn purge_family_files_result(app: &AppHandle, family: &str) -> Result<(), String> {
+    let root = documents_root(app)?;
+    purge_family_dirs_in(&root, family)
+}
+
+fn purge_family_dirs_in(root: &Path, family: &str) -> Result<(), String> {
+    if family.trim().is_empty() || family_folder_slug(family).is_empty() {
+        return Err("refusing to delete: empty family name".into());
+    }
     let mut last_err = String::new();
-    for dir in family_locations(app, family) {
+    for dir in family_locations_in(root, family) {
+        if is_protected_family_dir(root, &dir) {
+            return Err(format!(
+                "refusing to delete {}: not a single family folder",
+                dir.display()
+            ));
+        }
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
         for path in &files {
@@ -12643,6 +12716,65 @@ mod session_sidecar_tests {
         recycle_user_font_dir(&family).expect("recycle/remove family dir");
         assert!(!family.exists(), "family folder must be gone (Recycle Bin on Windows)");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 20 / N1: deleting a family whose name has no ASCII letters or digits
+    /// must only remove that family's folder, never the Font Manager root,
+    /// `Activated`, `Library`, or sibling families.
+    #[test]
+    fn delete_non_ascii_family_keeps_root_and_siblings() {
+        for name in ["微软雅黑", "خط عربي", "ありがとう"] {
+            let root = temp_root("nonascii-delete");
+            let sibling = root.join("Roboto");
+            let activated_sibling = root.join("Activated").join("Inter");
+            let library_sibling = root.join("Library").join("Lora");
+            for dir in [&sibling, &activated_sibling, &library_sibling] {
+                fs::create_dir_all(dir).unwrap();
+                fs::write(dir.join("face.ttf"), b"\x00\x01\x00\x00").unwrap();
+            }
+            let target = root.join(sanitize(name));
+            fs::create_dir_all(&target).unwrap();
+            fs::write(target.join("face.ttf"), b"\x00\x01\x00\x00").unwrap();
+
+            for dir in family_locations_in(&root, name) {
+                assert_ne!(dir, root, "{name}: root must never be a family location");
+                assert_ne!(dir, root.join("Activated"), "{name}: Activated is not a family");
+                assert_ne!(dir, root.join("Library"), "{name}: Library is not a family");
+            }
+            let _ = purge_family_dirs_in(&root, name);
+
+            assert!(root.is_dir(), "{name}: Font Manager root must survive");
+            assert!(root.join("Activated").is_dir(), "{name}: Activated must survive");
+            assert!(root.join("Library").is_dir(), "{name}: Library must survive");
+            assert!(sibling.join("face.ttf").is_file(), "{name}: sibling family must survive");
+            assert!(activated_sibling.join("face.ttf").is_file(), "{name}: Activated sibling must survive");
+            assert!(library_sibling.join("face.ttf").is_file(), "{name}: Library sibling must survive");
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn family_folder_slug_never_empty_and_stable() {
+        assert_eq!(family_folder_slug("Open Sans"), "open-sans");
+        let cjk = family_folder_slug("微软雅黑");
+        assert!(cjk.starts_with("u-") && cjk.len() == 18, "{cjk}");
+        assert_eq!(cjk, family_folder_slug(" 微软雅黑 "), "trim-stable");
+        assert_ne!(cjk, family_folder_slug("خط عربي"), "distinct names, distinct slugs");
+        assert_eq!(slug_family("微软雅黑"), "", "network slug stays ASCII-only");
+    }
+
+    #[test]
+    fn protected_family_dirs_are_refused() {
+        let root = PathBuf::from("/tmp/fm-root");
+        assert!(is_protected_family_dir(&root, &root));
+        assert!(is_protected_family_dir(&root, &root.join("")));
+        assert!(is_protected_family_dir(&root, &root.join("Activated")));
+        assert!(is_protected_family_dir(&root, &root.join("library")));
+        assert!(is_protected_family_dir(&root, Path::new("/tmp")));
+        assert!(is_protected_family_dir(&root, &root.join("..").join("x")));
+        assert!(!is_protected_family_dir(&root, &root.join("Roboto")));
+        assert!(!is_protected_family_dir(&root, &root.join("Activated").join("Inter")));
+        assert!(purge_family_dirs_in(&root, "   ").is_err());
     }
 
     #[test]
