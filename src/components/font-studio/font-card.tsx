@@ -400,21 +400,18 @@ export const FontCard = memo(function FontCard({
   return (
     <article
       ref={ref}
-      role="button"
-      tabIndex={0}
-      onClick={() => selectFont(font.id)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          selectFont(font.id);
-        }
-      }}
       className={cn(
-        "fm-font-card group relative w-full cursor-pointer overflow-hidden rounded-xl text-left shadow-border",
+        "fm-font-card group relative w-full overflow-hidden rounded-xl text-left shadow-border",
         layout === "list" ? "fm-layout-list flex flex-col" : "fm-layout-grid flex flex-col",
         THEME[preview.theme],
       )}
     >
+      <button
+        type="button"
+        className="absolute inset-0 z-0 cursor-pointer"
+        aria-label={`Open ${font.fullName || font.family}`}
+        onClick={() => selectFont(font.id)}
+      />
       {hasCollections ? (
         <button
           type="button"

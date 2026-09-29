@@ -29,3 +29,11 @@ test("italic toggles are at least 24x24 px (2.5.8)", () => {
   assert.equal((card.match(/inline-flex size-6 shrink-0 items-center justify-center rounded border/g) || []).length, 3);
   assert.doesNotMatch(card, /inline-flex size-5 shrink-0 items-center justify-center rounded border/);
 });
+
+test("cards are not role=button with buttons nested inside (4.1.2)", () => {
+  const card = read("src/components/font-studio/font-card.tsx");
+  const article = card.slice(card.indexOf("<article"), card.indexOf("aria-label={`Open"));
+  assert.doesNotMatch(article, /role="button"/);
+  assert.doesNotMatch(article, /onClick=/);
+  assert.match(card, /aria-label=\{`Open \$\{font\.fullName \|\| font\.family\}`\}/);
+});
