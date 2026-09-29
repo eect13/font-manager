@@ -12746,7 +12746,9 @@ mod session_sidecar_tests {
                 assert_ne!(dir, root.join("Activated"), "{name}: Activated is not a family");
                 assert_ne!(dir, root.join("Library"), "{name}: Library is not a family");
             }
-            let _ = purge_family_dirs_in(&root, name);
+            let purged = purge_family_dirs_in(&root, name);
+            assert!(purged.is_ok(), "{name}: delete must succeed: {purged:?}");
+            assert!(!target.exists(), "{name}: target family folder must be removed");
 
             assert!(root.is_dir(), "{name}: Font Manager root must survive");
             assert!(root.join("Activated").is_dir(), "{name}: Activated must survive");
