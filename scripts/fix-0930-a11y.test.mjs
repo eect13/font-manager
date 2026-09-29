@@ -49,3 +49,11 @@ test("card focus ring is drawn on the card, not clipped on the overlay (2.4.7)",
   const css = read("src/styles.css");
   assert.match(css, /\.fm-font-card:has\(> \.fm-card-open:focus-visible\) \{\s*outline: 2px solid var\(--color-ring\);\s*outline-offset: 2px;\s*\}/);
 });
+
+test("playground inverted preview panel is keyboard-scrollable with a ring (2.1.1, 2.4.7)", () => {
+  const play = read("src/components/font-studio/playground.tsx");
+  assert.match(
+    play,
+    /<article\s+tabIndex=\{0\}\s+role="region"\s+aria-label="Pairing preview \(inverted\)"\s+className=\{cn\(\s+"fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:p-10"/,
+  );
+});

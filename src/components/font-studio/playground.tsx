@@ -183,7 +183,15 @@ export function Playground() {
             }}
           />
         </article>
-        <article className={cn("fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 md:p-10", invert ? "bg-paper text-ink" : "bg-ink text-paper")}>
+        <article
+          tabIndex={0}
+          role="region"
+          aria-label="Pairing preview (inverted)"
+          className={cn(
+            "fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:p-10",
+            invert ? "bg-paper text-ink" : "bg-ink text-paper",
+          )}
+        >
           <p
             className="leading-tight"
             style={{
