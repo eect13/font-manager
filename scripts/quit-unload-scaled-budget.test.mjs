@@ -28,7 +28,7 @@ test("1.0.189: quit_unload_budget_for scales 15ms/path clamp 12s–180s", () => 
 
 test("1.0.189: quit_unload_budget_clamps documents Eric 2k/11k reality", () => {
   const testFn = activateRs.match(
-    /fn quit_unload_budget_clamps\(\) \{[\s\S]*?\n    \}/,
+    /fn quit_unload_budget_clamps\(\) \{[\s\S]*?\n {4}\}/,
   );
   assert.ok(testFn, "quit_unload_budget_clamps missing");
   assert.match(testFn[0], /2_099/);
@@ -69,7 +69,7 @@ test("legacy FontManager user-fonts stage is owned — Remove+delete, not sacred
   assert.match(activateRs, /is_legacy_fontmanager_stage_path\(path\)/);
   assert.match(activateRs, /join\("FontManager"\)/);
   const guard = activateRs.match(
-    /pub\(crate\) fn is_windows_fonts_path\(path: &Path\) -> bool \{[\s\S]*?\n    \}/,
+    /pub\(crate\) fn is_windows_fonts_path\(path: &Path\) -> bool \{[\s\S]*?\n {4}\}/,
   );
   assert.ok(guard, "is_windows_fonts_path missing");
   assert.match(guard[0], /is_legacy_fontmanager_stage_path/);

@@ -2077,7 +2077,7 @@ export async function saveUploadToDisk(opts: {
   void pumpUploads();
 }
 
-let webPreviewTold = new Set<string>();
+const webPreviewTold = new Set<string>();
 
 function tellWebPreview(font?: FontRecord) {
   const kind = !font ? "local" : isFontsourceOnly(font) ? "other" : isGoogleCatalog(font) ? "google" : "local";

@@ -831,7 +831,7 @@ export const useFontStore = create<FontState>()(
           for (const row of rows) {
             const n = row.name.trim();
             if (!n) continue;
-            if (Boolean(row.has_variable ?? row.hasVariable)) {
+            if (row.has_variable ?? row.hasVariable) {
               vf.add(n.toLowerCase());
             }
             if (row.settled) settledNames.push(n);
@@ -1480,7 +1480,7 @@ export const useFontStore = create<FontState>()(
                 ? (p.scope as LibraryFacet)
                 : "",
           autoHideDuplicates: Boolean(p.autoHideDuplicates),
-          duplicateHideIds: Boolean(p.autoHideDuplicates)
+          duplicateHideIds: p.autoHideDuplicates
             ? familyDuplicateHideIds(p.localFonts ?? current.localFonts, current.googleFonts, current.systemFonts)
             : [],
           recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : current.recentIds,
