@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
+import { createPersistStorage, storageErrorMessage } from "./persist-storage";
 import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
@@ -36,40 +37,15 @@ const STORAGE_KEY = "font-manager:v1";
 let persistReady = false;
 
 function persistStorage(): StateStorage {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let last: { name: string; value: string } | null = null;
-  const flush = () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-    if (!last) return;
-    localStorage.setItem(last.name, last.value);
-    last = null;
-  };
-  if (typeof window !== "undefined") {
-    window.addEventListener("pagehide", flush);
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") flush();
-    });
-  }
-  return {
-    getItem: (name) => {
-      flush();
-      return localStorage.getItem(name);
+  return createPersistStorage({
+    storage: () => (typeof localStorage === "undefined" ? null : localStorage),
+    canWrite: () => persistReady,
+    onWriteError: (err) => {
+      console.error("[font-manager] localStorage write failed", err);
+      const { title, description } = storageErrorMessage(err);
+      toast.error(title, { id: "persist-write-error", description, duration: 12_000 });
     },
-    setItem: (name, value) => {
-      if (!persistReady) return;
-      last = { name, value };
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(flush, 400);
-    },
-    removeItem: (name) => {
-      last = null;
-      if (timer) clearTimeout(timer);
-      localStorage.removeItem(name);
-    },
-  };
+  });
 }
 
 interface PersistedSlice {
