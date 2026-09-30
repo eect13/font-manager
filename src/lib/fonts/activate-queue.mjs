@@ -11,8 +11,8 @@ import { isKnownGdiSessionIncapable } from "./gdi-incapable.ts";
 
 /**
  * @param {string} id
- * @param {{ id: string }[]} local
- * @param {{ id: string }[]} google
+ * @param {{ id: string, family: string, source: string }[]} local
+ * @param {{ id: string, family: string, source: string }[]} google
  */
 function findFontRecord(id, local, google) {
   return local.find((f) => f.id === id) ?? google.find((f) => f.id === id);
@@ -47,9 +47,10 @@ export function activateQueueIds(ids, state) {
 
 /**
  * Catalog / library "Activate remaining" — must call activateQueueIds.
- * @param {{ id: string, family: string, source: string }[]} fonts
+ * @template {{ id: string, family: string, source: string }} T
+ * @param {T[]} fonts
  * @param {Parameters<typeof activateQueueIds>[1]} state
- * @param {((font: { id: string, family: string, source: string }) => boolean)=} filter
+ * @param {((font: T) => boolean)=} filter
  * @returns {number}
  */
 export function catalogMenuRemaining(fonts, state, filter) {

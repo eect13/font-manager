@@ -24,7 +24,10 @@ test("applyPayload empty current clears (not sticky || job.current)", () => {
   assert.equal(mergeCurrent(null, "stale"), "");
   assert.equal(mergeCurrent("stale", "x", false), "");
   // Legacy bug: empty || stale kept "Registering …" after rustIdle finish.
-  assert.notEqual("" || "Registering Zilla Slab", "");
+  function stickyOr(current, jobCurrent) {
+    return current || jobCurrent;
+  }
+  assert.equal(stickyOr("", "Registering Zilla Slab"), "Registering Zilla Slab");
 });
 
 test("os-activate: empty-clear current + dismissDownloadBar (no sticky ||)", () => {

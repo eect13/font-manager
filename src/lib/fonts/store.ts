@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
+import { createPersistStorage, storageErrorMessage } from "./persist-storage";
 import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
@@ -32,40 +33,27 @@ import { snapAxes } from "./axes";
 const STORAGE_KEY = "font-manager:v1";
 /** Persist version. v1 key kept so existing libraries don't vanish. v3 adds facet. */
 
+/** False until rehydrate finishes. Earlier writes saved the empty defaults over the library. */
+let persistReady = false;
+/** Set when the saved library failed to load: writes stay off for the session. */
+let persistBlocked = false;
+
+/** Saved library failed to load — never let this session's defaults overwrite it. */
+export function blockPersistWrites() {
+  persistBlocked = true;
+  persistReady = false;
+}
+
 function persistStorage(): StateStorage {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let last: { name: string; value: string } | null = null;
-  const flush = () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-    if (!last) return;
-    localStorage.setItem(last.name, last.value);
-    last = null;
-  };
-  if (typeof window !== "undefined") {
-    window.addEventListener("pagehide", flush);
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") flush();
-    });
-  }
-  return {
-    getItem: (name) => {
-      flush();
-      return localStorage.getItem(name);
+  return createPersistStorage({
+    storage: () => (typeof localStorage === "undefined" ? null : localStorage),
+    canWrite: () => persistReady,
+    onWriteError: (err) => {
+      console.error("[font-manager] localStorage write failed", err);
+      const { title, description } = storageErrorMessage(err);
+      toast.error(title, { id: "persist-write-error", description, duration: 12_000 });
     },
-    setItem: (name, value) => {
-      last = { name, value };
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(flush, 400);
-    },
-    removeItem: (name) => {
-      last = null;
-      if (timer) clearTimeout(timer);
-      localStorage.removeItem(name);
-    },
-  };
+  });
 }
 
 interface PersistedSlice {
@@ -460,7 +448,11 @@ export const useFontStore = create<FontState>()(
       recentIds: [],
       featurePrefs: {},
       desktopPrefs: { ...DEFAULT_DESKTOP_PREFS },
-      setHydrated: (value) => set({ hydrated: value }),
+      setHydrated: (value) => {
+        // Flip before set() so the hydrated write itself persists.
+        if (value && !persistBlocked) persistReady = true;
+        set({ hydrated: value });
+      },
       setGoogleFonts: (fonts) =>
         set((s) => {
           const prevById = new Map(s.googleFonts.map((f) => [f.id, f] as const));
@@ -839,7 +831,7 @@ export const useFontStore = create<FontState>()(
           for (const row of rows) {
             const n = row.name.trim();
             if (!n) continue;
-            if (Boolean(row.has_variable ?? row.hasVariable)) {
+            if (row.has_variable ?? row.hasVariable) {
               vf.add(n.toLowerCase());
             }
             if (row.settled) settledNames.push(n);
@@ -1097,6 +1089,7 @@ export const useFontStore = create<FontState>()(
                   licenseName: parsed.licenseName || undefined,
                   kerningKey: parsed.kerningKey,
                   colorKind: parsed.colorKind,
+                  script: parsed.script,
                   originPath: originSlice?.[i],
                   metrics: parsed.metrics,
                 };
@@ -1108,8 +1101,10 @@ export const useFontStore = create<FontState>()(
                   id,
                   folderPathForFile(file ?? ({ webkitRelativePath: "" } as File), opts?.collectionName),
                 );
-                if (!originSlice?.[i] && file && !savedDisk.has(file.name)) {
-                  savedDisk.add(file.name);
+                // Per face: every face of a TTC/OTC is its own extracted SFNT + file name.
+                const diskKey = `${parsed.family}\u0000${parsed.fileName || file?.name || ""}`;
+                if (!originSlice?.[i] && file && !savedDisk.has(diskKey)) {
+                  savedDisk.add(diskKey);
                   void saveUploadToDisk({
                     family: parsed.family,
                     fileName: parsed.fileName || file.name,
@@ -1265,6 +1260,7 @@ export const useFontStore = create<FontState>()(
                 addedAt: Date.now(),
                 license: "unknown",
                 originPath: row.path,
+                faceIndex: row.faceIndex || undefined,
                 metrics: layoutMetrics,
               });
               waveIds.push(id);
@@ -1488,7 +1484,7 @@ export const useFontStore = create<FontState>()(
                 ? (p.scope as LibraryFacet)
                 : "",
           autoHideDuplicates: Boolean(p.autoHideDuplicates),
-          duplicateHideIds: Boolean(p.autoHideDuplicates)
+          duplicateHideIds: p.autoHideDuplicates
             ? familyDuplicateHideIds(p.localFonts ?? current.localFonts, current.googleFonts, current.systemFonts)
             : [],
           recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : current.recentIds,

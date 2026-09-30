@@ -5,7 +5,7 @@ import { loadCachedCatalog, scheduleCatalogSync } from "./google-api";
 import { idbGet, persistStorageOnGesture, requestPersistentStorage } from "./idb";
 import { refineLicense } from "./license";
 import { KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
-import { findFont, filterLibrary, poolForScope, sortLibrary, useFontStore } from "./store";
+import { blockPersistWrites, findFont, filterLibrary, poolForScope, sortLibrary, useFontStore } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { visibleFamilyNames } from "./visible-families";
@@ -14,7 +14,6 @@ import {
   restoreSessionFromDisk,
   rememberSessionFamilies,
   waitSessionBoot,
-  pruneUnknownFolders,
   syncManagedDocumentsRoot,
   bindDownloadEvents,
 } from "./os-activate";
@@ -23,6 +22,7 @@ import { applyDesktopPrefs } from "@/lib/desktop/prefs";
 import { startWatchPolling } from "./watch-folder";
 import { loadSystemFonts } from "./system-fonts";
 import { hydrateLiveAxes } from "./live-axes";
+import { hydratePersistedStore } from "./hydrate-steps";
 import { loadLocalFontsMeta, pickLocalFontsPersist, saveLocalFontsMeta } from "./persist-local";
 import type { FontRecord } from "./types";
 
@@ -120,27 +120,52 @@ export function useHydrateFonts() {
     let stopCatalog = () => {};
     void bindDownloadEvents();
     void (async () => {
-      await loadCachedCatalog();
-      if (cancelled) return;
-      await useFontStore.persist.rehydrate();
-      if (cancelled) return;
-      const fromLs = useFontStore.getState().localFonts;
-      const fromIdb = await loadLocalFontsMeta();
-      if (cancelled) return;
-      const locals = pickLocalFontsPersist(fromIdb, fromLs);
-      if (locals !== fromLs) useFontStore.setState({ localFonts: locals });
-      if (locals.length) void saveLocalFontsMeta(locals);
-      hydrateLiveAxes(useFontStore.getState().previewAxes);
-      void applyDesktopPrefs(useFontStore.getState().desktopPrefs);
-      const { localFonts, setHydrated, googleFonts, collections, scope } = useFontStore.getState();
-      if (
-        typeof scope === "string" &&
-        ((scope as string) === "disk" ||
-          (scope.startsWith("collection:") &&
-            !collections.some((c) => c.id === scope.slice("collection:".length))))
-      ) {
-        useFontStore.getState().setScope("all");
+      const status = await hydratePersistedStore({
+        loadCatalog: loadCachedCatalog,
+        rehydrate: () => useFontStore.persist.rehydrate(),
+        hasHydrated: () => useFontStore.persist.hasHydrated(),
+        cancelled: () => cancelled,
+        report: (step, err) => {
+          console.error(`[font-manager] startup ${step} load failed`, err);
+          if (step !== "library") return;
+          // Keep writes off: saving now would put defaults over the saved library.
+          blockPersistWrites();
+          toast.error("Couldn't load your saved library", {
+            id: "hydrate-library-error",
+            description:
+              "Changes in this session won't be saved, so your saved favorites, collections and activations are not overwritten. Reload to try again.",
+            duration: 20_000,
+          });
+        },
+      });
+      if (status === "cancelled" || cancelled) return;
+      try {
+        const fromLs = useFontStore.getState().localFonts;
+        const fromIdb = await loadLocalFontsMeta();
+        if (cancelled) return;
+        const locals = pickLocalFontsPersist(fromIdb, fromLs);
+        if (locals !== fromLs) useFontStore.setState({ localFonts: locals });
+        if (locals.length) void saveLocalFontsMeta(locals);
+        hydrateLiveAxes(useFontStore.getState().previewAxes);
+        void applyDesktopPrefs(useFontStore.getState().desktopPrefs);
+        const { collections, scope } = useFontStore.getState();
+        if (
+          typeof scope === "string" &&
+          ((scope as string) === "disk" ||
+            (scope.startsWith("collection:") &&
+              !collections.some((c) => c.id === scope.slice("collection:".length))))
+        ) {
+          useFontStore.getState().setScope("all");
+        }
+      } catch (err) {
+        // A restore step threw: still finish hydrate so the library works and saves.
+        console.error("[font-manager] startup restore step failed", err);
+        toast.error("Some saved settings didn't load", {
+          id: "hydrate-restore-error",
+          description: "Your library still saves. Reload to try the rest again.",
+        });
       }
+      const { localFonts, setHydrated, googleFonts } = useFontStore.getState();
       setHydrated(true);
       // 1.0.206b: seed GDI-incapable allowlist into settled on UI boot (mirror Rust seed).
       useFontStore.getState().addSettledFamilies(
@@ -287,29 +312,9 @@ export function useHydrateFonts() {
               .map((id) => findFont(id, localFonts, google)?.family ?? (id.startsWith("g:") ? id.slice(2) : ""))
               .filter((name): name is string => Boolean(name)),
           );
-          const keep = [
-            ...google.map((f) => f.family),
-            ...localFonts.map((f) => f.family),
-            ...sessionNames,
-            ...persistNames,
-            ...live
-              .map((id) => findFont(id, localFonts, google)?.family ?? (id.startsWith("g:") ? id.slice(2) : ""))
-              .filter((name): name is string => Boolean(name)),
-          ];
-          if (keep.length < 500) return;
-          window.setTimeout(() => {
-            if (cancelled) return;
-            void pruneUnknownFolders(keep).then((n) => {
-              if (cancelled || !n) return;
-              toast.message(
-                `Removed ${n.toLocaleString()} leftover folder${n === 1 ? "" : "s"}`,
-                {
-                  description:
-                    "Renamed or delisted families. Uploads and the current catalog stayed. Nothing was copied to Windows\\Fonts.",
-                },
-              );
-            });
-          }, 4000);
+          // Card 36: no automatic prune at start. Folders not in the catalog stay
+          // (uploads, renamed or delisted families); Scan → "Remove extras" moves them to
+          // the Recycle Bin only when the user asks.
         });
         window.setTimeout(() => {
           if (cancelled) return;

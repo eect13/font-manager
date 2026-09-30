@@ -62,6 +62,7 @@ export function licenseFromCode(raw?: string): LicenseHit | null {
 
 function norm(text: string): string {
   return text
+    // eslint-disable-next-line no-control-regex -- name tables are NUL-padded
     .replace(/\u0000/g, " ")
     .replace(/https?:\/\//g, " http://")
     .replace(/[^\S\n]+/g, " ")

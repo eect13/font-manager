@@ -1,5 +1,5 @@
 import type { FontCategory, FontRecord } from "./types";
-import { scriptOf, scriptSampleText, scriptStack } from "./scripts";
+import { scriptKindOf, scriptSampleText, scriptStack } from "./scripts";
 
 function isEmoji(font: Pick<FontRecord, "family" | "tags">) {
   return /emoji/i.test(font.family) || (font.tags ?? []).includes("emoji");
@@ -16,27 +16,28 @@ const STACK: Record<FontCategory, string> = {
   icons: '"Segoe UI Symbol", "Segoe UI", sans-serif',
 };
 
-export function scriptSample(font: Pick<FontRecord, "family" | "tags">): string | null {
-  return scriptSampleText(font.family);
+export function scriptSample(font: Pick<FontRecord, "family" | "tags" | "script">): string | null {
+  return scriptSampleText(font);
 }
 
 export function previewFallbackSample(
-  font: Pick<FontRecord, "family" | "tags" | "colorKind">,
+  font: Pick<FontRecord, "family" | "tags" | "colorKind" | "script">,
   sample: string,
 ) {
   if (isEmoji(font) || font.colorKind === "colrv1" || font.colorKind === "cbdt") {
-    return scriptSampleText(font.family) ?? "😀 🥰 🎉";
+    return scriptSampleText(font) ?? "😀 🥰 🎉";
   }
   return scriptSample(font) ?? sample;
 }
 
-export function cssFamilyStack(font: Pick<FontRecord, "family" | "cssFamily" | "category" | "tags">): string {
+export function cssFamilyStack(font: Pick<FontRecord, "family" | "cssFamily" | "category" | "tags" | "script">): string {
   const family = font.cssFamily || font.family;
-  if (isEmoji(font)) {
+  if (isEmoji(font) || font.script === "emoji") {
     return `"${family}", "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", sans-serif`;
   }
-  const script = scriptStack(family);
-  if (script && scriptOf(family) !== "latin") {
+  const target = { family, script: font.script };
+  const script = scriptStack(target);
+  if (script && scriptKindOf(target) !== "latin") {
     return `"${family}", ${script}`;
   }
   return `"${family}", ${STACK[font.category] ?? STACK.sans}`;

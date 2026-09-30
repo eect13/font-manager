@@ -37,15 +37,288 @@ fn documents_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn family_dir(app: &AppHandle, family: &str) -> Result<PathBuf, String> {
-    Ok(documents_root(app)?.join(sanitize(family)))
+    Ok(family_dir_in(&documents_root(app)?, family))
+}
+
+/// Folder that new files for `family` are written to under the Documents root.
+/// Names with any non-ASCII character get their own `u-<hash>` folder: `sanitize()`
+/// turns 測試字体 / Тестовый into the shared `font` and "思源 Sans" into Latin `Sans`.
+fn family_dir_in(root: &Path, family: &str) -> PathBuf {
+    root.join(family_folder_name(family))
+}
+
+fn family_name_is_non_ascii(family: &str) -> bool {
+    family.trim().chars().any(|c| !c.is_ascii())
+}
+
+/// On-disk folder name for `family`: `sanitize()` for ASCII names (unchanged, so the
+/// catalog library is not renamed), `u-<fnv1a64>` for any name with non-ASCII.
+fn family_folder_name(family: &str) -> String {
+    if family_name_is_non_ascii(family) {
+        unicode_family_slug(family)
+    } else {
+        sanitize(family)
+    }
+}
+
+/// Marker in an upload folder holding the real family name (u-<hash> folders are not
+/// human-readable, and the disk index / prune need folder → family).
+fn family_name_marker(dir: &Path) -> PathBuf {
+    dir.join(".family")
+}
+
+fn write_family_name_marker(dir: &Path, family: &str) {
+    let marker = family_name_marker(dir);
+    if fs::read_to_string(&marker).map(|s| s.trim() == family.trim()).unwrap_or(false) {
+        return;
+    }
+    let _ = fs::write(marker, family.trim().as_bytes());
+}
+
+fn read_family_name_marker(dir: &Path) -> Option<String> {
+    let s = fs::read_to_string(family_name_marker(dir)).ok()?;
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// Family name exactly as the JS importer picks it (`src/lib/fonts/sfnt.ts` readName +
+/// family choice): name ID 16, then 21, then 1; per ID the best record wins by score
+/// (Windows 0x0409 = 5, other Windows = 4, Unicode = 3, Mac Roman = 1; first wins on
+/// ties). Reads only the table directory and `name` (first face of a TTC/OTC).
+fn sfnt_upload_family(path: &Path) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = fs::File::open(path).ok()?;
+    let mut head = [0u8; 16];
+    f.read_exact(&mut head[..12]).ok()?;
+    let mut face_off: u64 = 0;
+    if &head[0..4] == b"ttcf" {
+        f.read_exact(&mut head[12..16]).ok()?;
+        face_off = u64::from(u32::from_be_bytes([head[12], head[13], head[14], head[15]]));
+        f.seek(SeekFrom::Start(face_off)).ok()?;
+        f.read_exact(&mut head[..12]).ok()?;
+    }
+    if !matches!(&head[0..4], b"\x00\x01\x00\x00" | b"OTTO" | b"true") {
+        return None;
+    }
+    let num_tables = usize::from(u16::from_be_bytes([head[4], head[5]]));
+    if num_tables == 0 || num_tables > 512 {
+        return None;
+    }
+    let mut dir = vec![0u8; num_tables * 16];
+    f.read_exact(&mut dir).ok()?;
+    let (mut name_off, mut name_len) = (0u64, 0usize);
+    for rec in dir.chunks_exact(16) {
+        if &rec[0..4] == b"name" {
+            name_off = u64::from(u32::from_be_bytes([rec[8], rec[9], rec[10], rec[11]]));
+            name_len = u32::from_be_bytes([rec[12], rec[13], rec[14], rec[15]]) as usize;
+        }
+    }
+    if name_len < 6 || name_len > 4 * 1024 * 1024 {
+        return None;
+    }
+    f.seek(SeekFrom::Start(name_off)).ok()?;
+    let mut name = vec![0u8; name_len];
+    f.read_exact(&mut name).ok()?;
+    let _ = face_off;
+    sfnt_family_from_name_table(&name)
+}
+
+fn sfnt_family_from_name_table(name: &[u8]) -> Option<String> {
+    let u16at = |o: usize| name.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let count = usize::from(u16at(2)?);
+    let string_off = usize::from(u16at(4)?);
+    let mut best: HashMap<u16, (u8, String)> = HashMap::new();
+    for i in 0..count {
+        let rec = 6 + i * 12;
+        if rec + 12 > name.len() {
+            break;
+        }
+        let (plat, enc, lang, id) = (u16at(rec)?, u16at(rec + 2)?, u16at(rec + 4)?, u16at(rec + 6)?);
+        let (len, off) = (usize::from(u16at(rec + 8)?), usize::from(u16at(rec + 10)?));
+        let start = string_off + off;
+        let Some(raw) = name.get(start..start + len) else {
+            continue;
+        };
+        let utf16 = |raw: &[u8]| {
+            let units: Vec<u16> = raw
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .filter(|&u| u != 0)
+                .collect();
+            String::from_utf16_lossy(&units).trim().to_string()
+        };
+        let (text, score) = if plat == 3 && (enc == 1 || enc == 10) {
+            (utf16(raw), if lang == 0x0409 { 5 } else { 4 })
+        } else if plat == 0 {
+            (utf16(raw), 3)
+        } else if plat == 1 {
+            (raw.iter().map(|&b| char::from(b)).collect::<String>().trim().to_string(), 1)
+        } else {
+            continue;
+        };
+        if text.is_empty() {
+            continue;
+        }
+        if best.get(&id).map(|(s, _)| score > *s).unwrap_or(true) {
+            best.insert(id, (score, text));
+        }
+    }
+    [16u16, 21, 1]
+        .iter()
+        .find_map(|id| best.get(id).map(|(_, t)| t.clone()))
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct SharedFolderMigration {
+    moved: usize,
+    kept_unmatched: usize,
+    kept_conflict: usize,
+    errors: usize,
+}
+
+const U_FOLDERS_MIGRATED_MARKER: &str = ".u-folders-v1";
+
+/// Card 36: split legacy shared folders. Before 1.0.207+c36 every all-non-ASCII family
+/// was written to `root/font/` and mixed names to their ASCII remnant (`思源 Sans` →
+/// `Sans/`). Each font file whose **name table** family is non-ASCII and whose folder is
+/// exactly `sanitize(family)` is renamed into that family's `u-<hash>` folder.
+/// Never deletes: rename only; conflicts, locked files and unreadable / ASCII / other
+/// families stay where they are. Idempotent (a second run moves nothing).
+fn migrate_shared_family_folders(root: &Path) -> SharedFolderMigration {
+    let mut out = SharedFolderMigration::default();
+    for parent in [root.to_path_buf(), root.join("Activated"), root.join("Library")] {
+        let Ok(rd) = fs::read_dir(&parent) else {
+            continue;
+        };
+        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        for dir in dirs {
+            let folder = dir.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            if folder.is_empty()
+                || folder.starts_with('.')
+                || folder.to_ascii_lowercase().starts_with("u-")
+                || is_protected_family_dir(root, &dir)
+            {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut files: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && matches!(
+                            p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+                            Some("ttf" | "otf" | "ttc" | "otc")
+                        )
+                })
+                .collect();
+            files.sort();
+            let mut touched: Vec<PathBuf> = Vec::new();
+            for file in files {
+                let Some(family) = sfnt_upload_family(&file) else {
+                    out.kept_unmatched += 1;
+                    eprintln!("[fm] migrate: kept {} (no readable name table)", file.display());
+                    continue;
+                };
+                if !family_name_is_non_ascii(&family) || !sanitize(&family).eq_ignore_ascii_case(&folder) {
+                    // ASCII family in its own folder, or a file the old rule did not place here.
+                    continue;
+                }
+                let dest_dir = parent.join(unicode_family_slug(&family));
+                let Some(file_name) = file.file_name() else {
+                    continue;
+                };
+                let dest = dest_dir.join(file_name);
+                if dest.exists() {
+                    out.kept_conflict += 1;
+                    eprintln!("[fm] migrate: kept {} ({} already exists)", file.display(), dest.display());
+                    continue;
+                }
+                if let Err(err) = fs::create_dir_all(&dest_dir) {
+                    out.errors += 1;
+                    eprintln!("[fm] migrate: kept {} (mkdir {}: {err})", file.display(), dest_dir.display());
+                    continue;
+                }
+                match fs::rename(&file, &dest) {
+                    Ok(()) => {
+                        out.moved += 1;
+                        intact_forget(&file);
+                        write_family_name_marker(&dest_dir, &family);
+                        if !touched.contains(&dest_dir) {
+                            touched.push(dest_dir);
+                        }
+                        eprintln!("[fm] migrate: {} -> {}", file.display(), dest.display());
+                    }
+                    Err(err) => {
+                        out.errors += 1;
+                        eprintln!("[fm] migrate: kept {} (rename: {err})", file.display());
+                    }
+                }
+            }
+            for dest_dir in &touched {
+                let n = count_intact_faces(dest_dir);
+                if n > 0 {
+                    mark_family_complete(dest_dir, n);
+                }
+            }
+            if !touched.is_empty() && dir_is_complete(&dir) {
+                // Re-stamp the source's face count; never remove its markers.
+                let n = count_intact_faces(&dir);
+                if n > 0 {
+                    mark_family_complete(&dir, n);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Boot hook: run the shared-folder split once per Documents root (skipped after a
+/// clean run). Logs; never deletes.
+fn migrate_shared_family_folders_on_boot(app: &AppHandle) {
+    let Ok(root) = documents_root(app) else {
+        return;
+    };
+    let marker = root.join(U_FOLDERS_MIGRATED_MARKER);
+    if marker.is_file() || !root.is_dir() {
+        return;
+    }
+    let result = migrate_shared_family_folders(&root);
+    eprintln!("[fm] migrate shared family folders: {result:?}");
+    if result.errors == 0 {
+        let _ = fs::write(marker, b"1\n");
+    }
+}
+
+/// Family name a folder stands for: its `.family` marker, else the folder name.
+fn dir_family_name(dir: &Path) -> String {
+    read_family_name_marker(dir).unwrap_or_else(|| {
+        dir.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string()
+    })
 }
 
 fn family_locations(app: &AppHandle, family: &str) -> Vec<PathBuf> {
     let Ok(root) = documents_root(app) else {
         return Vec::new();
     };
-    let key = sanitize(family);
-    let slug = slug_family(family);
+    family_locations_in(&root, family)
+}
+
+fn family_locations_in(root: &Path, family: &str) -> Vec<PathBuf> {
+    // Non-ASCII names: only their own u-<hash> folder. The lossy `sanitize()` key
+    // (`font`, `Sans`, `JP`) and the ASCII-only slug belong to other families.
+    let (key, slug) = if family_name_is_non_ascii(family) {
+        let own = unicode_family_slug(family);
+        (own.clone(), own)
+    } else {
+        (sanitize(family), family_folder_slug(family))
+    };
     let mut dirs = vec![
         root.join(&key),
         root.join(&slug),
@@ -54,13 +327,71 @@ fn family_locations(app: &AppHandle, family: &str) -> Vec<PathBuf> {
         root.join("Library").join(&key),
         root.join("Library").join(&slug),
     ];
+    // Uploads written before Card 36 by the JS side (`safeSegment`, keeps Unicode):
+    // `測試字体/`, `思源 Sans/`. Still only this family's — the name has non-ASCII.
+    if let Some(raw) = legacy_unicode_folder(family) {
+        for parent in [root.to_path_buf(), root.join("Activated"), root.join("Library")] {
+            dirs.push(parent.join(&raw));
+        }
+    }
     dirs.sort();
     dirs.dedup();
-    dirs.retain(|p| p.is_dir());
+    // Never hand the Font Manager root, `Activated` or `Library` to a caller as a
+    // "family folder" — callers walk, delete files in, or recycle these dirs.
+    dirs.retain(|p| p.is_dir() && !is_protected_family_dir(root, p));
     if dirs.is_empty() {
-        dirs.push(root.join(key));
+        let fallback = root.join(key);
+        if !is_protected_family_dir(root, &fallback) {
+            dirs.push(fallback);
+        }
     }
     dirs
+}
+
+/// Pre-Card-36 JS upload folder (`os-activate.ts` safeSegment) for a non-ASCII family.
+/// `None` for ASCII names (those use `sanitize`) or when nothing non-ASCII survives.
+fn legacy_unicode_folder(family: &str) -> Option<String> {
+    if !family_name_is_non_ascii(family) {
+        return None;
+    }
+    let t: String = family
+        .chars()
+        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '-' } else { c })
+        .collect();
+    let t = t.trim_end_matches(['.', ' ']).trim().to_string();
+    (!t.is_empty() && t.chars().any(|c| !c.is_ascii())).then_some(t)
+}
+
+/// True for paths that must never be treated as (or deleted as) one family's folder:
+/// the Documents root itself, `Activated`, `Library`, anything outside the root, or a
+/// path whose last component is empty / `.` / `..`.
+fn is_protected_family_dir(root: &Path, dir: &Path) -> bool {
+    let reserved = |p: &Path| {
+        p == root
+            || p.file_name().is_none()
+            || p.components().any(|c| {
+                matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)
+            })
+    };
+    if reserved(dir) {
+        return true;
+    }
+    let Ok(rel) = dir.strip_prefix(root) else {
+        return true;
+    };
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    match parts.as_slice() {
+        [] => true,
+        [one] => {
+            one.is_empty()
+                || one.eq_ignore_ascii_case("Activated")
+                || one.eq_ignore_ascii_case("Library")
+        }
+        _ => parts.iter().any(|p| p.is_empty()),
+    }
 }
 
 fn walk_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -2680,6 +3011,8 @@ fn session_boot_finish(ready: &[String]) {
 pub fn session_begin(app: &AppHandle) {
     session_boot_begin();
     invalidate_google_latin_lies_once(app);
+    #[cfg(not(windows))]
+    migrate_shared_family_folders_on_boot(app);
     #[cfg(windows)]
     {
         // Ordering (Skye HOLD):
@@ -2691,6 +3024,9 @@ pub fn session_begin(app: &AppHandle) {
         if let Ok(root) = documents_root(app) {
             unload_documents_session_leftovers(app, &root);
         }
+        // Card 36: after last session's Documents fonts are unloaded (so renames are
+        // not blocked by GDI), before maps / restore resolve family folders.
+        migrate_shared_family_folders_on_boot(app);
         if let (Ok(root), Some(maps_root)) = (documents_root(app), gdi_maps_root()) {
             let _ = rebuild_session_maps_in(&root, &maps_root);
         }
@@ -2884,6 +3220,29 @@ fn slug_family(family: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>();
     s.trim_matches('-').to_string()
+}
+
+/// Folder-lookup slug that is never empty. `slug_family` stays ASCII-only (and may be
+/// empty) because Fontsource / Google lookups and heal passes use `slug.is_empty()` to
+/// skip names with no ASCII slug. For folder resolution an empty slug would mean
+/// `root.join("")` == the Documents root, so non-ASCII names get a stable
+/// `u-<fnv1a64 hex>` slug of the trimmed, lowercased name instead.
+fn family_folder_slug(family: &str) -> String {
+    let slug = slug_family(family);
+    if !slug.is_empty() {
+        return slug;
+    }
+    unicode_family_slug(family)
+}
+
+/// Stable `u-<fnv1a64 hex>` of the trimmed, lowercased family name.
+fn unicode_family_slug(family: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in family.trim().to_lowercase().bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("u-{hash:016x}")
 }
 
 fn host_label(url: &str) -> &'static str {
@@ -6175,11 +6534,17 @@ fn note_register_zero(app: &AppHandle, family: &str, cause: RegisterFailKind) ->
 
 fn alias_keys(name: &str) -> Vec<String> {
     let raw = name.trim();
-    let mut keys = vec![
-        raw.to_lowercase(),
-        slug_family(raw),
-        sanitize(raw).to_lowercase(),
-    ];
+    // Non-ASCII names: no lossy keys — `sanitize("思源 Sans")` is "sans", which is
+    // Latin Sans's folder, and every all-non-ASCII name sanitizes to "font".
+    let mut keys = if family_name_is_non_ascii(raw) {
+        vec![raw.to_lowercase(), unicode_family_slug(raw)]
+    } else {
+        vec![
+            raw.to_lowercase(),
+            slug_family(raw),
+            sanitize(raw).to_lowercase(),
+        ]
+    };
     keys.sort();
     keys.dedup();
     keys.retain(|k| !k.is_empty());
@@ -6195,29 +6560,15 @@ fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
     let mut by_key: HashMap<String, Vec<PathBuf>> = HashMap::new();
     let mut names = Vec::new();
     for_family_dirs(app, |path| {
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
+        let name = dir_family_name(path);
         let mut files = Vec::new();
         walk_font_files(path, &mut files);
-        let mut intact = Vec::new();
-        for file in files {
-            if ttf_intact(&file) {
-                intact.push(file);
-            } else if gc {
-                let _ = delete_font_file(&file);
-            }
+        let (intact, other): (Vec<PathBuf>, Vec<PathBuf>) =
+            files.into_iter().partition(|file| ttf_intact(file));
+        if gc {
+            boot_tidy_family_dir(path, &other, !intact.is_empty());
         }
         if intact.is_empty() {
-            if gc {
-                let _ = fs::remove_file(path.join(".complete"));
-                let _ = fs::remove_file(path.join(".expected"));
-                let _ = fs::remove_file(path.join(".google-planned"));
-                let _ = fs::remove_file(path.join(".fontsource-version"));
-                let _ = fs::remove_dir_all(path);
-            }
             return;
         }
         names.push(name.clone());
@@ -6228,6 +6579,25 @@ fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
     names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     names.dedup();
     DiskIndex { by_key, names }
+}
+
+/// Card 36: startup tidy never deletes a font file and never removes a folder that
+/// still holds anything. Non-SFNT files (WOFF/WOFF2 uploads, truncated leftovers) are
+/// logged and left; a folder with no SFNT face only loses its bookkeeping markers and
+/// is removed with `remove_dir` — which fails (and leaves it) unless it is empty.
+fn boot_tidy_family_dir(path: &Path, non_intact: &[PathBuf], has_intact: bool) {
+    for file in non_intact {
+        eprintln!("[fm] startup: left non-installable file {}", file.display());
+    }
+    if has_intact {
+        return;
+    }
+    for marker in [".complete", ".expected", ".google-planned", ".fontsource-version"] {
+        let _ = fs::remove_file(path.join(marker));
+    }
+    if fs::remove_dir(path).is_err() && path.exists() {
+        eprintln!("[fm] startup: left folder with no installable face {}", path.display());
+    }
 }
 
 fn build_disk_index(app: &AppHandle) -> DiskIndex {
@@ -6876,8 +7246,22 @@ fn purge_family_files(app: &AppHandle, family: &str) {
 }
 
 fn purge_family_files_result(app: &AppHandle, family: &str) -> Result<(), String> {
+    let root = documents_root(app)?;
+    purge_family_dirs_in(&root, family)
+}
+
+fn purge_family_dirs_in(root: &Path, family: &str) -> Result<(), String> {
+    if family.trim().is_empty() || family_folder_slug(family).is_empty() {
+        return Err("refusing to delete: empty family name".into());
+    }
     let mut last_err = String::new();
-    for dir in family_locations(app, family) {
+    for dir in family_locations_in(root, family) {
+        if is_protected_family_dir(root, &dir) {
+            return Err(format!(
+                "refusing to delete {}: not a single family folder",
+                dir.display()
+            ));
+        }
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
         for path in &files {
@@ -7690,18 +8074,25 @@ pub fn open_activation_folder(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn install_font_file(app: AppHandle, family: String, file_name: String, bytes: Vec<u8>) -> Result<(), String> {
-    let root = family_dir(&app, &family)?;
-    let path = root.join(sanitize(&file_name));
-    write_font_file(&path, &bytes)?;
-    let intact = count_intact_faces(&root);
+    install_font_file_in(&documents_root(&app)?, &family, &file_name, &bytes)?;
+    notify_fonts_changed_maybe();
+    Ok(())
+}
+
+/// Upload write under an explicit Documents root (testable without an AppHandle).
+fn install_font_file_in(root: &Path, family: &str, file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let dir = family_dir_in(root, family);
+    let path = dir.join(sanitize(file_name));
+    write_font_file(&path, bytes)?;
+    write_family_name_marker(&dir, family);
+    let intact = count_intact_faces(&dir);
     if intact > 0 {
         // User/upload stamp — clear Google key list so verify does not require
         // listed Google faces against a non-Google intact count.
-        clear_google_planned(&root);
-        mark_family_complete(&root, intact);
+        clear_google_planned(&dir);
+        mark_family_complete(&dir, intact);
     }
-    notify_fonts_changed_maybe();
-    Ok(())
+    Ok(path)
 }
 
 #[tauri::command]
@@ -9370,11 +9761,8 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
     let mut out = Vec::new();
     // Include Activated/ and Library/ children — same roots as family_locations.
     for_family_dirs(&app, |dir| {
-        let name = dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("font")
-            .to_string();
+        // u-<hash> upload folders carry the real name in `.family`.
+        let name = dir_family_name(dir);
         // 1.0.205: migrate legacy folders missing `.download-source`.
         migrate_download_source_stamp(dir);
         // 1.0.188: purge FS remnants before Scan honesty / undersized flag.
@@ -9457,42 +9845,83 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
     Ok(out)
 }
 
-/// Remove family folders whose names are not in `keep` (catalog + uploads).
-/// Unregisters first. Refuses if `keep` is too small so a bad catalog cannot wipe Documents.
+/// Family folders not in `keep` (catalog + uploads), conservatively. A folder is a
+/// candidate only when its family name, its `.family` marker and the name-table family
+/// of every font inside are all unknown to `keep`. Upload folders (`.family` marker),
+/// folders with any unreadable / non-SFNT font, and protected dirs are never candidates.
+fn prune_candidates(dirs: &[PathBuf], root: &Path, keep_keys: &HashSet<String>) -> Vec<PathBuf> {
+    let kept = |name: &str| alias_keys(name).iter().any(|k| keep_keys.contains(k));
+    let mut out = Vec::new();
+    for dir in dirs {
+        let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if name.is_empty() || name.starts_with('.') || is_protected_family_dir(root, dir) {
+            continue;
+        }
+        if read_family_name_marker(dir).is_some() {
+            continue;
+        }
+        if kept(name) || kept(&dir_family_name(dir)) {
+            continue;
+        }
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        let spare = files.iter().any(|f| match sfnt_upload_family(f) {
+            Some(fam) => kept(&fam),
+            None => true,
+        });
+        if spare {
+            continue;
+        }
+        out.push(dir.clone());
+    }
+    out
+}
+
+/// Card 36: never a permanent delete. Windows → Recycle Bin (undo); elsewhere the
+/// folder is left in place and logged. `Ok(true)` only when it went to the Bin.
+fn recycle_or_leave(dir: &Path) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        for path in &files {
+            unregister_path(path);
+            intact_forget(path);
+        }
+        gdi_flush_local();
+        recycle_bin_windows(dir)?;
+        eprintln!("[fm] prune: moved {} to the Recycle Bin", dir.display());
+        Ok(true)
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("[fm] prune: left {} (no Recycle Bin on this OS)", dir.display());
+        Ok(false)
+    }
+}
+
+/// Move family folders that are not in `keep` to the Recycle Bin (user-initiated from
+/// Scan). Refuses if `keep` is too small so a bad catalog cannot empty Documents.
 #[tauri::command]
 pub fn prune_unknown_folders(app: AppHandle, keep: Vec<String>) -> Result<u32, String> {
     if keep.len() < 500 {
         return Err("catalog too small to prune against".into());
     }
+    let root = documents_root(&app)?;
     let mut keep_keys: HashSet<String> = HashSet::new();
     for name in &keep {
         for key in alias_keys(name) {
             keep_keys.insert(key);
         }
     }
-    let mut victims: Vec<(String, PathBuf)> = Vec::new();
-    for_family_dirs(&app, |path| {
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        if name.is_empty() {
-            return;
-        }
-        if alias_keys(&name).iter().any(|k| keep_keys.contains(k)) {
-            return;
-        }
-        victims.push((name, path.to_path_buf()));
-    });
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for_family_dirs(&app, |path| dirs.push(path.to_path_buf()));
     let mut n = 0u32;
-    for (name, path) in victims {
-        purge_family_files(&app, &name);
-        if path.exists() {
-            let _ = fs::remove_dir_all(&path);
-        }
-        if !path.exists() {
-            n += 1;
+    for dir in prune_candidates(&dirs, &root, &keep_keys) {
+        match recycle_or_leave(&dir) {
+            Ok(true) => n += 1,
+            Ok(false) => {}
+            Err(err) => eprintln!("[fm] prune: left {} ({err})", dir.display()),
         }
     }
     Ok(n)
@@ -9867,7 +10296,12 @@ mod complete_marker_tests {
         assert_eq!(fs_only_google_vf_folder("42dot Sans"), Some("42dotsans".into()));
         assert_eq!(fs_only_google_vf_folder("Finlandica Text"), Some("finlandicatext".into()));
         assert_eq!(fs_only_google_vf_folder("Finlandica Headline"), Some("finlandicaheadline".into()));
-        assert!(fs_only_google_vf_folder("Finlandica").is_none());
+        // Plain "Finlandica" has no fixed folder; it maps only when the shipped
+        // fontsource-other catalog marks it variable (it does as of 1.0.207).
+        assert_eq!(
+            fs_only_google_vf_folder("Finlandica"),
+            fontsource_other_is_variable("Finlandica").then(|| "finlandica".to_string())
+        );
         assert_eq!(
             fs_only_google_vf_folder("Big Shoulders Display"),
             Some("bigshouldersdisplay".into())
@@ -10376,16 +10810,37 @@ mod install_path_tests {
         let path = dir.join("nunito-variable-wght.ttf");
         fs::write(&path, &mashed).unwrap();
 
-        // Directory not writable → delete/replace fails with PermissionDenied,
+        // Unix: directory not writable → delete/replace fails with PermissionDenied,
         // which `is_lock_err` maps to the same "files locked" path as Win sharing.
+        // Windows ignores read-only on directories, so hold a real sharing lock
+        // instead (read allowed, no write/delete share — like Word or fontdrvhost).
+        #[cfg(not(windows))]
         let mut perms = fs::metadata(&dir).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&dir, perms.clone()).unwrap();
+        #[cfg(not(windows))]
+        {
+            perms.set_readonly(true);
+            fs::set_permissions(&dir, perms.clone()).unwrap();
+        }
+        #[cfg(windows)]
+        let lock = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 0x1;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&path)
+                .unwrap()
+        };
 
         let stats = heal_google_instance_names_in_dir(&dir, "Nunito");
 
-        perms.set_readonly(false);
-        fs::set_permissions(&dir, perms).unwrap();
+        #[cfg(not(windows))]
+        {
+            perms.set_readonly(false);
+            fs::set_permissions(&dir, perms).unwrap();
+        }
+        #[cfg(windows)]
+        drop(lock);
 
         assert_eq!(
             stats.healed, 0,
@@ -12645,6 +13100,67 @@ mod session_sidecar_tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Card 20 / N1: deleting a family whose name has no ASCII letters or digits
+    /// must only remove that family's folder, never the Font Manager root,
+    /// `Activated`, `Library`, or sibling families.
+    #[test]
+    fn delete_non_ascii_family_keeps_root_and_siblings() {
+        for name in ["微软雅黑", "خط عربي", "ありがとう"] {
+            let root = temp_root("nonascii-delete");
+            let sibling = root.join("Roboto");
+            let activated_sibling = root.join("Activated").join("Inter");
+            let library_sibling = root.join("Library").join("Lora");
+            for dir in [&sibling, &activated_sibling, &library_sibling] {
+                fs::create_dir_all(dir).unwrap();
+                fs::write(dir.join("face.ttf"), b"\x00\x01\x00\x00").unwrap();
+            }
+            let target = family_dir_in(&root, name);
+            fs::create_dir_all(&target).unwrap();
+            fs::write(target.join("face.ttf"), b"\x00\x01\x00\x00").unwrap();
+
+            for dir in family_locations_in(&root, name) {
+                assert_ne!(dir, root, "{name}: root must never be a family location");
+                assert_ne!(dir, root.join("Activated"), "{name}: Activated is not a family");
+                assert_ne!(dir, root.join("Library"), "{name}: Library is not a family");
+            }
+            let purged = purge_family_dirs_in(&root, name);
+            assert!(purged.is_ok(), "{name}: delete must succeed: {purged:?}");
+            assert!(!target.exists(), "{name}: target family folder must be removed");
+
+            assert!(root.is_dir(), "{name}: Font Manager root must survive");
+            assert!(root.join("Activated").is_dir(), "{name}: Activated must survive");
+            assert!(root.join("Library").is_dir(), "{name}: Library must survive");
+            assert!(sibling.join("face.ttf").is_file(), "{name}: sibling family must survive");
+            assert!(activated_sibling.join("face.ttf").is_file(), "{name}: Activated sibling must survive");
+            assert!(library_sibling.join("face.ttf").is_file(), "{name}: Library sibling must survive");
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn family_folder_slug_never_empty_and_stable() {
+        assert_eq!(family_folder_slug("Open Sans"), "open-sans");
+        let cjk = family_folder_slug("微软雅黑");
+        assert!(cjk.starts_with("u-") && cjk.len() == 18, "{cjk}");
+        assert_eq!(cjk, family_folder_slug(" 微软雅黑 "), "trim-stable");
+        assert_ne!(cjk, family_folder_slug("خط عربي"), "distinct names, distinct slugs");
+        assert_eq!(slug_family("微软雅黑"), "", "network slug stays ASCII-only");
+    }
+
+    #[test]
+    fn protected_family_dirs_are_refused() {
+        let root = PathBuf::from("/tmp/fm-root");
+        assert!(is_protected_family_dir(&root, &root));
+        assert!(is_protected_family_dir(&root, &root.join("")));
+        assert!(is_protected_family_dir(&root, &root.join("Activated")));
+        assert!(is_protected_family_dir(&root, &root.join("library")));
+        assert!(is_protected_family_dir(&root, Path::new("/tmp")));
+        assert!(is_protected_family_dir(&root, &root.join("..").join("x")));
+        assert!(!is_protected_family_dir(&root, &root.join("Roboto")));
+        assert!(!is_protected_family_dir(&root, &root.join("Activated").join("Inter")));
+        assert!(purge_family_dirs_in(&root, "   ").is_err());
+    }
+
     #[test]
     fn session_register_workers_bounded() {
         assert_eq!(session_register_workers(0), 1);
@@ -12690,5 +13206,323 @@ mod session_sidecar_tests {
         let plan = plan_session_end_cleanup(10, &locked);
         let msg = plan.fail_loud.expect("fail-loud");
         assert!(msg.contains("Font Cache still holding 1 files"));
+    }
+
+    fn c36_fake_face(tag: &str) -> Vec<u8> {
+        let mut b = b"\x00\x01\x00\x00".to_vec();
+        b.extend_from_slice(tag.as_bytes());
+        b.resize(512, 0);
+        b
+    }
+
+    /// Card 36 / 35-1: two all-non-ASCII families plus a mixed pair ("思源 Sans" vs
+    /// Latin "Sans"). Deleting any one must leave the other three families' files.
+    #[test]
+    fn delete_one_non_ascii_or_mixed_family_keeps_the_others() {
+        let fams = ["測試字体", "Тестовый", "思源 Sans", "Sans"];
+        for victim in fams {
+            let root = temp_root("c36-delete");
+            let mut files = Vec::new();
+            for fam in fams {
+                // Same upload file name for every family: the shared-folder bug also
+                // made these overwrite each other on import.
+                let path = install_font_file_in(&root, fam, "Regular.ttf", &c36_fake_face(fam))
+                    .unwrap_or_else(|e| panic!("{fam}: install failed: {e}"));
+                files.push((fam, path));
+            }
+            for (fam, path) in &files {
+                assert!(
+                    fs::read(path).unwrap() == c36_fake_face(fam),
+                    "{fam}: import must not overwrite another family's file"
+                );
+            }
+            let dirs: HashSet<PathBuf> =
+                files.iter().map(|(_, p)| p.parent().unwrap().to_path_buf()).collect();
+            assert_eq!(dirs.len(), fams.len(), "every family gets its own folder: {dirs:?}");
+            for (fam, path) in &files {
+                assert_eq!(dir_family_name(path.parent().unwrap()), *fam, "folder maps back to its family");
+            }
+            let purged = purge_family_dirs_in(&root, victim);
+            assert!(purged.is_ok(), "{victim}: delete must succeed: {purged:?}");
+            for (fam, path) in &files {
+                if *fam == victim {
+                    assert!(!path.exists(), "{victim}: its own file must be removed");
+                } else {
+                    assert!(path.is_file(), "deleting {victim} removed {fam}'s file {}", path.display());
+                    assert!(fs::read(path).unwrap() == c36_fake_face(fam), "{fam}: bytes must be intact");
+                }
+            }
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    /// Minimal SFNT whose name table carries `family` (Windows 3/1/0x0409, ID 1),
+    /// padded with `salt` so every file has a distinct hash.
+    fn c36_named_face(family: &str, salt: &str) -> Vec<u8> {
+        let units: Vec<u8> = family.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        let mut name = Vec::new();
+        name.extend_from_slice(&0u16.to_be_bytes()); // format
+        name.extend_from_slice(&1u16.to_be_bytes()); // count
+        name.extend_from_slice(&18u16.to_be_bytes()); // stringOffset
+        for v in [3u16, 1, 0x0409, 1, units.len() as u16, 0] {
+            name.extend_from_slice(&v.to_be_bytes());
+        }
+        name.extend_from_slice(&units);
+        let mut b = b"\x00\x01\x00\x00".to_vec();
+        b.extend_from_slice(&1u16.to_be_bytes());
+        b.extend_from_slice(&[0u8; 6]);
+        b.extend_from_slice(b"name");
+        b.extend_from_slice(&0u32.to_be_bytes());
+        b.extend_from_slice(&28u32.to_be_bytes());
+        b.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        b.extend_from_slice(&name);
+        b.extend_from_slice(salt.as_bytes());
+        b.resize(b.len().max(512), 0);
+        b
+    }
+
+    fn c36_tree_hashes(root: &Path) -> Vec<String> {
+        use sha2::{Digest, Sha256};
+        fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+            for e in fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if !name.starts_with('.') {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(root, &mut files);
+        let mut hashes: Vec<String> = files
+            .iter()
+            .map(|p| format!("{:x}", Sha256::digest(fs::read(p).unwrap())))
+            .collect();
+        hashes.sort();
+        hashes
+    }
+
+    #[test]
+    fn sfnt_upload_family_reads_the_name_table_not_the_file_name() {
+        let root = temp_root("c36-name");
+        let p = root.join("renamed-whatever.ttf");
+        fs::write(&p, c36_named_face("思源 Sans", "x")).unwrap();
+        assert_eq!(sfnt_upload_family(&p).as_deref(), Some("思源 Sans"));
+        fs::write(&p, c36_fake_face("no name table")).unwrap();
+        assert_eq!(sfnt_upload_family(&p), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 36 migration: legacy shared `font/` and the mixed-name `Sans/` folder are
+    /// split into per-family `u-<hash>` folders by name-table family. No file is lost:
+    /// count + SHA-256 multiset identical before/after (unmatched files included), and
+    /// a second run moves nothing.
+    #[test]
+    fn migrate_shared_family_folders_keeps_every_file() {
+        let root = temp_root("c36-migrate");
+        let shared = root.join("font");
+        let sans = root.join("Sans");
+        let lib_shared = root.join("Library").join("font");
+        for d in [&shared, &sans, &lib_shared] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(shared.join("A-Regular.ttf"), c36_named_face("測試字体", "a1")).unwrap();
+        fs::write(shared.join("A-Bold.ttf"), c36_named_face("測試字体", "a2")).unwrap();
+        fs::write(shared.join("B.otf"), c36_named_face("Тестовый", "b1")).unwrap();
+        fs::write(shared.join("mystery.ttf"), c36_fake_face("unreadable")).unwrap();
+        fs::write(shared.join("notes.txt"), b"keep me").unwrap();
+        // Destination conflict: the target u-folder already has a file of that name.
+        fs::write(shared.join("Conflict.ttf"), c36_named_face("Ελληνικά", "c-src")).unwrap();
+        let conflict_dir = root.join(unicode_family_slug("Ελληνικά"));
+        fs::create_dir_all(&conflict_dir).unwrap();
+        fs::write(conflict_dir.join("Conflict.ttf"), c36_named_face("Ελληνικά", "c-dst")).unwrap();
+        fs::write(sans.join("Sans-Regular.ttf"), c36_named_face("Sans", "s1")).unwrap();
+        fs::write(sans.join("SiYuan.ttf"), c36_named_face("思源 Sans", "sy1")).unwrap();
+        fs::write(lib_shared.join("L.ttf"), c36_named_face("日本語", "l1")).unwrap();
+        mark_family_complete(&sans, 2);
+
+        let before = c36_tree_hashes(&root);
+        let first = migrate_shared_family_folders(&root);
+        let after = c36_tree_hashes(&root);
+        assert_eq!(before.len(), 10);
+        assert_eq!(before, after, "count + hashes must be identical after migration");
+        assert_eq!(
+            first,
+            SharedFolderMigration { moved: 5, kept_unmatched: 1, kept_conflict: 1, errors: 0 }
+        );
+
+        let u = |fam: &str| root.join(unicode_family_slug(fam));
+        assert!(u("測試字体").join("A-Regular.ttf").is_file());
+        assert!(u("測試字体").join("A-Bold.ttf").is_file());
+        assert!(u("Тестовый").join("B.otf").is_file());
+        assert!(u("思源 Sans").join("SiYuan.ttf").is_file());
+        assert!(root.join("Library").join(unicode_family_slug("日本語")).join("L.ttf").is_file());
+        assert_eq!(dir_family_name(&u("測試字体")), "測試字体");
+        assert!(sans.join("Sans-Regular.ttf").is_file(), "Latin Sans stays");
+        assert!(shared.join("mystery.ttf").is_file(), "unmatched stays in place");
+        assert!(shared.join("notes.txt").is_file());
+        assert!(shared.join("Conflict.ttf").is_file(), "conflict keeps the source");
+        assert!(dir_is_complete(&sans), "source .complete kept (re-stamped)");
+
+        let second = migrate_shared_family_folders(&root);
+        assert_eq!(second.moved, 0, "idempotent");
+        assert_eq!(c36_tree_hashes(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 36 item 2: startup tidy never deletes a font file or a non-empty folder.
+    #[test]
+    fn boot_tidy_keeps_woff_uploads_and_non_empty_folders() {
+        let root = temp_root("c36-tidy");
+        let up = root.join("My Upload");
+        fs::create_dir_all(&up).unwrap();
+        let woff = up.join("My-Upload.woff2");
+        fs::write(&woff, b"wOF2 not an sfnt").unwrap();
+        fs::write(up.join(".complete"), b"1").unwrap();
+        boot_tidy_family_dir(&up, &[woff.clone()], false);
+        assert!(woff.is_file(), "WOFF2 upload must survive startup");
+        assert!(up.is_dir());
+        let empty = root.join("Empty");
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(empty.join(".expected"), b"2").unwrap();
+        boot_tidy_family_dir(&empty, &[], false);
+        assert!(!empty.exists(), "a folder with only markers may go");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 36 item 2: prune candidates skip uploads (`.family`), folders whose fonts
+    /// name a kept family, and unreadable fonts; only a truly unknown folder qualifies.
+    #[test]
+    fn prune_candidates_spare_uploads_and_kept_name_tables() {
+        let root = temp_root("c36-prune");
+        let mk = |folder: &str, file: &str, bytes: Vec<u8>| {
+            let d = root.join(folder);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join(file), bytes).unwrap();
+            d
+        };
+        let upload = install_font_file_in(&root, "測試字体", "x.ttf", &c36_named_face("測試字体", "u"))
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let renamed = mk("Old Folder Name", "a.ttf", c36_named_face("Roboto", "r"));
+        let woff = mk("Web Upload", "w.woff2", b"wOF2....".to_vec());
+        let gone = mk("Delisted Family", "d.ttf", c36_named_face("Delisted Family", "d"));
+        let kept = mk("Roboto", "Roboto.ttf", c36_named_face("Roboto", "k"));
+        let keep_keys: HashSet<String> = alias_keys("Roboto").into_iter().collect();
+        let dirs = vec![upload.clone(), renamed.clone(), woff.clone(), gone.clone(), kept.clone()];
+        let out = prune_candidates(&dirs, &root, &keep_keys);
+        assert_eq!(out, vec![gone.clone()], "only the delisted folder is a candidate");
+        // And even that is never permanently deleted off Windows.
+        assert_eq!(recycle_or_leave(&gone), Ok(cfg!(windows)));
+        #[cfg(not(windows))]
+        assert!(gone.join("d.ttf").is_file(), "no permanent delete");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 36: a non-ASCII family resolves to its own u-folder and its legacy JS
+    /// upload folder (raw name) — never the lossy `font` / `Sans` folders.
+    #[test]
+    fn non_ascii_family_locations_own_folders_only() {
+        let root = temp_root("c36-loc");
+        for d in ["font", "Sans", "測試字体", "思源 Sans"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        fs::create_dir_all(root.join(unicode_family_slug("測試字体"))).unwrap();
+        let got = family_locations_in(&root, "測試字体");
+        assert!(got.contains(&root.join("測試字体")), "legacy JS folder: {got:?}");
+        assert!(got.contains(&root.join(unicode_family_slug("測試字体"))));
+        assert!(!got.contains(&root.join("font")), "{got:?}");
+        let mixed = family_locations_in(&root, "思源 Sans");
+        assert!(mixed.contains(&root.join("思源 Sans")));
+        assert!(!mixed.contains(&root.join("Sans")), "{mixed:?}");
+        assert_eq!(unicode_family_slug("測試字体"), "u-7acd0fca85b1a525", "JS family-folder.ts vector");
+        assert_eq!(unicode_family_slug("Тестовый"), "u-968f7d0b79ea5e3b");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Standalone SFNT for face `index` of a TTC (what the JS importer's extractFace
+    /// hands to writeAndRegister).
+    fn c36_extract_face(ttc: &[u8], index: usize) -> Vec<u8> {
+        let be16 = |o: usize| u16::from_be_bytes([ttc[o], ttc[o + 1]]);
+        let be32 = |o: usize| u32::from_be_bytes([ttc[o], ttc[o + 1], ttc[o + 2], ttc[o + 3]]) as usize;
+        let d = be32(12 + 4 * index);
+        let n = usize::from(be16(d + 4));
+        let mut out = ttc[d..d + 12 + 16 * n].to_vec();
+        for t in 0..n {
+            let r = 12 + 16 * t;
+            let (off, len) = (be32(d + r + 8), be32(d + r + 12));
+            let at = out.len();
+            out[r + 8..r + 12].copy_from_slice(&(at as u32).to_be_bytes());
+            out.extend_from_slice(&ttc[off..off + len]);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    fn c36_import_and_activate_every_face(ttc: &[u8], stem: &str) -> Vec<(String, PathBuf)> {
+        let root = temp_root("c36-ttc");
+        let count = u32::from_be_bytes([ttc[8], ttc[9], ttc[10], ttc[11]]) as usize;
+        let mut out = Vec::new();
+        for i in 0..count {
+            let face = c36_extract_face(ttc, i);
+            let tmp = root.join(format!(".probe-{i}.ttf"));
+            fs::write(&tmp, &face).unwrap();
+            let family = sfnt_upload_family(&tmp).expect("face has a name table");
+            fs::remove_file(&tmp).unwrap();
+            let ext = if &face[0..4] == b"OTTO" { "otf" } else { "ttf" };
+            let path = install_font_file_in(&root, &family, &format!("{stem}-{}.{ext}", i + 1), &face)
+                .unwrap_or_else(|e| panic!("face {i} ({family}) import: {e}"));
+            // Activation entry point used by writeAndRegister (Linux: intact check only;
+            // the GDI AddFontResourceExW call is Windows-only).
+            register_font_path(path.to_string_lossy().into_owned())
+                .unwrap_or_else(|e| panic!("face {i} ({family}) activate: {e}"));
+            out.push((family, path));
+        }
+        for (family, path) in &out {
+            assert!(path.is_file(), "{family}: file kept");
+            assert_eq!(sfnt_upload_family(path).as_deref(), Some(family.as_str()));
+        }
+        out
+    }
+
+    /// Card 36 item 3: all 10 faces of a collection import to Documents and each goes
+    /// through the activation entry point (generated Noto-shaped TTC, ~6 KB).
+    #[test]
+    fn ttc_import_keeps_all_ten_faces_each_activatable() {
+        let ttc = crate::parse::tests::c36_build_ttc(&crate::parse::tests::C36_FACES);
+        let faces = c36_import_and_activate_every_face(&ttc, "Fixture-Regular");
+        assert_eq!(faces.len(), 10);
+        let files: HashSet<&PathBuf> = faces.iter().map(|(_, p)| p).collect();
+        assert_eq!(files.len(), 10, "no face overwrote another");
+        let shared: Vec<&PathBuf> = faces.iter().filter(|(f, _)| f == "Fixture Shared").map(|(_, p)| p).collect();
+        assert_eq!(shared.len(), 2);
+        assert_eq!(shared[0].parent(), shared[1].parent(), "same family, same folder");
+        assert_eq!(count_intact_faces(shared[0].parent().unwrap()), 2);
+        if let Some(root) = faces[0].1.parent().and_then(|p| p.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    /// Same, on the real Noto Sans CJK Regular TTC (opt-in: FM_NOTO_TTC, 19 MB).
+    #[test]
+    fn real_noto_cjk_ttc_all_ten_faces_import_and_activate() {
+        let Some(path) = std::env::var_os("FM_NOTO_TTC") else {
+            return;
+        };
+        let ttc = fs::read(path).unwrap();
+        let faces = c36_import_and_activate_every_face(&ttc, "NotoSansCJK-Regular");
+        assert_eq!(faces.len(), 10);
+        let fams: HashSet<&str> = faces.iter().map(|(f, _)| f.as_str()).collect();
+        assert_eq!(fams.len(), 10);
+        assert!(faces.iter().all(|(_, p)| p.extension().unwrap() == "otf"));
+        if let Some(root) = faces[0].1.parent().and_then(|p| p.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
     }
 }

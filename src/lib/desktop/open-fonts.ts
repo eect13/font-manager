@@ -1,6 +1,6 @@
 import { fontMime, isFontFile } from "@/lib/fonts/fs-drop";
 
-const FONT_EXT = ["ttf", "otf", "woff", "woff2", "ttc"];
+const FONT_EXT = ["ttf", "otf", "woff", "woff2", "ttc", "otc"];
 
 function joinPath(dir: string, name: string) {
   if (!dir) return name;

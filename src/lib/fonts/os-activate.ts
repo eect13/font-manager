@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { documentsFamilyFolder, FAMILY_NAME_MARKER, safeSegment } from "./family-folder";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { firstSettledAllowlistedFamily } from "./gdi-incapable";
@@ -994,17 +995,14 @@ function cacheHas(family: string) {
   return installedCache.has(family.toLowerCase());
 }
 
-function safeSegment(name: string) {
-  const t = name.replace(/[<>:"/\\|?*]/g, "-").replace(/[. ]+$/g, "").trim();
-  return t || "font";
-}
 
 async function writeAndRegister(
   family: string,
   fileName: string,
   bytes: Uint8Array,
 ) {
-  const fam = safeSegment(family);
+  // Card 36: non-ASCII families get their own u-<hash> folder (same as Rust).
+  const fam = documentsFamilyFolder(family);
   const file = safeSegment(fileName);
   const { mkdir, writeFile, exists, stat, BaseDirectory } = await import("@tauri-apps/plugin-fs");
   const relDir = `Font Manager/${fam}`;
@@ -1021,6 +1019,12 @@ async function writeAndRegister(
   }
   if (!skipWrite) {
     await writeFile(relFile, bytes, { baseDir: BaseDirectory.Document });
+  }
+  if (fam !== safeSegment(family)) {
+    const marker = `${relDir}/${FAMILY_NAME_MARKER}`;
+    await writeFile(marker, new TextEncoder().encode(family.trim()), { baseDir: BaseDirectory.Document }).catch(
+      () => undefined,
+    );
   }
   const { documentDir, join } = await import("@tauri-apps/api/path");
   const abs = await join(await documentDir(), "Font Manager", fam, file);
@@ -1736,7 +1740,10 @@ function finishIfIdle() {
 }
 
 async function installOne(font: FontRecord, lean: boolean) {
-  if (cacheHas(font.family)) return;
+  // Uploads are one record per face (a TTC's Regular + Bold share a family), so the
+  // family cache must not skip a sibling face's own file.
+  const perFaceUpload = font.source === "local" && !font.originPath;
+  if (!perFaceUpload && cacheHas(font.family)) return;
   if (font.originPath) {
     await tauriInvoke("register_font_path", { path: font.originPath });
     installedCache.add(font.family.toLowerCase());
@@ -2077,7 +2084,7 @@ export async function saveUploadToDisk(opts: {
   void pumpUploads();
 }
 
-let webPreviewTold = new Set<string>();
+const webPreviewTold = new Set<string>();
 
 function tellWebPreview(font?: FontRecord) {
   const kind = !font ? "local" : isFontsourceOnly(font) ? "other" : isGoogleCatalog(font) ? "google" : "local";
@@ -2174,7 +2181,13 @@ export async function dropDownloadFamilies(families: string[]): Promise<void> {
 
 export async function uninstallFontOnSystem(font: FontRecord): Promise<void> {
   if (font.source === "system") return;
-  if (!(await inDesktopShell())) return;
+  if (!(await inDesktopShell())) {
+    // Website has no GDI. The bulk path confirms Off; this single-font path
+    // used to return first and leave the button on "Deactivating" plus a
+    // Windows "Still unloading" toast.
+    await syncFontsOnSystem([font], false);
+    return;
+  }
   // P1: Deactivate while download/register running — drop that family's slot, then Remove.
   if (job.running && (job.mode === "download" || job.mode === "register" || job.owner === "download" || job.owner === "register")) {
     await dropDownloadFamilies([font.family]);

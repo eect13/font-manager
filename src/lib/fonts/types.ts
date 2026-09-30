@@ -69,6 +69,10 @@ export interface FontRecord {
   colorKind?: "none" | "colrv0" | "colrv1" | "svg" | "cbdt" | "sbix";
   /** Absolute path when this face comes from a watched folder (file stays put). */
   originPath?: string;
+  /** Script from the font's own cmap at import, when it differs from the name guess (Card 36). */
+  script?: import("./scripts").ScriptKind;
+  /** Face index inside a watched TTC/OTC `originPath` (absent = 0 / single font). */
+  faceIndex?: number;
   /** OS/2 + head SuperSearch metrics. Missing xh/contrast = unknown (fail closed). */
   metrics?: FontMetrics;
 }

@@ -108,13 +108,18 @@ export async function refreshWatchedFolders(): Promise<void> {
       allSizes.push(...listed.sizes);
       allMtimes.push(...listed.mtimes);
       const known = localFonts.filter((f) => f.originPath && underWatch(f.originPath, root));
-      const knownByPath = new Map(known.map((f) => [norm(f.originPath!), f]));
+      // A TTC/OTC path holds one record per face.
+      const knownByPath = new Map<string, typeof known>();
+      for (const f of known) {
+        const key = norm(f.originPath!);
+        knownByPath.set(key, [...(knownByPath.get(key) ?? []), f]);
+      }
       const freshPaths: string[] = [];
       for (let i = 0; i < listed.paths.length; i += 1) {
         const origin = listed.paths[i]!;
-        const prev = knownByPath.get(norm(origin));
-        if (prev && (prev.fileSize ?? 0) === listed.sizes[i]) continue;
-        if (prev) await removeLocalFont(prev.id);
+        const prev = knownByPath.get(norm(origin)) ?? [];
+        if (prev.length && (prev[0]!.fileSize ?? 0) === listed.sizes[i]) continue;
+        for (const face of prev) await removeLocalFont(face.id);
         freshPaths.push(origin);
       }
       if (freshPaths.length) {

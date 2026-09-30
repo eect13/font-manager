@@ -9,6 +9,7 @@ import { parseCollectionSync, type CollectionSyncV1 } from "./collection-sync";
 export { parseCollectionSync, type CollectionSyncV1 } from "./collection-sync";
 
 function safeName(raw: string, used: Set<string>): string {
+  // eslint-disable-next-line no-control-regex -- file names can carry NUL/ASCII controls; strip them for zip entries
   const base = (raw || "font.ttf").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_");
   let name = base;
   let n = 2;
