@@ -276,8 +276,13 @@ fn migrate_shared_family_folders(root: &Path) -> SharedFolderMigration {
     out
 }
 
+fn migration_complete(result: &SharedFolderMigration) -> bool {
+    result.errors == 0 && result.kept_conflict == 0
+}
+
 /// Boot hook: run the shared-folder split once per Documents root (skipped after a
-/// clean run). Logs; never deletes.
+/// clean run). Logs; never deletes. A kept conflict means the old file is still
+/// invisible to the app, so the marker stays off and the next boot tries again.
 fn migrate_shared_family_folders_on_boot(app: &AppHandle) {
     let Ok(root) = documents_root(app) else {
         return;
@@ -288,8 +293,14 @@ fn migrate_shared_family_folders_on_boot(app: &AppHandle) {
     }
     let result = migrate_shared_family_folders(&root);
     eprintln!("[fm] migrate shared family folders: {result:?}");
-    if result.errors == 0 {
-        let _ = fs::write(marker, b"1\n");
+    if migration_complete(&result) {
+        let _ = fs::write(&marker, b"1\n");
+    } else if result.kept_conflict > 0 {
+        eprintln!(
+            "[fm] migrate: not writing {} — {} file(s) kept because the destination already exists",
+            marker.display(),
+            result.kept_conflict
+        );
     }
 }
 
@@ -13369,6 +13380,45 @@ mod session_sidecar_tests {
         let second = migrate_shared_family_folders(&root);
         assert_eq!(second.moved, 0, "idempotent");
         assert_eq!(c36_tree_hashes(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alias_keys_non_ascii_are_not_lossy() {
+        let keys = alias_keys("思源 Sans");
+        assert!(keys.iter().any(|k| k.starts_with("u-")), "{keys:?}");
+        assert!(keys.iter().any(|k| k.contains('思')), "{keys:?}");
+        assert!(!keys.iter().any(|k| k == "sans" || k == "font"), "{keys:?}");
+    }
+
+    #[test]
+    fn migration_marker_waits_when_a_conflict_was_kept() {
+        assert!(migration_complete(&SharedFolderMigration::default()));
+        assert!(!migration_complete(&SharedFolderMigration {
+            kept_conflict: 1,
+            ..SharedFolderMigration::default()
+        }));
+        assert!(!migration_complete(&SharedFolderMigration {
+            errors: 1,
+            ..SharedFolderMigration::default()
+        }));
+    }
+
+    /// Removing the Library / u- folder guards would treat those directories as
+    /// family folders and rename a matching non-ASCII face out of them.
+    #[test]
+    fn migrate_skips_protected_and_u_folders() {
+        let root = temp_root("c36-guard");
+        let lib = root.join("Library");
+        let hashed = root.join("u-abc");
+        fs::create_dir_all(&lib).unwrap();
+        fs::create_dir_all(&hashed).unwrap();
+        fs::write(lib.join("X.ttf"), c36_named_face("Library文", "x")).unwrap();
+        fs::write(hashed.join("Y.ttf"), c36_named_face("u-abc文", "y")).unwrap();
+        let result = migrate_shared_family_folders(&root);
+        assert_eq!(result.moved, 0, "{result:?}");
+        assert!(lib.join("X.ttf").is_file(), "Library is not a family folder");
+        assert!(hashed.join("Y.ttf").is_file(), "u- folders are already migrated");
         let _ = fs::remove_dir_all(&root);
     }
 

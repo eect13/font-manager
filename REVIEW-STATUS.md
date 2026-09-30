@@ -1,6 +1,30 @@
 # Font Manager: REVIEW-STATUS
 
-As of 2026-09-30 16:40 PHT (UTC+8). This is the single current-state handoff file. Sources, by report name: 36-FIX-REPORT, 37-CRITIC-GOLIVE, 38-GOLIVE-REPORT, the team MASTERLIST section 9, and live GitHub and Vercel reads made at the time above. If something could not be verified it says **unconfirmed**.
+As of 2026-09-30 16:40 PHT (UTC+8), plus the evening pass below. This is the single current-state handoff file. Sources, by report name: 36-FIX-REPORT, 37-CRITIC-GOLIVE, 38-GOLIVE-REPORT, the team MASTERLIST section 9, and live GitHub and Vercel reads made at the time above. If something could not be verified it says **unconfirmed**.
+
+## 0. Evening pass (after a6dd2ba)
+
+Web fixes from section 3, on top of `a6dd2bad8829b9e25ddb8000a0a1761690e87525`. Version stays **1.0.207**. PR #77 was not touched. No GitHub release, no tag, no NSIS packed from this machine.
+
+| # | Item | Result |
+|---|---|---|
+| 1 | Dark "Clear uploads" | **Fixed.** `--color-destructive` is `#a84a3b` (foreground `#f2efe8`, **4.93:1**). Light stays `#b44a3a` on `#faf8f3`. Dev-server computed style matched both themes. |
+| 2 | Windows proof | **Not run.** Release stays blocked. Installer behaviour is source-only. |
+| 3 | Latin preview | **Fixed and unit-tested.** Latin coverage ≥ 0.9 and a latin/other name stays Latin, so Poppins, Rubik and Noto Sans keep the user's sample. Renamed Arabic (no Latin repertoire), Devanagari and Cyrillic still follow the cmap. |
+| 4 | Installer force-kill | **Source fixed, not executed on Windows.** `hooks.nsh` calls `CloseMainWindow` and skips a path containing `\Tip\`. No `taskkill` and no `KillProcess`. |
+| 5 | Conflict marker | **Source fixed.** `.u-folders-v1` is written only when `errors == 0` and `kept_conflict == 0`; otherwise it logs and leaves the marker off. |
+| 6 | React #418 | **Checked on the dev server and the production preview** (`vite preview` of this build). `/`, `/playground` and `/glyphs` logged no hydration or #418 error, including a return visit with all four panes in sessionStorage, light theme, and compact density. First render no longer reads sessionStorage, and theme/density state starts at the server default. |
+| 7 | gdi-maps copy | **Fixed in copy only.** Settings says the Startup shortcut is added, and that gdi-maps copies stay so the next launch can register them again. Maps are not deleted on quit. |
+| 8 | Surviving mutants | **Tests added.** Non-ASCII `alias_keys` must not be `sans`/`font`. Library and `u-` folders must not be migrated. The per-face save key must be family + NUL + file name. The Rust tests were not executed here (no pkg-config / glib). |
+| 9 | Build identity | **Wired.** `GITHUB_SHA` / `VERCEL_GIT_COMMIT_SHA` stamps `TIP_SHA.txt` and the header (`1.0.207` plus a 7-char sha when the env is set). Local header showed `1.0.207` only, which is correct with no sha env. Installer filename stays `1.0.207`. |
+| 10 | Unsigned installer | **Unchanged.** Eric's decision. No certificate invented. |
+| 11 | Edge cases | **Not changed.** |
+| 12 | CI nits | **Fixed:** `persist-credentials: false` on all four checkouts; `workflow_dispatch` also builds the installer. Author email not switched. |
+| 13 | Kappa Text | **Not reproduced, not changed.** |
+
+Node: `npm test` 678 pass, 1 skip (real Noto TTC, `FM_NOTO_TTC` unset), 0 fail. `tsc --noEmit` clean. `eslint` 0 errors (pre-existing warnings remain). Rust `cargo test` did not link on this Linux box.
+
+**Web may deploy. GitHub release stays BLOCK** until a real Windows Add>0 smoke of the hash-verified installer.
 
 ## 1. Current state
 

@@ -26,7 +26,7 @@ function stamp(extraEnv = {}) {
 }
 
 test("git checkout stamps the real HEAD and does not claim no-git", () => {
-  const { status, body } = stamp();
+  const { status, body } = stamp({ GITHUB_SHA: "", VITE_FM_BUILD_SHA: "" });
   assert.equal(status, 0);
   assert.match(body, /^sha=[0-9a-f]{40}$/m);
   assert.match(body, /^version=1\.0\.207$/m);
@@ -36,7 +36,7 @@ test("git checkout stamps the real HEAD and does not claim no-git", () => {
 
 test("GitHub zip (no .git) exits 0 and does not invent a commit", () => {
   const missing = join(tmpdir(), "font-manager-not-a-git-repo");
-  const { status, body, stderr } = stamp({ GIT_DIR: missing });
+  const { status, body, stderr } = stamp({ GIT_DIR: missing, GITHUB_SHA: "", VITE_FM_BUILD_SHA: "" });
   assert.equal(status, 0);
   assert.match(body, /^sha=unknown$/m);
   assert.match(body, /^short=unknown$/m);
@@ -45,4 +45,15 @@ test("GitHub zip (no .git) exits 0 and does not invent a commit", () => {
   assert.match(body, /^version=1\.0\.207$/m);
   assert.match(stderr, /no git checkout/i);
   assert.doesNotMatch(body, /sha=[0-9a-f]{7,}/);
+});
+
+test("GITHUB_SHA is stamped even when git is missing", () => {
+  const missing = join(tmpdir(), "font-manager-not-a-git-repo");
+  const sha = "a6dd2bad8829b9e25ddb8000a0a1761690e87525";
+  const { status, body } = stamp({ GIT_DIR: missing, GITHUB_SHA: sha });
+  assert.equal(status, 0);
+  assert.match(body, new RegExp(`^sha=${sha}$`, "m"));
+  assert.match(body, /^short=a6dd2ba$/m);
+  assert.match(body, /^source=github-actions$/m);
+  assert.doesNotMatch(body, /source=no-git/);
 });

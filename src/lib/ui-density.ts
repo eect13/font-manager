@@ -42,10 +42,6 @@ export function writeUiDensity(value: UiDensity) {
 }
 
 let current: UiDensity = UI_DENSITY_DEFAULT;
-if (typeof window !== "undefined") {
-  current = readUiDensity();
-  applyUiDensity(current);
-}
 
 function emit() {
   listeners.forEach((fn) => fn());
@@ -59,6 +55,16 @@ export function setUiDensity(value: UiDensity) {
   current = value === "compact" ? "compact" : "comfortable";
   writeUiDensity(current);
   emit();
+}
+
+/** After hydration, so the first client render matches the server (React #418). */
+export function hydrateUiDensity() {
+  const stored = readUiDensity();
+  if (stored === current) {
+    applyUiDensity(current);
+    return;
+  }
+  setUiDensity(stored);
 }
 
 export function subscribeUiDensity(fn: () => void) {

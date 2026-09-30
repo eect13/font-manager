@@ -63,7 +63,12 @@ if (existsSync(target) && statSync(target).isFile()) {
 }
 
 const stampedAt = new Date().toISOString();
-const sha = git(["rev-parse", "HEAD"]);
+function envSha() {
+  const value = (process.env.GITHUB_SHA || process.env.VITE_FM_BUILD_SHA || "").trim();
+  return /^[0-9a-f]{40}$/i.test(value) ? value.toLowerCase() : null;
+}
+const fromEnv = envSha();
+const sha = fromEnv || git(["rev-parse", "HEAD"]);
 let body;
 if (!sha) {
   const version = packageVersion();
@@ -80,8 +85,8 @@ if (!sha) {
     "",
   ].join("\n");
 } else {
-  const short = git(["rev-parse", "--short=7", "HEAD"]) || sha.slice(0, 7);
-  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]) || "unknown";
+  const short = fromEnv ? sha.slice(0, 7) : git(["rev-parse", "--short=7", "HEAD"]) || sha.slice(0, 7);
+  const branch = fromEnv ? "github-actions" : git(["rev-parse", "--abbrev-ref", "HEAD"]) || "unknown";
   const tipMatch = /^tip\/(\d+\.\d+\.\d+[a-z]*)$/i.exec(branch);
   const tip = tipMatch ? tipMatch[1] : "";
   body = [
@@ -90,6 +95,7 @@ if (!sha) {
     `branch=${branch}`,
     tip ? `tip=${tip}` : null,
     `version=${packageVersion()}`,
+    fromEnv ? "source=github-actions" : null,
     `stamped_at=${stampedAt}`,
     "",
   ]

@@ -22,7 +22,13 @@ function quietRolldownChecks() {
   };
 }
 
-/** `tauri build` sets these. Skip Nitro SSR — the installer only needs static files + index.html. */
+function fmBuildSha() {
+  for (const key of ["VITE_FM_BUILD_SHA", "VERCEL_GIT_COMMIT_SHA", "GITHUB_SHA"]) {
+    const value = (process.env[key] || "").trim();
+    if (/^[0-9a-f]{7,40}$/i.test(value)) return value;
+  }
+  return "";
+}
 const isTauriBuild = Boolean(
   process.env.TAURI_ENV_PLATFORM || process.env.TAURI_ENV_FAMILY || process.env.TAURI_PLATFORM,
 );
@@ -231,6 +237,7 @@ export default defineConfig(({ command, isPreview }) => {
       // desktop pack (`input cannot contain glob characters`).
       input: "desktop.html",
       plugins: [tailwindcss(), viteReact(), tauriIndexPlugin()],
+      define: { __FM_BUILD_SHA__: JSON.stringify(fmBuildSha()) },
       resolve: { tsconfigPaths: true },
       optimizeDeps: { exclude: ["wawoff2"] },
       build: {
@@ -251,6 +258,7 @@ export default defineConfig(({ command, isPreview }) => {
   }
 
   return {
+  define: { __FM_BUILD_SHA__: JSON.stringify(fmBuildSha()) },
   clearScreen: false,
   server: {
     host: "0.0.0.0",

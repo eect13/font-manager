@@ -136,6 +136,10 @@ export function scriptFromCoverage(has: Coverage | null, family: string): Script
   const named = scriptOf(family);
   if (named !== "latin" && named !== "other" && covers(has, named)) return undefined;
   const latin = covers(has, "latin");
+  // Latin-primary faces stay Latin. Poppins, Rubik and Noto Sans include another
+  // script but their names do not; a wght-style preview must keep the user's text.
+  // A renamed face without a full Latin repertoire still follows the cmap.
+  if (latin && (named === "latin" || named === "other")) return undefined;
   const scripts = META_KINDS.filter((k) => !SKIP.has(k) && covers(has, k));
   const own = scripts.filter((k) => !LATIN_COMPANIONS.has(k));
   let detected: ScriptKind | undefined;

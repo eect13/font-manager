@@ -1,12 +1,14 @@
 import { useEffect, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { hydrateTheme, useTheme } from "@/lib/theme";
+import { hydrateUiDensity } from "@/lib/ui-density";
 
 export function ThemeRoot({ children }: { children: ReactNode }) {
   const theme = useTheme();
 
   useEffect(() => {
     hydrateTheme();
+    hydrateUiDensity();
   }, []);
 
   return (
