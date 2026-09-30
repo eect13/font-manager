@@ -438,11 +438,11 @@ export function ScanDiskMenuItem() {
                     ];
                     const n = await pruneUnknownFolders(keep);
                     if (n) {
-                      toast.success(`Removed ${n.toLocaleString()} folders not in catalog`);
+                      toast.success(`Moved ${n.toLocaleString()} folders not in catalog to the Recycle Bin`);
                     } else {
                       toast.message("Nothing removed", {
                         description:
-                          "Folders still match the catalog, or the catalog is too small to prune against.",
+                          "Uploads and folders whose fonts match the catalog stay. The catalog may also be too small to prune against.",
                       });
                     }
                   })();

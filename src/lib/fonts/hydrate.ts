@@ -14,7 +14,6 @@ import {
   restoreSessionFromDisk,
   rememberSessionFamilies,
   waitSessionBoot,
-  pruneUnknownFolders,
   syncManagedDocumentsRoot,
   bindDownloadEvents,
 } from "./os-activate";
@@ -313,29 +312,9 @@ export function useHydrateFonts() {
               .map((id) => findFont(id, localFonts, google)?.family ?? (id.startsWith("g:") ? id.slice(2) : ""))
               .filter((name): name is string => Boolean(name)),
           );
-          const keep = [
-            ...google.map((f) => f.family),
-            ...localFonts.map((f) => f.family),
-            ...sessionNames,
-            ...persistNames,
-            ...live
-              .map((id) => findFont(id, localFonts, google)?.family ?? (id.startsWith("g:") ? id.slice(2) : ""))
-              .filter((name): name is string => Boolean(name)),
-          ];
-          if (keep.length < 500) return;
-          window.setTimeout(() => {
-            if (cancelled) return;
-            void pruneUnknownFolders(keep).then((n) => {
-              if (cancelled || !n) return;
-              toast.message(
-                `Removed ${n.toLocaleString()} leftover folder${n === 1 ? "" : "s"}`,
-                {
-                  description:
-                    "Renamed or delisted families. Uploads and the current catalog stayed. Nothing was copied to Windows\\Fonts.",
-                },
-              );
-            });
-          }, 4000);
+          // Card 36: no automatic prune at start. Folders not in the catalog stay
+          // (uploads, renamed or delisted families); Scan → "Remove extras" moves them to
+          // the Recycle Bin only when the user asks.
         });
         window.setTimeout(() => {
           if (cancelled) return;

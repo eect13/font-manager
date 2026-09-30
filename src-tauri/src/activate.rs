@@ -6542,22 +6542,12 @@ fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
         let name = dir_family_name(path);
         let mut files = Vec::new();
         walk_font_files(path, &mut files);
-        let mut intact = Vec::new();
-        for file in files {
-            if ttf_intact(&file) {
-                intact.push(file);
-            } else if gc {
-                let _ = delete_font_file(&file);
-            }
+        let (intact, other): (Vec<PathBuf>, Vec<PathBuf>) =
+            files.into_iter().partition(|file| ttf_intact(file));
+        if gc {
+            boot_tidy_family_dir(path, &other, !intact.is_empty());
         }
         if intact.is_empty() {
-            if gc {
-                let _ = fs::remove_file(path.join(".complete"));
-                let _ = fs::remove_file(path.join(".expected"));
-                let _ = fs::remove_file(path.join(".google-planned"));
-                let _ = fs::remove_file(path.join(".fontsource-version"));
-                let _ = fs::remove_dir_all(path);
-            }
             return;
         }
         names.push(name.clone());
@@ -6568,6 +6558,25 @@ fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
     names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     names.dedup();
     DiskIndex { by_key, names }
+}
+
+/// Card 36: startup tidy never deletes a font file and never removes a folder that
+/// still holds anything. Non-SFNT files (WOFF/WOFF2 uploads, truncated leftovers) are
+/// logged and left; a folder with no SFNT face only loses its bookkeeping markers and
+/// is removed with `remove_dir` — which fails (and leaves it) unless it is empty.
+fn boot_tidy_family_dir(path: &Path, non_intact: &[PathBuf], has_intact: bool) {
+    for file in non_intact {
+        eprintln!("[fm] startup: left non-installable file {}", file.display());
+    }
+    if has_intact {
+        return;
+    }
+    for marker in [".complete", ".expected", ".google-planned", ".fontsource-version"] {
+        let _ = fs::remove_file(path.join(marker));
+    }
+    if fs::remove_dir(path).is_err() && path.exists() {
+        eprintln!("[fm] startup: left folder with no installable face {}", path.display());
+    }
 }
 
 fn build_disk_index(app: &AppHandle) -> DiskIndex {
@@ -9815,42 +9824,83 @@ pub fn scan_disk_families(app: AppHandle) -> Result<Vec<DiskFamily>, String> {
     Ok(out)
 }
 
-/// Remove family folders whose names are not in `keep` (catalog + uploads).
-/// Unregisters first. Refuses if `keep` is too small so a bad catalog cannot wipe Documents.
+/// Family folders not in `keep` (catalog + uploads), conservatively. A folder is a
+/// candidate only when its family name, its `.family` marker and the name-table family
+/// of every font inside are all unknown to `keep`. Upload folders (`.family` marker),
+/// folders with any unreadable / non-SFNT font, and protected dirs are never candidates.
+fn prune_candidates(dirs: &[PathBuf], root: &Path, keep_keys: &HashSet<String>) -> Vec<PathBuf> {
+    let kept = |name: &str| alias_keys(name).iter().any(|k| keep_keys.contains(k));
+    let mut out = Vec::new();
+    for dir in dirs {
+        let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if name.is_empty() || name.starts_with('.') || is_protected_family_dir(root, dir) {
+            continue;
+        }
+        if read_family_name_marker(dir).is_some() {
+            continue;
+        }
+        if kept(name) || kept(&dir_family_name(dir)) {
+            continue;
+        }
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        let spare = files.iter().any(|f| match sfnt_upload_family(f) {
+            Some(fam) => kept(&fam),
+            None => true,
+        });
+        if spare {
+            continue;
+        }
+        out.push(dir.clone());
+    }
+    out
+}
+
+/// Card 36: never a permanent delete. Windows → Recycle Bin (undo); elsewhere the
+/// folder is left in place and logged. `Ok(true)` only when it went to the Bin.
+fn recycle_or_leave(dir: &Path) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let mut files = Vec::new();
+        walk_font_files(dir, &mut files);
+        for path in &files {
+            unregister_path(path);
+            intact_forget(path);
+        }
+        gdi_flush_local();
+        recycle_bin_windows(dir)?;
+        eprintln!("[fm] prune: moved {} to the Recycle Bin", dir.display());
+        Ok(true)
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("[fm] prune: left {} (no Recycle Bin on this OS)", dir.display());
+        Ok(false)
+    }
+}
+
+/// Move family folders that are not in `keep` to the Recycle Bin (user-initiated from
+/// Scan). Refuses if `keep` is too small so a bad catalog cannot empty Documents.
 #[tauri::command]
 pub fn prune_unknown_folders(app: AppHandle, keep: Vec<String>) -> Result<u32, String> {
     if keep.len() < 500 {
         return Err("catalog too small to prune against".into());
     }
+    let root = documents_root(&app)?;
     let mut keep_keys: HashSet<String> = HashSet::new();
     for name in &keep {
         for key in alias_keys(name) {
             keep_keys.insert(key);
         }
     }
-    let mut victims: Vec<(String, PathBuf)> = Vec::new();
-    for_family_dirs(&app, |path| {
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        if name.is_empty() {
-            return;
-        }
-        if alias_keys(&name).iter().any(|k| keep_keys.contains(k)) {
-            return;
-        }
-        victims.push((name, path.to_path_buf()));
-    });
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for_family_dirs(&app, |path| dirs.push(path.to_path_buf()));
     let mut n = 0u32;
-    for (name, path) in victims {
-        purge_family_files(&app, &name);
-        if path.exists() {
-            let _ = fs::remove_dir_all(&path);
-        }
-        if !path.exists() {
-            n += 1;
+    for dir in prune_candidates(&dirs, &root, &keep_keys) {
+        match recycle_or_leave(&dir) {
+            Ok(true) => n += 1,
+            Ok(false) => {}
+            Err(err) => eprintln!("[fm] prune: left {} ({err})", dir.display()),
         }
     }
     Ok(n)
@@ -13298,6 +13348,57 @@ mod session_sidecar_tests {
         let second = migrate_shared_family_folders(&root);
         assert_eq!(second.moved, 0, "idempotent");
         assert_eq!(c36_tree_hashes(&root), before);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 36 item 2: startup tidy never deletes a font file or a non-empty folder.
+    #[test]
+    fn boot_tidy_keeps_woff_uploads_and_non_empty_folders() {
+        let root = temp_root("c36-tidy");
+        let up = root.join("My Upload");
+        fs::create_dir_all(&up).unwrap();
+        let woff = up.join("My-Upload.woff2");
+        fs::write(&woff, b"wOF2 not an sfnt").unwrap();
+        fs::write(up.join(".complete"), b"1").unwrap();
+        boot_tidy_family_dir(&up, &[woff.clone()], false);
+        assert!(woff.is_file(), "WOFF2 upload must survive startup");
+        assert!(up.is_dir());
+        let empty = root.join("Empty");
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(empty.join(".expected"), b"2").unwrap();
+        boot_tidy_family_dir(&empty, &[], false);
+        assert!(!empty.exists(), "a folder with only markers may go");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 36 item 2: prune candidates skip uploads (`.family`), folders whose fonts
+    /// name a kept family, and unreadable fonts; only a truly unknown folder qualifies.
+    #[test]
+    fn prune_candidates_spare_uploads_and_kept_name_tables() {
+        let root = temp_root("c36-prune");
+        let mk = |folder: &str, file: &str, bytes: Vec<u8>| {
+            let d = root.join(folder);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join(file), bytes).unwrap();
+            d
+        };
+        let upload = install_font_file_in(&root, "測試字体", "x.ttf", &c36_named_face("測試字体", "u"))
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let renamed = mk("Old Folder Name", "a.ttf", c36_named_face("Roboto", "r"));
+        let woff = mk("Web Upload", "w.woff2", b"wOF2....".to_vec());
+        let gone = mk("Delisted Family", "d.ttf", c36_named_face("Delisted Family", "d"));
+        let kept = mk("Roboto", "Roboto.ttf", c36_named_face("Roboto", "k"));
+        let keep_keys: HashSet<String> = alias_keys("Roboto").into_iter().collect();
+        let dirs = vec![upload.clone(), renamed.clone(), woff.clone(), gone.clone(), kept.clone()];
+        let out = prune_candidates(&dirs, &root, &keep_keys);
+        assert_eq!(out, vec![gone.clone()], "only the delisted folder is a candidate");
+        // And even that is never permanently deleted off Windows.
+        assert_eq!(recycle_or_leave(&gone), Ok(cfg!(windows)));
+        #[cfg(not(windows))]
+        assert!(gone.join("d.ttf").is_file(), "no permanent delete");
         let _ = fs::remove_dir_all(&root);
     }
 }
