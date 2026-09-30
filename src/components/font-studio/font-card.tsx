@@ -367,6 +367,19 @@ export const FontCard = memo(function FontCard({
     </button>
   );
 
+  // Card 36: Chromium draws OpenType-SVG glyphs as plain outlines — say so on the
+  // card with the existing outline Badge, not a new look.
+  const svgHint =
+    font.colorKind === "svg" ? (
+      <Badge
+        variant="outline"
+        className="shrink-0 whitespace-nowrap border-muted-foreground/40 text-muted-foreground"
+        title="OpenType-SVG color: this preview draws plain outlines. Adobe apps show the color."
+      >
+        Outline preview
+      </Badge>
+    ) : null;
+
   const specimen = (
     <FitSpecimen
       ready={ready}
@@ -450,6 +463,7 @@ export const FontCard = memo(function FontCard({
             ) : font.source === "local" ? (
               <Badge variant="outline" className="ml-auto">Local</Badge>
             ) : null}
+            {svgHint}
           </div>
           {specimenPane}
         </>
@@ -476,6 +490,7 @@ export const FontCard = memo(function FontCard({
               ) : font.source === "local" ? (
                 <Badge variant="outline">Local</Badge>
               ) : null}
+              {svgHint}
             </span>
           </div>
         </>

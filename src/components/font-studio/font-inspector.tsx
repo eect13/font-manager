@@ -516,7 +516,7 @@ export function FontInspector() {
               <section className="space-y-2">
                 <Label>Color tables</Label>
                 <p className="text-sm">{colorKindLabel(colorKindOf(font))}</p>
-                <p className="text-xs text-muted-foreground">{windowsColorNote(colorKindOf(font))}</p>
+                <p className="text-xs text-muted-foreground">{windowsColorNote(colorKindOf(font), font.source)}</p>
               </section>
             ) : null}
 

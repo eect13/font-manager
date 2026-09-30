@@ -2,12 +2,18 @@
 // (cmap), not its name. A renamed Arabic font previews Arabic, right to left.
 import "./lib-ts-hooks.mjs";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { ARABIC, BASIC_LATIN, buildSfnt, range } from "./ttc-fixture.mjs";
 
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (rel) => readFileSync(join(root, rel), "utf8");
 const { parseFontCollectionFromBuffer } = await import("../src/lib/fonts/parse-font.ts");
 const { scriptDir, scriptLang } = await import("../src/lib/fonts/scripts.ts");
 const { previewSample } = await import("../src/lib/fonts/emoji.ts");
+const { windowsColorNote } = await import("../src/lib/fonts/color-font.ts");
 
 const ab = (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
 async function importAs(family, cps) {
@@ -58,4 +64,19 @@ test("a pan-script font with Latin stays Latin (no surprise Arabic sample)", asy
   const cps = [...BASIC_LATIN, ...ARABIC, ...range(0x0590, 0x05ff), ...range(0x0e00, 0x0e7f), ...range(0x0900, 0x097f)];
   const font = await importAs("Big Unicode", cps);
   assert.equal(previewSample(font, FOX), FOX);
+});
+
+test("colour note for uploads does not promise an outline file we don't install", () => {
+  for (const kind of ["colrv1", "svg", "cbdt", "colrv0", "sbix"]) {
+    const note = windowsColorNote(kind, "local");
+    assert.doesNotMatch(note, /we (also )?install/i, `${kind}: ${note}`);
+    assert.ok(note.length > 20);
+  }
+  assert.match(windowsColorNote("colrv1", "google"), /outline/i);
+});
+
+test("an OpenType-SVG card shows the existing outline Badge hint", () => {
+  const card = read("src/components/font-studio/font-card.tsx");
+  assert.match(card, /colorKind === "svg"/);
+  assert.match(card, /svgHint/);
 });
