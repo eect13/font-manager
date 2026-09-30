@@ -1,5 +1,7 @@
 # Font Manager: REVIEW-STATUS
 
+Whole-catalog download: CSS, METADATA.pb and Fontsource API lookups use a 20s probe timeout instead of the 300s TTF body timeout, so one hung CDN cannot stall the queue. The bar label moves per face. Running progress events send only new ready names; the poll (2.5s) and the idle event still send the full list. Large TTF bodies still allow 300s. Not Windows-proven.
+
 As of 2026-09-30 16:40 PHT (UTC+8), plus the evening pass below. This is the single current-state handoff file. Sources, by report name: 36-FIX-REPORT, 37-CRITIC-GOLIVE, 38-GOLIVE-REPORT, the team MASTERLIST section 9, and live GitHub and Vercel reads made at the time above. If something could not be verified it says **unconfirmed**.
 
 ## 0. Evening pass (after a6dd2ba)

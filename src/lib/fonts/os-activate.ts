@@ -6,6 +6,7 @@ import { firstSettledAllowlistedFamily } from "./gdi-incapable";
 import { idbGet } from "./idb";
 import type { FontRecord } from "./types";
 import { docsVfSyncOwnsJob } from "./docs-vf-sync-ownership.mjs";
+import { absorbReadyNames } from "./ready-batch";
 
 export {
   cancelToastKind,
@@ -1496,7 +1497,8 @@ function applyPayload(p: {
     readyLen,
     p.failed_names?.length ?? 0,
     p.settled_names?.length ?? 0,
-    (p.failed_details ?? []).join("\x1e"),
+    (p.failed_details ?? []).length,
+    (p.failed_details ?? []).at(-1) ?? "",
     p.current,
     kind,
   ].join("|");
@@ -1553,9 +1555,12 @@ function applyPayload(p: {
     (!p.running && !p.paused && wasRunning);
   emitProgress(forceEmit);
   unlockUi();
-  if (readyLen && readyLen !== lastReadyCount && kind !== "remove") {
-    lastReadyCount = readyLen;
-    queueReadyFamilies(p.ready_names ?? []);
+  if (kind !== "remove") {
+    const merged = absorbReadyNames(readyCumulative, p.ready_names ?? []);
+    if (merged.length > lastReadyCount) {
+      lastReadyCount = merged.length;
+      queueReadyFamilies(merged);
+    }
   }
   // 1.0.206j: remove ready_names = unloaded prefix — confirm Off progressively (not all at spawn).
   if (kind === "remove" && removeBatchIds.length) {
@@ -1680,8 +1685,11 @@ export async function bindDownloadEvents() {
 }
 
 function docsProgressPollMs() {
-  // 1.0.206ae: slower poll while docs VF owns the bar — pairs with Rust ≥900ms emit.
-  return isDocsVfSyncJob() ? 1000 : 400;
+  // Docs refresh stays slow so Cancel stays hittable.
+  if (isDocsVfSyncJob()) return 1000;
+  // Events carry the moving bar and only the new ready names.
+  // The poll is the full-list catch-up. Every 400ms of ~2,000 names froze the WebView mid-catalog.
+  return eventsBound ? 2500 : 400;
 }
 
 function ensureGooglePoll() {
