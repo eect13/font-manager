@@ -15,7 +15,7 @@ test("playground fields are named and show a focus ring (4.1.2, 2.4.7, 2.1.1)", 
   assert.match(play, /aria-label="Body sample"/);
   assert.equal((play.match(/outline-none focus-visible:ring-2 focus-visible:ring-ring/g) || []).length, 2);
   assert.match(play, /aria-label=\{`\$\{label\} size`\}/);
-  assert.match(play, /tabIndex=\{0\} aria-label="Pairing preview"/);
+  assert.match(play, /tabIndex=\{0\} role="group" aria-label="Pairing preview">/);
 });
 
 test("facet chip counts are not dimmed below 4.5:1 (1.4.3)", () => {

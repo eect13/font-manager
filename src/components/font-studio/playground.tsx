@@ -150,7 +150,7 @@ export function Playground() {
         />
       </div>
 
-      <div className="fm-scroll grid min-h-0 flex-1 gap-px overflow-auto bg-border lg:grid-cols-2" tabIndex={0} aria-label="Pairing preview">
+      <div className="fm-scroll grid min-h-0 flex-1 gap-px overflow-auto bg-border lg:grid-cols-2" tabIndex={0} role="group" aria-label="Pairing preview">
         <article className={cn("fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 md:p-10", surface)}>
           <textarea
             value={heading}
