@@ -54,8 +54,12 @@ test("playground inverted preview panel is keyboard-scrollable with a ring (2.1.
   const play = read("src/components/font-studio/playground.tsx");
   assert.match(
     play,
-    /<article\s+tabIndex=\{0\}\s+role="region"\s+aria-label="Pairing preview \(inverted\)"\s+className=\{cn\(\s+"fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 outline-none focus-visible:ring-2 focus-visible:ring-inset md:p-10"/,
+    /<article\s+tabIndex=\{0\}\s+role="region"\s+aria-label="Pairing preview \(inverted\)"\s+className=\{cn\(\s+"fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-offset-1 md:p-10"/,
   );
   // Surface-matched ring (Card 26 spec): paper ring on the ink panel, ink ring on the paper panel.
-  assert.match(play, /invert \? "bg-paper text-ink focus-visible:ring-ink" : "bg-ink text-paper focus-visible:ring-paper"/);
+  // Card 30: 1px inset gap in the panel's own surface colour (never Tailwind's default #fff offset).
+  assert.match(
+    play,
+    /invert\s+\? "bg-paper text-ink focus-visible:ring-ink focus-visible:ring-offset-paper"\s+: "bg-ink text-paper focus-visible:ring-paper focus-visible:ring-offset-ink"/,
+  );
 });

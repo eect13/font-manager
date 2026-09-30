@@ -188,8 +188,10 @@ export function Playground() {
           role="region"
           aria-label="Pairing preview (inverted)"
           className={cn(
-            "fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 outline-none focus-visible:ring-2 focus-visible:ring-inset md:p-10",
-            invert ? "bg-paper text-ink focus-visible:ring-ink" : "bg-ink text-paper focus-visible:ring-paper",
+            "fm-scroll min-h-0 overflow-y-auto overscroll-contain p-6 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-offset-1 md:p-10",
+            invert
+              ? "bg-paper text-ink focus-visible:ring-ink focus-visible:ring-offset-paper"
+              : "bg-ink text-paper focus-visible:ring-paper focus-visible:ring-offset-ink",
           )}
         >
           <p
