@@ -3939,7 +3939,13 @@ fn fontsource_meta(
     slug: &str,
 ) -> Option<(Vec<String>, Vec<u16>, Vec<bool>, String)> {
     let url = format!("https://api.fontsource.org/v1/fonts/{slug}");
-    let text = client.get(&url).send().ok()?.text().ok()?;
+    let text = client
+        .get(&url)
+        .timeout(CATALOG_PROBE_TIMEOUT)
+        .send()
+        .ok()?
+        .text()
+        .ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     let subsets: Vec<String> = v
         .get("subsets")?
@@ -4139,6 +4145,7 @@ fn fetch_google_css_text(client: &reqwest::blocking::Client, family: &str, ua: &
     let resp = client
         .get(&href)
         .header("user-agent", ua)
+        .timeout(CATALOG_PROBE_TIMEOUT)
         .send()
         .ok()?;
     if !resp.status().is_success() {
@@ -4984,7 +4991,12 @@ fn download_google_variable_ttfs(
             }
             let mut meta_text: Option<String> = None;
             for meta_url in google_fonts_metadata_cdn_urls(lic, folder) {
-                let Ok(resp) = client.get(&meta_url).send() else { continue };
+                if !catalog_download_allowed() {
+                    return (partial_wrote, heal);
+                }
+                let Ok(resp) = client.get(&meta_url).timeout(CATALOG_PROBE_TIMEOUT).send() else {
+                    continue;
+                };
                 if !resp.status().is_success() {
                     continue;
                 }
@@ -5023,6 +5035,10 @@ fn download_google_variable_ttfs(
                 }
                 // jsDelivr first; GitHub raw for >20MB CJK VFs jsDelivr rejects.
                 for url in google_fonts_variable_cdn_urls(lic, folder, fname) {
+                    if !catalog_download_allowed() {
+                        return (wrote, heal);
+                    }
+                    note_catalog_current(&format!("{family} · variable"));
                     let Some(bytes) = fetch_url_ttf(client, &url) else {
                         continue;
                     };
@@ -5060,7 +5076,7 @@ fn download_google_variable_ttfs(
     for lic in licenses {
         for folder in &folders {
             for axes in axis_patterns {
-                if bulk().cancel.load(Ordering::SeqCst) {
+                if !catalog_download_allowed() {
                     return (wrote, heal);
                 }
                 for italic in [false, true] {
@@ -5747,7 +5763,7 @@ fn discover_richest_google_listing(
     let mut best_axis_rank = -1i32;
     for ua in uas {
         for axis in axes {
-            if bulk().cancel.load(Ordering::SeqCst) {
+            if !catalog_download_allowed() {
                 return Vec::new();
             }
             let listed = fetch_google_css_listed(client, family, ua, axis);
@@ -6089,9 +6105,10 @@ fn download_listed_faces_to_dir(
     let mut wrote = 0usize;
     let mut heal = HealStats::default();
     for (style, weight, url) in listed {
-        if bulk().cancel.load(Ordering::SeqCst) {
+        if !catalog_download_allowed() {
             break;
         }
+        note_catalog_current(&format!("{family} · {weight} {style}"));
         let name = google_face_filename(slug, &weight, &style);
         let path = root.join(&name);
         if !bulk().bust.load(Ordering::SeqCst) && ttf_intact(&path) {
@@ -6139,6 +6156,10 @@ fn fetch_google_family_faces_to_dir(
 ) -> (usize, Vec<(String, String, String)>, Vec<String>, HealStats) {
     let official = is_official_google_family(family);
     let ensure_vf = family_ensures_google_vf(family);
+    if !catalog_download_allowed() {
+        return (0, Vec::new(), Vec::new(), HealStats::default());
+    }
+    note_catalog_current(&format!("{family} · finding files"));
     // Official Google OR FS-only ensure (42dot → google/fonts TTF). Never empty-return
     // before VF download for ensure families.
     if !official && !ensure_vf {
@@ -7343,6 +7364,9 @@ struct Bulk {
     /// Per-family Activate intent (google | fontsource | local).
     intents: Mutex<HashMap<String, FetchIntent>>,
     circuits: Mutex<HashMap<&'static str, CdnGate>>,
+    /// How many `ready_names` the last running progress event already sent.
+    /// Events send only the new tail. A poll still returns the full list.
+    ready_emitted: AtomicUsize,
 }
 
 fn bulk() -> &'static Bulk {
@@ -7373,6 +7397,7 @@ fn bulk() -> &'static Bulk {
         denied: Mutex::new(HashSet::new()),
         intents: Mutex::new(HashMap::new()),
         circuits: Mutex::new(HashMap::new()),
+        ready_emitted: AtomicUsize::new(0),
     })
 }
 
@@ -7399,8 +7424,62 @@ fn accept_new_families(families: Vec<String>) -> Vec<String> {
     fresh
 }
 
-/// Throttle UI emits so webview stays interactive during restore/Activate
-/// (sort/slider/toggle). Force for start/finish; idle snapshots always land.
+/// Small catalog lookups (CSS, METADATA.pb, Fontsource API). A hung CDN must not
+/// hold a whole-catalog worker for the 300s TTF body timeout.
+const CATALOG_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Names not yet included in a running progress event.
+fn ready_emit_delta(names: &[String], already_sent: usize) -> (Vec<String>, usize) {
+    let n = names.len();
+    let sent = if already_sent > n { 0 } else { already_sent };
+    (names[sent..].to_vec(), n)
+}
+
+/// false = cancel. true = keep going (pause waits here, between faces, not inside a socket).
+fn catalog_download_allowed() -> bool {
+    loop {
+        if bulk().cancel.load(Ordering::SeqCst) {
+            return false;
+        }
+        if !bulk().pause.load(Ordering::SeqCst) {
+            return true;
+        }
+        if let Ok(mut p) = bulk().progress.lock() {
+            p.paused = true;
+            p.running = true;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn note_catalog_current(label: &str) {
+    if let Ok(mut p) = bulk().progress.lock() {
+        if p.current != label {
+            p.current = label.to_string();
+        }
+    }
+}
+
+#[cfg(test)]
+mod ready_emit_delta_tests {
+    use super::ready_emit_delta;
+
+    #[test]
+    fn tail_and_reset_when_the_job_list_shrinks() {
+        let names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let (delta, next) = ready_emit_delta(&names, 0);
+        assert_eq!(delta, names);
+        assert_eq!(next, 3);
+        let (delta, next) = ready_emit_delta(&names, 2);
+        assert_eq!(delta, vec!["C".to_string()]);
+        assert_eq!(next, 3);
+        let restarted = vec!["A".to_string()];
+        let (delta, next) = ready_emit_delta(&restarted, 3);
+        assert_eq!(delta, restarted);
+        assert_eq!(next, 1);
+    }
+}
+
 fn emit_progress(app: &AppHandle) {
     emit_progress_throttled(app, false);
 }
@@ -7446,7 +7525,16 @@ fn emit_progress_throttled(app: &AppHandle, force: bool) {
         *g = Some(Instant::now());
     }
     if let Ok(p) = bulk().progress.lock() {
-        let _ = app.emit("font-download", p.clone());
+        let mut light = p.clone();
+        let active = p.running || p.paused;
+        if active && !force {
+            let (delta, next) = ready_emit_delta(&p.ready_names, bulk().ready_emitted.load(Ordering::SeqCst));
+            light.ready_names = delta;
+            bulk().ready_emitted.store(next, Ordering::SeqCst);
+        } else {
+            bulk().ready_emitted.store(p.ready_names.len(), Ordering::SeqCst);
+        }
+        let _ = app.emit("font-download", light);
     }
 }
 
