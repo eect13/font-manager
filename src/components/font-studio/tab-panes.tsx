@@ -45,11 +45,14 @@ function panePath(pathname: string) {
 
 export function TabPanes({ pathname }: { pathname: string }) {
   const current = panePath(pathname);
-  const [visited, setVisited] = useState<string[]>(() => readVisited(current));
+  // First paint matches the server: only this route. sessionStorage is applied
+  // after hydration, or a return visit renders extra panes and React reports #418.
+  const [visited, setVisited] = useState<string[]>([current]);
 
   useEffect(() => {
+    const stored = readVisited(current);
     setVisited((list) => {
-      const next = list.includes(current) ? list : [...list, current];
+      const next = Array.from(new Set([...list, ...stored, current]));
       writeVisited(next);
       return next;
     });

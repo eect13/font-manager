@@ -25,7 +25,7 @@ function readDom(): Theme | null {
   return value === "light" || value === "dark" ? value : null;
 }
 
-let current: Theme = readDom() ?? "dark";
+let current: Theme = "dark";
 
 export const THEME_BOOTSTRAP = `(function(){try{var t=localStorage.getItem("${STORAGE_KEY}");if(t!=="light"&&t!=="dark")t="dark";var r=document.documentElement;r.setAttribute("data-theme",t);r.style.colorScheme=t;var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content",t==="light"?"#f3efe6":"#0c0c0d");}catch(e){document.documentElement.setAttribute("data-theme","dark");}})();`;
 

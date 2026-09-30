@@ -35,6 +35,11 @@ test("import saves every face to Documents (per-face key, not the TTC file name)
   const store = read("src/lib/fonts/store.ts");
   assert.doesNotMatch(store, /savedDisk\.has\(file\.name\)/);
   assert.match(store, /savedDisk\.has\(diskKey\)/);
+  const keyLine = store.split("\n").find((line) => line.includes("const diskKey"));
+  assert.ok(keyLine, "diskKey missing");
+  assert.match(keyLine, /parsed\.family/);
+  assert.match(keyLine, /parsed\.fileName \|\| file\?\.name/);
+  assert.ok(keyLine.includes("\\u0000") || keyLine.includes("\u0000"), keyLine);
 });
 
 test("activating a second face of the same family is not skipped by the family cache", () => {

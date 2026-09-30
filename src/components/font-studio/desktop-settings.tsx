@@ -203,7 +203,7 @@ export function DesktopSettings() {
           />
         </label>
         <p className="px-1 text-xs text-muted-foreground">
-          Adds a shortcut to the user Startup folder. Deactivate-on-quit is always on — this app does not leave GDI maps after the process exits.
+          Adds a shortcut to the user Startup folder. Deactivate-on-quit unloads fonts from Windows. Copies under gdi-maps stay so the next launch can register them again without rewriting Documents.
         </p>
       </DialogContent>
     </Dialog>

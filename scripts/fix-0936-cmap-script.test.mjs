@@ -24,8 +24,8 @@ async function importAs(family, cps) {
 }
 const FOX = "The quick brown fox";
 
-test("renamed Arabic font (Latin-looking name) previews Arabic, dir=rtl, lang=ar", async () => {
-  const font = await importAs("FMArabicTest", [...BASIC_LATIN, ...ARABIC]);
+test("renamed Arabic font (Latin-looking name, no Latin repertoire) previews Arabic, dir=rtl, lang=ar", async () => {
+  const font = await importAs("FMArabicTest", [0x20, 0x2e, ...ARABIC]);
   assert.equal(font.script, "arabic");
   assert.equal(scriptDir(font), "rtl");
   assert.equal(scriptLang(font), "ar");
@@ -46,12 +46,25 @@ test("a name that claims Arabic but has only Latin glyphs previews Latin", async
 });
 
 test("Devanagari and Cyrillic-only fonts preview their own script", async () => {
-  const deva = await importAs("Renamed Indic", [...BASIC_LATIN, ...range(0x0900, 0x097f)]);
+  const deva = await importAs("Renamed Indic", [0x20, ...range(0x0900, 0x097f)]);
   assert.equal(deva.script, "devanagari");
   assert.match(previewSample(deva, FOX), /[\u0900-\u097f]/);
   const cyr = await importAs("Renamed Cyr", [0x20, ...range(0x0400, 0x04ff)]);
   assert.equal(cyr.script, "cyrillic");
   assert.match(previewSample(cyr, FOX), /[\u0400-\u04ff]/);
+});
+
+test("Latin fonts that also cover another script keep the user's sample", async () => {
+  const poppins = await importAs("Poppins", [...BASIC_LATIN, ...range(0x0900, 0x097f)]);
+  assert.equal(poppins.script, undefined);
+  assert.equal(previewSample(poppins, FOX), FOX);
+  const rubik = await importAs("Rubik", [...BASIC_LATIN, ...ARABIC]);
+  assert.equal(rubik.script, undefined);
+  assert.equal(scriptDir(rubik), "ltr");
+  assert.equal(previewSample(rubik, FOX), FOX);
+  const noto = await importAs("Noto Sans", [...BASIC_LATIN, ...range(0x0900, 0x097f)]);
+  assert.equal(noto.script, undefined);
+  assert.equal(previewSample(noto, FOX), FOX);
 });
 
 test("an emoji-only cmap previews emoji", async () => {

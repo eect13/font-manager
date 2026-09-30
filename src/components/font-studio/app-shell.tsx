@@ -27,7 +27,7 @@ import { pickFontFiles, pickFontFolder } from "@/lib/desktop/open-fonts";
 import { useHydrateFonts } from "@/lib/fonts/hydrate";
 import { useFontStore } from "@/lib/fonts/store";
 import { cn } from "@/lib/utils";
-import { APP_NAME, APP_VERSION } from "@/version";
+import { APP_BUILD_SHA, APP_NAME, APP_VERSION } from "@/version";
 
 const NAV = [
   { to: "/", label: "Library", icon: Library, match: (p: string) => p === "/", beta: false },
@@ -159,8 +159,12 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
               <span className="truncate font-heading text-xl leading-none tracking-tight text-foreground">
                 {APP_NAME}
               </span>
-              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+              <span
+                className="font-mono text-[11px] tabular-nums text-muted-foreground"
+                title={APP_BUILD_SHA ? `Build ${APP_BUILD_SHA}` : undefined}
+              >
                 {APP_VERSION}
+                {APP_BUILD_SHA ? ` ${APP_BUILD_SHA.slice(0, 7)}` : ""}
               </span>
             </Link>
           </div>

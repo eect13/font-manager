@@ -1,46 +1,20 @@
-; Font Manager NSIS hooks. Quietly quit a tray copy so files are not locked.
+; Font Manager NSIS hooks.
+; Ask the installed app to close (WM_CLOSE via CloseMainWindow). Never a force kill.
+; A Tip build (path contains \Tip\) is left running, including a silent install.
 ; Documents\Font Manager is left alone.
 
+!macro FM_ASK_CLOSE exeName
+  nsExec::ExecToLog 'powershell -NoProfile -WindowStyle Hidden -Command "Get-Process -Name ''${exeName}'' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -notmatch ''\\[Tt]ip\\'') } | ForEach-Object { $_.CloseMainWindow() | Out-Null }"'
+  Pop $R9
+  Sleep 800
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
-  nsis_tauri_utils::KillProcessCurrentUser "${MAINBINARYNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcessCurrentUser "${PRODUCTNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcessCurrentUser "font-manager.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcess "${MAINBINARYNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcess "${PRODUCTNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcess "font-manager.exe"
-  Pop $R9
-  nsExec::Exec 'taskkill /F /IM "${MAINBINARYNAME}.exe"'
-  Pop $R9
-  nsExec::Exec 'taskkill /F /IM "${PRODUCTNAME}.exe"'
-  Pop $R9
-  nsExec::Exec 'taskkill /F /IM "font-manager.exe"'
-  Pop $R9
-  Sleep 400
+  !insertmacro FM_ASK_CLOSE "font-manager"
+  !insertmacro FM_ASK_CLOSE "${MAINBINARYNAME}"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  nsis_tauri_utils::KillProcessCurrentUser "${MAINBINARYNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcessCurrentUser "${PRODUCTNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcessCurrentUser "font-manager.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcess "${MAINBINARYNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcess "${PRODUCTNAME}.exe"
-  Pop $R9
-  nsis_tauri_utils::KillProcess "font-manager.exe"
-  Pop $R9
-  nsExec::Exec 'taskkill /F /IM "${MAINBINARYNAME}.exe"'
-  Pop $R9
-  nsExec::Exec 'taskkill /F /IM "${PRODUCTNAME}.exe"'
-  Pop $R9
-  nsExec::Exec 'taskkill /F /IM "font-manager.exe"'
-  Pop $R9
-  Sleep 400
+  !insertmacro FM_ASK_CLOSE "font-manager"
+  !insertmacro FM_ASK_CLOSE "${MAINBINARYNAME}"
 !macroend
