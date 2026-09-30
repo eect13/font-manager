@@ -248,8 +248,8 @@ export const FontCard = memo(function FontCard({
       ? Object.fromEntries(Object.entries(axisValues).filter(([tag]) => tag !== "opsz"))
       : axisValues;
   const vs = styleValues ? variationStyle(styleValues, styleAxes) : null;
-  const specimenDir = scriptDir(font.family);
-  const specimenLang = scriptLang(font.family);
+  const specimenDir = scriptDir(font);
+  const specimenLang = scriptLang(font);
   const paintFvs = vs?.fontVariationSettings ?? italicCss.fontVariationSettings;
   const paintWeightN = vs?.fontWeight ?? (catalogVf ? cardWeight : defaultWeightForFont(font));
   const specimenStyle: CSSProperties = {

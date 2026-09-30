@@ -95,3 +95,93 @@ export const NOTO_LIKE_FACES = [
   { family: "Fixture Shared", subfamily: "Regular" },
   { family: "Fixture Shared", subfamily: "Bold" },
 ];
+
+/** cmap with a (3,1) format 4 subtable (BMP) and a (3,10) format 12 subtable. */
+export function cmapTable(codepoints) {
+  const cps = [...new Set(codepoints)].sort((a, b) => a - b);
+  const runs = [];
+  for (const cp of cps) {
+    const last = runs[runs.length - 1];
+    if (last && cp === last[1] + 1) last[1] = cp;
+    else runs.push([cp, cp]);
+  }
+  let gid = 1;
+  const groups = runs.map(([s, e]) => {
+    const g = [s, e, gid];
+    gid += e - s + 1;
+    return g;
+  });
+  const bmp = groups.filter(([, e]) => e <= 0xfffe);
+  const segs = [...bmp, [0xffff, 0xffff, 0]];
+  const segX2 = segs.length * 2;
+  const f4 = Buffer.alloc(16 + segs.length * 8);
+  f4.writeUInt16BE(4, 0);
+  f4.writeUInt16BE(f4.length, 2);
+  f4.writeUInt16BE(segX2, 6);
+  segs.forEach(([s, e, g], i) => {
+    f4.writeUInt16BE(e, 14 + 2 * i);
+    f4.writeUInt16BE(s, 16 + segX2 + 2 * i);
+    const delta = s === 0xffff ? 1 : (g - s) & 0xffff;
+    f4.writeUInt16BE(delta, 16 + 2 * segX2 + 2 * i);
+    f4.writeUInt16BE(0, 16 + 3 * segX2 + 2 * i);
+  });
+  const f12 = Buffer.alloc(16 + groups.length * 12);
+  f12.writeUInt16BE(12, 0);
+  f12.writeUInt32BE(f12.length, 4);
+  f12.writeUInt32BE(groups.length, 12);
+  groups.forEach(([s, e, g], i) => {
+    f12.writeUInt32BE(s, 16 + 12 * i);
+    f12.writeUInt32BE(e, 20 + 12 * i);
+    f12.writeUInt32BE(g, 24 + 12 * i);
+  });
+  const head = Buffer.alloc(4 + 8 * 2);
+  head.writeUInt16BE(0, 0);
+  head.writeUInt16BE(2, 2);
+  head.writeUInt16BE(3, 4);
+  head.writeUInt16BE(1, 6);
+  head.writeUInt32BE(head.length, 8);
+  head.writeUInt16BE(3, 12);
+  head.writeUInt16BE(10, 14);
+  head.writeUInt32BE(head.length + f4.length, 16);
+  return Buffer.concat([head, f4, f12]);
+}
+
+/** Rebuild an SFNT with some tables replaced / added (e.g. { name, cmap }). */
+export function rebuildSfnt(buf, replace) {
+  const n = buf.readUInt16BE(4);
+  const tables = new Map();
+  for (let i = 0; i < n; i++) {
+    const o = 12 + 16 * i;
+    const off = buf.readUInt32BE(o + 8);
+    tables.set(buf.subarray(o, o + 4).toString("latin1"), buf.subarray(off, off + buf.readUInt32BE(o + 12)));
+  }
+  for (const [tag, data] of Object.entries(replace)) tables.set(tag, data);
+  const tags = [...tables.keys()].sort();
+  let cursor = 12 + 16 * tags.length;
+  const offs = tags.map((t) => {
+    const at = cursor;
+    cursor += pad4(tables.get(t).length);
+    return at;
+  });
+  const out = Buffer.alloc(cursor);
+  buf.copy(out, 0, 0, 4);
+  out.writeUInt16BE(tags.length, 4);
+  tags.forEach((t, i) => {
+    const r = 12 + 16 * i;
+    out.write(t, r, "latin1");
+    out.writeUInt32BE(offs[i], r + 8);
+    out.writeUInt32BE(tables.get(t).length, r + 12);
+    tables.get(t).copy(out, offs[i]);
+  });
+  return out;
+}
+
+/** Single-face SFNT from the overlay fixture with its own family name and cmap. */
+export function buildSfnt(family, codepoints) {
+  const base = readFileSync(join(root, "tests/fixtures/stat-overlay.ttf"));
+  return rebuildSfnt(base, { name: nameTable(family), cmap: cmapTable(codepoints) });
+}
+
+export const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+export const BASIC_LATIN = [...range(0x20, 0x7e)];
+export const ARABIC = [...range(0x0600, 0x06ff), ...range(0xfe70, 0xfefc)];

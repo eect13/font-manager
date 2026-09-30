@@ -215,7 +215,7 @@ export function FontInspector() {
                 ? "System"
                 : "Local file"}
             {font.variable ? " · Variable" : ""}
-            {scriptLang(font.family) ? ` · ${scriptLang(font.family)}` : ""}
+            {scriptLang(font) ? ` · ${scriptLang(font)}` : ""}
             {` · ${LICENSE_LABEL[fontLicense(font)]}`}
           </p>
         </div>
@@ -234,8 +234,8 @@ export function FontInspector() {
                 preview.align === "center" && "text-center",
                 preview.align === "right" && "text-right",
               )}
-              dir={scriptDir(font.family)}
-              lang={scriptLang(font.family)}
+              dir={scriptDir(font)}
+              lang={scriptLang(font)}
               style={{
                 fontFamily: stack,
                 fontSize: "1.25rem",

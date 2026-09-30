@@ -6,6 +6,8 @@ import { snapCoords, snapFvar, type FontAxis } from "./axes";
 import { tagsFromLayoutTables } from "./ot-features";
 import { parseSfntCollection, sniffFontFormat, type SfntFace } from "./sfnt";
 import { sha256Hex } from "./hash";
+import { scriptFromFontBuffer } from "./cmap-script";
+import type { ScriptKind } from "./scripts";
 import { metricsFromTables } from "./metrics";
 
 export interface ParsedLocalFont {
@@ -31,6 +33,8 @@ export interface ParsedLocalFont {
   instances: { name: string; coords: Record<string, number> }[];
   varStorage: string;
   metrics?: FontMetrics;
+  /** From the face's cmap when it disagrees with the name guess (Card 36). */
+  script?: ScriptKind;
 }
 
 function guessWeight(subfamily: string, usWeight?: number): number {
@@ -372,7 +376,7 @@ function fromSfntFace(face: SfntFace, fileName: string, fileSize: number, checks
     /\.(woff2?|ttc|otc)$/i.test(fileName) && face.format !== "WOFF2"
       ? fileName.replace(/\.(woff2?|ttc|otc)$/i, face.faceCount > 1 ? `-${face.faceIndex + 1}${ext}` : ext)
       : fileName;
-  return finishParsed(
+  const parsed = finishParsed(
     {
       family: face.family,
       subfamily: face.subfamily,
@@ -393,6 +397,8 @@ function fromSfntFace(face: SfntFace, fileName: string, fileSize: number, checks
     fileSize,
     face.faceCount > 1 ? `${checksum}#${face.faceIndex}` : checksum,
   );
+  const script = face.format === "WOFF2" ? undefined : scriptFromFontBuffer(face.buffer, face.family);
+  return script ? { ...parsed, script } : parsed;
 }
 
 export async function parseFontCollectionFromBuffer(

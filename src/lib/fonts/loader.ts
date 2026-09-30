@@ -754,7 +754,7 @@ async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
   if (typeof document === "undefined") return false;
   // GDI-live families already resolve in WebView2 — do not FontFace.load the
   // same TTF (that hung Fontsource browsing at ~98 Live).
-  if (familyLoaded(font.family, scriptProbe(font.family))) return true;
+  if (familyLoaded(font.family, scriptProbe(font))) return true;
   if (!(await inTauri()) || !likelyOnDisk(font)) return false;
   try {
     const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
@@ -797,7 +797,7 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
   if (pending) return pending;
 
   const special = isSpecialPreviewFont(font);
-  const probe = isEmojiFamily(font.family) ? "😀" : scriptProbe(font.family);
+  const probe = isEmojiFamily(font.family) ? "😀" : scriptProbe(font);
 
   const promise = (async () => {
     const hrefs = catalogCssHrefs(font, mode);

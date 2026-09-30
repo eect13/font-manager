@@ -34,6 +34,8 @@ export type ScriptKind =
   | "adlam"
   | "cherokee"
   | "mongolian"
+  | "cyrillic"
+  | "greek"
   | "other";
 
 interface ScriptMeta {
@@ -77,7 +79,30 @@ const META: Record<Exclude<ScriptKind, "latin" | "other">, ScriptMeta> = {
   adlam: { sample: "𞤀𞤣𞤤𞤢𞤥", subset: "adlam", probe: "𞤀", rtl: true, stack: "sans-serif" },
   cherokee: { sample: "ᎣᏏᏲ", subset: "cherokee", probe: "Ꭳ", lang: "chr", stack: '"Gadugi", sans-serif' },
   mongolian: { sample: "ᠰᠠᠶᠢᠨ ᠪᠠᠶᠢᠨ᠎ᠠ", subset: "mongolian", probe: "ᠰ", lang: "mn", stack: '"Mongolian Baiti", sans-serif' },
+  // Card 36: only chosen from a cmap with no Latin (Latin fonts carry these too).
+  cyrillic: { sample: "Привет, мир", subset: "cyrillic", probe: "П", lang: "ru", stack: '"Segoe UI", sans-serif' },
+  greek: { sample: "Γειά σου Κόσμε", subset: "greek", probe: "Γ", lang: "el", stack: '"Segoe UI", sans-serif' },
 };
+
+/** Scripts with a sample, in priority order (cmap detection walks this list). */
+export const META_KINDS = Object.keys(META) as ScriptKind[];
+
+export function metaSample(kind: ScriptKind): string | undefined {
+  return kind === "latin" || kind === "other" ? undefined : META[kind].sample;
+}
+
+/** A family name, or a record whose import-time cmap script (Card 36) wins. */
+export type ScriptTarget = string | { family: string; script?: ScriptKind };
+
+function familyOf(t: ScriptTarget) {
+  return typeof t === "string" ? t : t.family;
+}
+
+/** Script for a font: the cmap-detected one stored at import, else from the name. */
+export function scriptKindOf(t: ScriptTarget): ScriptKind {
+  if (typeof t !== "string" && t.script) return t.script;
+  return scriptOf(familyOf(t));
+}
 
 const NOTO_TAIL: Record<string, ScriptKind> = {
   arabic: "arabic",
@@ -229,40 +254,39 @@ export function scriptOf(family: string): ScriptKind {
   return "latin";
 }
 
-export function isNonLatin(family: string) {
-  const k = scriptOf(family);
-  return k !== "latin";
+export function isNonLatin(t: ScriptTarget) {
+  return scriptKindOf(t) !== "latin";
 }
 
-function metaFor(family: string): ScriptMeta | null {
-  const k = scriptOf(family);
+function metaFor(t: ScriptTarget): ScriptMeta | null {
+  const k = scriptKindOf(t);
   if (k === "latin" || k === "other") return null;
   return META[k];
 }
 
-export function scriptSampleText(family: string): string | null {
-  const meta = metaFor(family);
+export function scriptSampleText(t: ScriptTarget): string | null {
+  const meta = metaFor(t);
   if (meta) return meta.sample;
-  if (scriptOf(family) === "other") return family;
+  if (scriptKindOf(t) === "other") return familyOf(t);
   return null;
 }
 
-export function scriptProbe(family: string): string {
-  return metaFor(family)?.probe ?? "A";
+export function scriptProbe(t: ScriptTarget): string {
+  return metaFor(t)?.probe ?? "A";
 }
 
-export function scriptSubset(family: string): string {
-  return metaFor(family)?.subset ?? "latin";
+export function scriptSubset(t: ScriptTarget): string {
+  return metaFor(t)?.subset ?? "latin";
 }
 
-export function scriptDir(family: string): "rtl" | "ltr" {
-  return metaFor(family)?.rtl ? "rtl" : "ltr";
+export function scriptDir(t: ScriptTarget): "rtl" | "ltr" {
+  return metaFor(t)?.rtl ? "rtl" : "ltr";
 }
 
-export function scriptLang(family: string): string | undefined {
-  return metaFor(family)?.lang;
+export function scriptLang(t: ScriptTarget): string | undefined {
+  return metaFor(t)?.lang;
 }
 
-export function scriptStack(family: string): string | undefined {
-  return metaFor(family)?.stack;
+export function scriptStack(t: ScriptTarget): string | undefined {
+  return metaFor(t)?.stack;
 }

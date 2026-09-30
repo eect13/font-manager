@@ -1089,6 +1089,7 @@ export const useFontStore = create<FontState>()(
                   licenseName: parsed.licenseName || undefined,
                   kerningKey: parsed.kerningKey,
                   colorKind: parsed.colorKind,
+                  script: parsed.script,
                   originPath: originSlice?.[i],
                   metrics: parsed.metrics,
                 };
