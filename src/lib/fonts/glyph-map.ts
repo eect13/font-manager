@@ -1,4 +1,5 @@
 import { idbGet } from "./idb";
+import { documentsFamilyFolder } from "./family-folder";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import type { FontRecord } from "./types";
 
@@ -576,14 +577,6 @@ function blockLabel(cp: number) {
   return { label: `${unicodeHex(start)}–${unicodeHex(start + 0xff)}`, start, end: start + 0xff };
 }
 
-function sanitizeFamily(name: string) {
-  const t = Array.from(name)
-    .map((c) => (/[a-zA-Z0-9 \-_.]/.test(c) ? c : "-"))
-    .join("")
-    .replace(/^[.\s-]+|[.\s-]+$/g, "");
-  return t || "font";
-}
-
 function slugFamily(family: string) {
   return family
     .toLowerCase()
@@ -692,7 +685,7 @@ async function bufferFromDisk(family: string): Promise<ArrayBuffer | null> {
     }
     try {
       const { readDir, readFile, BaseDirectory } = await import("@tauri-apps/plugin-fs");
-      const folder = sanitizeFamily(family);
+      const folder = documentsFamilyFolder(family);
       const rels = [
         `Font Manager/${folder}`,
         `Font Manager/Activated/${folder}`,

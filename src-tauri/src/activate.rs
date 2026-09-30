@@ -327,6 +327,13 @@ fn family_locations_in(root: &Path, family: &str) -> Vec<PathBuf> {
         root.join("Library").join(&key),
         root.join("Library").join(&slug),
     ];
+    // Uploads written before Card 36 by the JS side (`safeSegment`, keeps Unicode):
+    // `測試字体/`, `思源 Sans/`. Still only this family's — the name has non-ASCII.
+    if let Some(raw) = legacy_unicode_folder(family) {
+        for parent in [root.to_path_buf(), root.join("Activated"), root.join("Library")] {
+            dirs.push(parent.join(&raw));
+        }
+    }
     dirs.sort();
     dirs.dedup();
     // Never hand the Font Manager root, `Activated` or `Library` to a caller as a
@@ -339,6 +346,20 @@ fn family_locations_in(root: &Path, family: &str) -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+/// Pre-Card-36 JS upload folder (`os-activate.ts` safeSegment) for a non-ASCII family.
+/// `None` for ASCII names (those use `sanitize`) or when nothing non-ASCII survives.
+fn legacy_unicode_folder(family: &str) -> Option<String> {
+    if !family_name_is_non_ascii(family) {
+        return None;
+    }
+    let t: String = family
+        .chars()
+        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '-' } else { c })
+        .collect();
+    let t = t.trim_end_matches(['.', ' ']).trim().to_string();
+    (!t.is_empty() && t.chars().any(|c| !c.is_ascii())).then_some(t)
 }
 
 /// True for paths that must never be treated as (or deleted as) one family's folder:
@@ -13399,6 +13420,27 @@ mod session_sidecar_tests {
         assert_eq!(recycle_or_leave(&gone), Ok(cfg!(windows)));
         #[cfg(not(windows))]
         assert!(gone.join("d.ttf").is_file(), "no permanent delete");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Card 36: a non-ASCII family resolves to its own u-folder and its legacy JS
+    /// upload folder (raw name) — never the lossy `font` / `Sans` folders.
+    #[test]
+    fn non_ascii_family_locations_own_folders_only() {
+        let root = temp_root("c36-loc");
+        for d in ["font", "Sans", "測試字体", "思源 Sans"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        fs::create_dir_all(root.join(unicode_family_slug("測試字体"))).unwrap();
+        let got = family_locations_in(&root, "測試字体");
+        assert!(got.contains(&root.join("測試字体")), "legacy JS folder: {got:?}");
+        assert!(got.contains(&root.join(unicode_family_slug("測試字体"))));
+        assert!(!got.contains(&root.join("font")), "{got:?}");
+        let mixed = family_locations_in(&root, "思源 Sans");
+        assert!(mixed.contains(&root.join("思源 Sans")));
+        assert!(!mixed.contains(&root.join("Sans")), "{mixed:?}");
+        assert_eq!(unicode_family_slug("測試字体"), "u-7acd0fca85b1a525", "JS family-folder.ts vector");
+        assert_eq!(unicode_family_slug("Тестовый"), "u-968f7d0b79ea5e3b");
         let _ = fs::remove_dir_all(&root);
     }
 }

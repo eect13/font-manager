@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { documentsFamilyFolder, FAMILY_NAME_MARKER, safeSegment } from "./family-folder";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { isFontsourceOnly, isGoogleCatalog } from "./catalog";
 import { firstSettledAllowlistedFamily } from "./gdi-incapable";
@@ -994,17 +995,14 @@ function cacheHas(family: string) {
   return installedCache.has(family.toLowerCase());
 }
 
-function safeSegment(name: string) {
-  const t = name.replace(/[<>:"/\\|?*]/g, "-").replace(/[. ]+$/g, "").trim();
-  return t || "font";
-}
 
 async function writeAndRegister(
   family: string,
   fileName: string,
   bytes: Uint8Array,
 ) {
-  const fam = safeSegment(family);
+  // Card 36: non-ASCII families get their own u-<hash> folder (same as Rust).
+  const fam = documentsFamilyFolder(family);
   const file = safeSegment(fileName);
   const { mkdir, writeFile, exists, stat, BaseDirectory } = await import("@tauri-apps/plugin-fs");
   const relDir = `Font Manager/${fam}`;
@@ -1021,6 +1019,12 @@ async function writeAndRegister(
   }
   if (!skipWrite) {
     await writeFile(relFile, bytes, { baseDir: BaseDirectory.Document });
+  }
+  if (fam !== safeSegment(family)) {
+    const marker = `${relDir}/${FAMILY_NAME_MARKER}`;
+    await writeFile(marker, new TextEncoder().encode(family.trim()), { baseDir: BaseDirectory.Document }).catch(
+      () => undefined,
+    );
   }
   const { documentDir, join } = await import("@tauri-apps/api/path");
   const abs = await join(await documentDir(), "Font Manager", fam, file);
