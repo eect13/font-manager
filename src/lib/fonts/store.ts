@@ -1100,8 +1100,10 @@ export const useFontStore = create<FontState>()(
                   id,
                   folderPathForFile(file ?? ({ webkitRelativePath: "" } as File), opts?.collectionName),
                 );
-                if (!originSlice?.[i] && file && !savedDisk.has(file.name)) {
-                  savedDisk.add(file.name);
+                // Per face: every face of a TTC/OTC is its own extracted SFNT + file name.
+                const diskKey = `${parsed.family}\u0000${parsed.fileName || file?.name || ""}`;
+                if (!originSlice?.[i] && file && !savedDisk.has(diskKey)) {
+                  savedDisk.add(diskKey);
                   void saveUploadToDisk({
                     family: parsed.family,
                     fileName: parsed.fileName || file.name,
@@ -1257,6 +1259,7 @@ export const useFontStore = create<FontState>()(
                 addedAt: Date.now(),
                 license: "unknown",
                 originPath: row.path,
+                faceIndex: row.faceIndex || undefined,
                 metrics: layoutMetrics,
               });
               waveIds.push(id);

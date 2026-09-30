@@ -468,6 +468,10 @@ pub struct FontIndexOut {
     pub glyph_count: u16,
     #[serde(rename = "otFeatures")]
     pub ot_features: Vec<String>,
+    /// Face in a TTC/OTC (0 for single fonts). Collection faces get `checksum#index`
+    /// (same key as the JS parser) so the importer keeps every face.
+    #[serde(rename = "faceIndex")]
+    pub face_index: u32,
 }
 
 fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
@@ -489,7 +493,8 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     let checksum = hex_sha256(&data);
     let path_s = path.to_string_lossy().into_owned();
-    all_faces(&data, |_, face| {
+    let collection = ttf_parser::fonts_in_collection(&data).unwrap_or(1) > 1;
+    all_faces(&data, |index, face| {
         let (family, full_name) = face_installed_names(face);
         let layout = layout_from_face(face);
         FontIndexOut {
@@ -503,9 +508,10 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
             variable: layout.variable,
             axes: layout.axes,
             metrics: layout.metrics,
-            checksum: checksum.clone(),
+            checksum: if collection { format!("{checksum}#{index}") } else { checksum.clone() },
             glyph_count: layout.glyph_count,
             ot_features: layout.ot_features,
+            face_index: index,
         }
     })
 }
@@ -726,7 +732,7 @@ pub fn open_system_fonts_folder() -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -816,5 +822,145 @@ mod tests {
         assert_eq!(rows.len(), 2, "{names:?}");
         assert!(names.iter().any(|n| n == "Alpha"), "{names:?}");
         assert!(names.iter().any(|n| n == "Beta"), "{names:?}");
+    }
+
+    /// Card 36: test-time TTC builder from the 532-byte overlay fixture (mirrors
+    /// scripts/ttc-fixture.mjs). Each face gets its own name table.
+    pub(crate) fn c36_build_ttc(faces: &[(&str, &str)]) -> Vec<u8> {
+        let base: &[u8] = include_bytes!("../../tests/fixtures/stat-overlay.ttf");
+        let be16 = |o: usize| u16::from_be_bytes([base[o], base[o + 1]]);
+        let be32 = |o: usize| u32::from_be_bytes([base[o], base[o + 1], base[o + 2], base[o + 3]]);
+        let n = usize::from(be16(4));
+        let tables: Vec<([u8; 4], Vec<u8>)> = (0..n)
+            .map(|i| {
+                let o = 12 + 16 * i;
+                let (off, len) = (be32(o + 8) as usize, be32(o + 12) as usize);
+                ([base[o], base[o + 1], base[o + 2], base[o + 3]], base[off..off + len].to_vec())
+            })
+            .collect();
+        let name_table = |family: &str, sub: &str| {
+            let full = if sub == "Regular" { family.to_string() } else { format!("{family} {sub}") };
+            let recs: Vec<(u16, Vec<u8>)> = [(1u16, family.to_string()), (2, sub.to_string()), (4, full)]
+                .into_iter()
+                .map(|(id, s)| (id, s.encode_utf16().flat_map(|u| u.to_be_bytes()).collect()))
+                .collect();
+            let mut out = Vec::new();
+            for v in [0u16, recs.len() as u16, (6 + 12 * recs.len()) as u16] {
+                out.extend_from_slice(&v.to_be_bytes());
+            }
+            let mut off = 0u16;
+            for (id, bytes) in &recs {
+                for v in [3u16, 1, 0x409, *id, bytes.len() as u16, off] {
+                    out.extend_from_slice(&v.to_be_bytes());
+                }
+                off += bytes.len() as u16;
+            }
+            for (_, bytes) in &recs {
+                out.extend_from_slice(bytes);
+            }
+            out
+        };
+        let per_face: Vec<Vec<([u8; 4], Vec<u8>)>> = faces
+            .iter()
+            .map(|(fam, sub)| {
+                tables
+                    .iter()
+                    .map(|(tag, data)| {
+                        if tag == b"name" { (*tag, name_table(fam, sub)) } else { (*tag, data.clone()) }
+                    })
+                    .collect()
+            })
+            .collect();
+        let pad4 = |n: usize| (n + 3) & !3;
+        let mut cursor = 12 + 4 * faces.len();
+        let dir_offs: Vec<usize> = per_face
+            .iter()
+            .map(|t| {
+                let at = cursor;
+                cursor += 12 + 16 * t.len();
+                at
+            })
+            .collect();
+        let data_offs: Vec<Vec<usize>> = per_face
+            .iter()
+            .map(|t| {
+                t.iter()
+                    .map(|(_, d)| {
+                        let at = cursor;
+                        cursor += pad4(d.len());
+                        at
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut out = vec![0u8; cursor];
+        let put32 = |out: &mut Vec<u8>, o: usize, v: u32| out[o..o + 4].copy_from_slice(&v.to_be_bytes());
+        out[0..4].copy_from_slice(b"ttcf");
+        put32(&mut out, 4, 0x0001_0000);
+        put32(&mut out, 8, faces.len() as u32);
+        for (fi, t) in per_face.iter().enumerate() {
+            put32(&mut out, 12 + 4 * fi, dir_offs[fi] as u32);
+            let d = dir_offs[fi];
+            out[d..d + 4].copy_from_slice(&base[0..4]);
+            out[d + 4..d + 6].copy_from_slice(&(t.len() as u16).to_be_bytes());
+            for (ti, (tag, data)) in t.iter().enumerate() {
+                let r = d + 12 + 16 * ti;
+                out[r..r + 4].copy_from_slice(tag);
+                put32(&mut out, r + 8, data_offs[fi][ti] as u32);
+                put32(&mut out, r + 12, data.len() as u32);
+                out[data_offs[fi][ti]..data_offs[fi][ti] + data.len()].copy_from_slice(data);
+            }
+        }
+        out
+    }
+
+    pub(crate) const C36_FACES: [(&str, &str); 10] = [
+        ("Fixture Sans CJK JP", "Regular"),
+        ("Fixture Sans CJK KR", "Regular"),
+        ("Fixture Sans CJK SC", "Regular"),
+        ("Fixture Sans CJK TC", "Regular"),
+        ("Fixture Sans CJK HK", "Regular"),
+        ("Fixture Sans Mono CJK JP", "Regular"),
+        ("Fixture Sans Mono CJK KR", "Regular"),
+        ("Fixture Sans Mono CJK SC", "Regular"),
+        ("Fixture Shared", "Regular"),
+        ("Fixture Shared", "Bold"),
+    ];
+
+    /// Card 36 item 3: watch-folder indexing keeps every collection face with its own
+    /// key (the JS importer dedups on checksum, so a shared whole-file hash dropped 9).
+    #[test]
+    fn index_ttc_keeps_every_face_with_its_own_key() {
+        let dir = std::env::temp_dir().join(format!("fm-c36-ttc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Fixture-Regular.ttc");
+        let ttc = c36_build_ttc(&C36_FACES);
+        assert!(ttc.len() < 16_000);
+        std::fs::write(&path, &ttc).unwrap();
+        let rows = index_one_path(&path).expect("index TTC");
+        assert_eq!(rows.len(), 10);
+        let keys: HashSet<&str> = rows.iter().map(|r| r.checksum.as_str()).collect();
+        assert_eq!(keys.len(), 10, "one key per face: {keys:?}");
+        for (i, r) in rows.iter().enumerate() {
+            assert_eq!(r.face_index, i as u32);
+            assert_eq!(r.family, C36_FACES[i].0);
+            assert!(r.checksum.ends_with(&format!("#{i}")));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Real Noto Sans CJK Regular TTC, opt-in (set FM_NOTO_TTC; not committed, 19 MB).
+    #[test]
+    fn index_real_noto_cjk_ttc_ten_faces() {
+        let Some(path) = std::env::var_os("FM_NOTO_TTC") else {
+            return;
+        };
+        let rows = index_one_path(Path::new(&path)).expect("index Noto");
+        assert_eq!(rows.len(), 10);
+        let keys: HashSet<&str> = rows.iter().map(|r| r.checksum.as_str()).collect();
+        assert_eq!(keys.len(), 10, "one key per face");
+        let fams: HashSet<&str> = rows.iter().map(|r| r.family.as_str()).collect();
+        assert_eq!(fams.len(), 10, "{fams:?}");
+        assert!(fams.contains("Noto Sans CJK JP") && fams.contains("Noto Sans Mono CJK HK"));
     }
 }

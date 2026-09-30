@@ -13443,4 +13443,86 @@ mod session_sidecar_tests {
         assert_eq!(unicode_family_slug("Тестовый"), "u-968f7d0b79ea5e3b");
         let _ = fs::remove_dir_all(&root);
     }
+
+    /// Standalone SFNT for face `index` of a TTC (what the JS importer's extractFace
+    /// hands to writeAndRegister).
+    fn c36_extract_face(ttc: &[u8], index: usize) -> Vec<u8> {
+        let be16 = |o: usize| u16::from_be_bytes([ttc[o], ttc[o + 1]]);
+        let be32 = |o: usize| u32::from_be_bytes([ttc[o], ttc[o + 1], ttc[o + 2], ttc[o + 3]]) as usize;
+        let d = be32(12 + 4 * index);
+        let n = usize::from(be16(d + 4));
+        let mut out = ttc[d..d + 12 + 16 * n].to_vec();
+        for t in 0..n {
+            let r = 12 + 16 * t;
+            let (off, len) = (be32(d + r + 8), be32(d + r + 12));
+            let at = out.len();
+            out[r + 8..r + 12].copy_from_slice(&(at as u32).to_be_bytes());
+            out.extend_from_slice(&ttc[off..off + len]);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    fn c36_import_and_activate_every_face(ttc: &[u8], stem: &str) -> Vec<(String, PathBuf)> {
+        let root = temp_root("c36-ttc");
+        let count = u32::from_be_bytes([ttc[8], ttc[9], ttc[10], ttc[11]]) as usize;
+        let mut out = Vec::new();
+        for i in 0..count {
+            let face = c36_extract_face(ttc, i);
+            let tmp = root.join(format!(".probe-{i}.ttf"));
+            fs::write(&tmp, &face).unwrap();
+            let family = sfnt_upload_family(&tmp).expect("face has a name table");
+            fs::remove_file(&tmp).unwrap();
+            let ext = if &face[0..4] == b"OTTO" { "otf" } else { "ttf" };
+            let path = install_font_file_in(&root, &family, &format!("{stem}-{}.{ext}", i + 1), &face)
+                .unwrap_or_else(|e| panic!("face {i} ({family}) import: {e}"));
+            // Activation entry point used by writeAndRegister (Linux: intact check only;
+            // the GDI AddFontResourceExW call is Windows-only).
+            register_font_path(path.to_string_lossy().into_owned())
+                .unwrap_or_else(|e| panic!("face {i} ({family}) activate: {e}"));
+            out.push((family, path));
+        }
+        for (family, path) in &out {
+            assert!(path.is_file(), "{family}: file kept");
+            assert_eq!(sfnt_upload_family(path).as_deref(), Some(family.as_str()));
+        }
+        out
+    }
+
+    /// Card 36 item 3: all 10 faces of a collection import to Documents and each goes
+    /// through the activation entry point (generated Noto-shaped TTC, ~6 KB).
+    #[test]
+    fn ttc_import_keeps_all_ten_faces_each_activatable() {
+        let ttc = crate::parse::tests::c36_build_ttc(&crate::parse::tests::C36_FACES);
+        let faces = c36_import_and_activate_every_face(&ttc, "Fixture-Regular");
+        assert_eq!(faces.len(), 10);
+        let files: HashSet<&PathBuf> = faces.iter().map(|(_, p)| p).collect();
+        assert_eq!(files.len(), 10, "no face overwrote another");
+        let shared: Vec<&PathBuf> = faces.iter().filter(|(f, _)| f == "Fixture Shared").map(|(_, p)| p).collect();
+        assert_eq!(shared.len(), 2);
+        assert_eq!(shared[0].parent(), shared[1].parent(), "same family, same folder");
+        assert_eq!(count_intact_faces(shared[0].parent().unwrap()), 2);
+        if let Some(root) = faces[0].1.parent().and_then(|p| p.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    /// Same, on the real Noto Sans CJK Regular TTC (opt-in: FM_NOTO_TTC, 19 MB).
+    #[test]
+    fn real_noto_cjk_ttc_all_ten_faces_import_and_activate() {
+        let Some(path) = std::env::var_os("FM_NOTO_TTC") else {
+            return;
+        };
+        let ttc = fs::read(path).unwrap();
+        let faces = c36_import_and_activate_every_face(&ttc, "NotoSansCJK-Regular");
+        assert_eq!(faces.len(), 10);
+        let fams: HashSet<&str> = faces.iter().map(|(f, _)| f.as_str()).collect();
+        assert_eq!(fams.len(), 10);
+        assert!(faces.iter().all(|(_, p)| p.extension().unwrap() == "otf"));
+        if let Some(root) = faces[0].1.parent().and_then(|p| p.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
 }

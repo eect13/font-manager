@@ -113,6 +113,8 @@ export type NativeIndexFace = {
   checksum: string;
   glyphCount: number;
   otFeatures: string[];
+  /** Face in a TTC/OTC (0 for single fonts). */
+  faceIndex?: number;
 };
 
 /** Desktop watch/20k: ttf-parser on disk. No File buffers in JS. WOFF2 omitted. */

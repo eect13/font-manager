@@ -366,9 +366,11 @@ function finishParsed(
 }
 
 function fromSfntFace(face: SfntFace, fileName: string, fileSize: number, checksum: string): ParsedLocalFont {
+  // CFF faces (e.g. Noto Sans CJK OTC) are saved as .otf, TrueType as .ttf.
+  const ext = sniffFontFormat(face.buffer) === "OTF" ? ".otf" : ".ttf";
   const baseName =
     /\.(woff2?|ttc|otc)$/i.test(fileName) && face.format !== "WOFF2"
-      ? fileName.replace(/\.(woff2?|ttc|otc)$/i, face.faceCount > 1 ? `-${face.faceIndex + 1}.ttf` : ".ttf")
+      ? fileName.replace(/\.(woff2?|ttc|otc)$/i, face.faceCount > 1 ? `-${face.faceIndex + 1}${ext}` : ext)
       : fileName;
   return finishParsed(
     {

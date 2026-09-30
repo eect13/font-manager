@@ -1740,7 +1740,10 @@ function finishIfIdle() {
 }
 
 async function installOne(font: FontRecord, lean: boolean) {
-  if (cacheHas(font.family)) return;
+  // Uploads are one record per face (a TTC's Regular + Bold share a family), so the
+  // family cache must not skip a sibling face's own file.
+  const perFaceUpload = font.source === "local" && !font.originPath;
+  if (!perFaceUpload && cacheHas(font.family)) return;
   if (font.originPath) {
     await tauriInvoke("register_font_path", { path: font.originPath });
     installedCache.add(font.family.toLowerCase());
