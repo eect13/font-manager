@@ -5268,6 +5268,8 @@ fn purge_redundant_statics_for_family(app: &AppHandle, family: &str) -> (usize, 
 }
 
 /// Vars-only planned keys (after successful VarsOnly Add>0).
+/// Test-only: release code commits vars-only plans elsewhere; kept for the unit tests below.
+#[cfg(test)]
 fn merge_variable_into_planned_keys(existing: &[String], var_files: &[String]) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     for v in var_files {
