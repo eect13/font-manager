@@ -4,7 +4,7 @@ import { isEmojiFamily } from "./emoji";
 import { axesForFont } from "./axes";
 import { isSpecialPreviewFont, notifyIfUnusual } from "./color-font";
 import { cssFamilyStack as stackFor } from "./fallback";
-import { scriptProbe, scriptSampleText, scriptSubset } from "./scripts";
+import { scriptProbe, scriptSampleText, scriptSubset, type ScriptTarget } from "./scripts";
 import { toast } from "sonner";
 
 async function inTauri() {
@@ -414,24 +414,29 @@ function previewFamilyParam(font: FontRecord, italic = false): string {
 
 /** Library CSS2: Regular 400 + `text=` of the specimen — not the full unicode-range sheet.
  *  Noto Sans JP CSS2 without text= is 100+ faces and freezes WebView2. */
-export function googlePreviewTextQuery(family: string) {
-  const sample = scriptSampleText(family);
-  const latin = scriptSubset(family) === "latin";
+export function googlePreviewTextQuery(font: ScriptTarget) {
+  const sample = scriptSampleText(font);
+  const subset = scriptSubset(font);
+  const latin = subset === "latin";
   const pangram = "The quick brown fox jumps over the lazy dog ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789";
-  const raw = latin ? pangram : sample || pangram;
+  // FORM-S12 §4: Arabic-primary previews the Arabic pangram and the user's Latin
+  // sample, so fetch both (93 unique characters; the cap is 100).
+  const arabic = subset === "arabic" && sample;
+  const raw = latin ? pangram : arabic ? `${sample} ${pangram}` : sample || pangram;
   let out = "";
   const seen = new Set<string>();
   for (const ch of raw) {
     if (seen.has(ch)) continue;
     seen.add(ch);
     out += ch;
-    if (out.length >= 80) break;
+    if (out.length >= 100) break;
   }
   return encodeURIComponent(out || "Aa");
 }
 
 export function googlePreviewCssHref(
-  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights" | "axes">,
+  font: Pick<FontRecord, "family" | "italic" | "catalogVariable" | "variable" | "weights" | "axes"> &
+    Partial<Pick<FontRecord, "source" | "script">>,
   italic = false,
 ) {
   const family = font.family.replace(/ /g, "+");
@@ -447,7 +452,7 @@ export function googlePreviewCssHref(
         : variable
           ? `family=${family}`
           : `family=${family}:wght@400`;
-  return `https://fonts.googleapis.com/css2?${face}&text=${googlePreviewTextQuery(font.family)}&display=swap`;
+  return `https://fonts.googleapis.com/css2?${face}&text=${googlePreviewTextQuery(font)}&display=swap`;
 }
 
 /** Latin on-disk TTF/OTF for cards: convertFileSrc. Never CJK / Unifont / color. VF latin on disk is allowed. */

@@ -135,11 +135,23 @@ async function main() {
     ]);
   }
 
+  // FORM-S12 §4: Arabic-primary families (and whether they ship a latin subset)
+  // drive the two-line Arabic preview. Only "Arab" is read today.
+  const primaryScript = {};
+  const latinSubset = [];
+  for (const item of metaList) {
+    if (!item.family || item.primaryScript !== "Arab") continue;
+    primaryScript[item.family] = item.primaryScript;
+    if (Array.isArray(item.subsets) && item.subsets.includes("latin")) latinSubset.push(item.family);
+  }
+
   const googleCatalog = {
     updated,
     source: "fonts.google.com/metadata/fonts + api.fontsource.org/v1/fonts (live)",
     count: googleFamilies.length,
     families: googleFamilies,
+    primaryScript,
+    latinSubset,
   };
 
   const exclusive = [];

@@ -4,7 +4,7 @@
  * The name still wins when it names a script the font really covers (it is more
  * specific, e.g. JP vs SC for a CJK font that has both kana and hanzi).
  */
-import { META_KINDS, metaSample, scriptOf, type ScriptKind } from "./scripts";
+import { ARABIC_NAME, META_KINDS, metaSample, scriptOf, type ScriptKind } from "./scripts";
 
 export type Coverage = (cp: number) => boolean;
 
@@ -136,6 +136,9 @@ export function scriptFromCoverage(has: Coverage | null, family: string): Script
   const named = scriptOf(family);
   if (named !== "latin" && named !== "other" && covers(has, named)) return undefined;
   const latin = covers(has, "latin");
+  // FORM-S12 §4: an upload named for Arabic that really carries Arabic is
+  // Arabic-primary even when it also has a full Latin repertoire.
+  if (named === "latin" && ARABIC_NAME.test(family) && covers(has, "arabic")) return "arabic";
   // Latin-primary faces stay Latin. Poppins, Rubik and Noto Sans include another
   // script but their names do not; a wght-style preview must keep the user's text.
   // A renamed face without a full Latin repertoire still follows the cmap.
@@ -150,6 +153,11 @@ export function scriptFromCoverage(has: Coverage | null, family: string): Script
   else if (scripts.length) detected = scripts[0];
   if (!detected || detected === named) return undefined;
   return detected;
+}
+
+/** FORM-S12 §4: the face covers Latin (A–Z/a–z ≥ 90 %), for the second preview line. */
+export function coversLatin(has: Coverage | null): boolean | undefined {
+  return has ? covers(has, "latin") : undefined;
 }
 
 export function scriptFromFontBuffer(buffer: ArrayBuffer | Uint8Array, family: string): ScriptKind | undefined {

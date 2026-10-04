@@ -71,6 +71,8 @@ export interface FontRecord {
   originPath?: string;
   /** Script from the font's own cmap at import, when it differs from the name guess (Card 36). */
   script?: import("./scripts").ScriptKind;
+  /** cmap at import covers Latin A–Z/a–z ≥ 90 % (FORM-S12 §4 second preview line). */
+  coversLatin?: boolean;
   /** Face index inside a watched TTC/OTC `originPath` (absent = 0 / single font). */
   faceIndex?: number;
   /** OS/2 + head SuperSearch metrics. Missing xh/contrast = unknown (fail closed). */

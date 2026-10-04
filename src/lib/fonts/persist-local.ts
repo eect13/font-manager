@@ -28,6 +28,7 @@ export function slimLocalFont(font: FontRecord): FontRecord {
     originPath: font.originPath,
     faceIndex: font.faceIndex,
     script: font.script,
+    coversLatin: font.coversLatin,
     cssFamily: font.cssFamily,
     colorKind: font.colorKind,
     metrics: font.metrics,

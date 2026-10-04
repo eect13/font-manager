@@ -1,5 +1,15 @@
 /** Non-Latin preview: detect the writing system from the family name, then
  *  sample / subset / direction / system fallbacks. Small-caps “SC” is Latin. */
+import { catalogPrimaryScript } from "./primary-script";
+
+/**
+ * FORM-S12 §4 Arabic pangram (en.wikipedia "Pangram" §Arabic): all 28 base
+ * letters, so cmap `covers()` and the Google `text=` subset see the full set.
+ */
+export const ARABIC_PANGRAM = "نص حكيم له سر قاطع وذو شأن عظيم مكتوب على ثوب أخضر ومغلف بجلد أزرق";
+
+/** FORM-S12 §4: an upload or system face whose name says Arabic. */
+export const ARABIC_NAME = /arab|naskh|kufi|nastaliq|ruqaa|urdu/i;
 
 export type ScriptKind =
   | "latin"
@@ -49,7 +59,7 @@ interface ScriptMeta {
 
 const META: Record<Exclude<ScriptKind, "latin" | "other">, ScriptMeta> = {
   emoji: { sample: "😀 🥰 🎉 ✨ 🌟", subset: "emoji", probe: "😀", stack: '"Segoe UI Emoji", "Noto Color Emoji"' },
-  arabic: { sample: "مرحبا بالعالم", subset: "arabic", probe: "م", lang: "ar", rtl: true, stack: '"Segoe UI", Tahoma, sans-serif' },
+  arabic: { sample: ARABIC_PANGRAM, subset: "arabic", probe: "م", lang: "ar", rtl: true, stack: '"Segoe UI", Tahoma, sans-serif' },
   hebrew: { sample: "שלום עולם", subset: "hebrew", probe: "ש", lang: "he", rtl: true, stack: '"Segoe UI", Tahoma, sans-serif' },
   thai: { sample: "สวัสดีชาวโลก", subset: "thai", probe: "ส", lang: "th", stack: '"Leelawadee UI", "Thonburi", sans-serif' },
   lao: { sample: "ສະບາຍດີໂລກ", subset: "lao", probe: "ສ", lang: "lo", stack: '"Lao UI", sans-serif' },
@@ -92,7 +102,7 @@ export function metaSample(kind: ScriptKind): string | undefined {
 }
 
 /** A family name, or a record whose import-time cmap script (Card 36) wins. */
-export type ScriptTarget = string | { family: string; script?: ScriptKind };
+export type ScriptTarget = string | { family: string; script?: ScriptKind; source?: string };
 
 function familyOf(t: ScriptTarget) {
   return typeof t === "string" ? t : t.family;
@@ -101,7 +111,13 @@ function familyOf(t: ScriptTarget) {
 /** Script for a font: the cmap-detected one stored at import, else from the name. */
 export function scriptKindOf(t: ScriptTarget): ScriptKind {
   if (typeof t !== "string" && t.script) return t.script;
-  return scriptOf(familyOf(t));
+  const named = scriptOf(familyOf(t));
+  // FORM-S12 §4: system faces have no cmap here, so an Arabic name decides.
+  // Names already mapped to another script (e.g. Sawarabi Gothic → jp) keep it.
+  if (typeof t !== "string" && t.source === "system" && named === "latin" && ARABIC_NAME.test(t.family)) {
+    return "arabic";
+  }
+  return named;
 }
 
 const NOTO_TAIL: Record<string, ScriptKind> = {
@@ -243,6 +259,8 @@ function anekOrTiro(family: string): ScriptKind | null {
 export function scriptOf(family: string): ScriptKind {
   if (/emoji/i.test(family)) return "emoji";
   if (FAMILY[family]) return FAMILY[family]!;
+  // FORM-S12 §4: Google's primaryScript "Arab" (Alexandria, Mada, Vazirmatn …).
+  if (catalogPrimaryScript(family) === "Arab") return "arabic";
   const noto = notoKind(family);
   if (noto) return noto;
   const indic = anekOrTiro(family);

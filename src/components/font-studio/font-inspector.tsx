@@ -23,6 +23,8 @@ import { LicenseBadge } from "./license-badge";
 import { cn } from "@/lib/utils";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
+import { arabicPreviewLines } from "@/lib/fonts/arabic-preview";
+import { ArabicPreviewText } from "./arabic-preview-text";
 import { colorKindLabel, colorKindOf, windowsColorNote } from "@/lib/fonts/color-font";
 import { DEFAULT_ON, FEATURE_DEMO, featureStyle, labelForFeature, togglesFor } from "@/lib/fonts/ot-features";
 import { openActivatedFolder, deleteFontFiles } from "@/lib/fonts/os-activate";
@@ -139,6 +141,7 @@ export function FontInspector() {
   }
 
   const stack = cssFamilyStack(font);
+  const specimenLines = arabicPreviewLines(font, preview.sampleText);
   const axes = axesForFont(font);
   const cardWeight = storedAxes?.wght ?? defaultWeightForFont(font);
   const liveAxes = previewAxisValues(font, storedAxes, cardWeight, italicOn);
@@ -258,7 +261,11 @@ export function FontInspector() {
                 ...(colorKindOf(font) !== "none" ? { fontPalette: "normal", fontVariantEmoji: "emoji" as const } : {}),
               }}
             >
-              {previewSample(font, preview.sampleText)}
+              {specimenLines ? (
+                <ArabicPreviewText lines={specimenLines} />
+              ) : (
+                previewSample(font, preview.sampleText)
+              )}
             </p>
 
             <div className="flex flex-wrap gap-2">

@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { GripVertical, Heart, Italic, Power } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
@@ -7,6 +7,8 @@ import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { axesForFont, defaultWeightForFont, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, previewWghtAxis, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
+import { arabicPreviewLines } from "@/lib/fonts/arabic-preview";
+import { ArabicPreviewText } from "./arabic-preview-text";
 import { noteFamilyVisible } from "@/lib/fonts/visible-families";
 import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst } from "@/lib/fonts/gdi-incapable";
 import { softSettledRetryAlreadyTried, useFontStore } from "@/lib/fonts/store";
@@ -50,6 +52,7 @@ const FitSpecimen = memo(function FitSpecimen({
   weight,
   fvs,
   children,
+  fitKey,
   specRef,
 }: {
   ready: boolean;
@@ -60,7 +63,9 @@ const FitSpecimen = memo(function FitSpecimen({
   lang?: string;
   weight?: number;
   fvs?: string;
-  children: string;
+  children: ReactNode;
+  /** The specimen's text, so the auto-fit reruns on text changes, not on every render. */
+  fitKey: string;
   specRef: RefObject<HTMLParagraphElement | null>;
 }) {
   const maxSize = typeof style.fontSize === "number" ? style.fontSize : Number.parseFloat(String(style.fontSize ?? 36));
@@ -118,7 +123,7 @@ const FitSpecimen = memo(function FitSpecimen({
       guard += 1;
     }
     fittedPx.current = size;
-  }, [ready, loaded, faceTick, children, maxSize, style.fontFamily, style.fontStyle, specRef]);
+  }, [ready, loaded, faceTick, fitKey, maxSize, style.fontFamily, style.fontStyle, specRef]);
 
   return (
     <p
@@ -250,6 +255,11 @@ export const FontCard = memo(function FontCard({
   const vs = styleValues ? variationStyle(styleValues, styleAxes) : null;
   const specimenDir = scriptDir(font);
   const specimenLang = scriptLang(font);
+  const arabicLines = arabicPreviewLines(font, preview.sampleText);
+  const specimenText = previewSample(font, preview.sampleText);
+  const fitKey = arabicLines
+    ? `${arabicLines.primary.text}\n${arabicLines.secondary?.text ?? ""}`
+    : specimenText;
   const paintFvs = vs?.fontVariationSettings ?? italicCss.fontVariationSettings;
   const paintWeightN = vs?.fontWeight ?? (catalogVf ? cardWeight : defaultWeightForFont(font));
   const specimenStyle: CSSProperties = {
@@ -398,8 +408,9 @@ export const FontCard = memo(function FontCard({
       dir={specimenDir}
       lang={specimenLang}
       style={specimenStyle}
+      fitKey={fitKey}
     >
-      {previewSample(font, preview.sampleText)}
+      {arabicLines ? <ArabicPreviewText lines={arabicLines} /> : specimenText}
     </FitSpecimen>
   );
 

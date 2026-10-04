@@ -6,7 +6,7 @@ import { snapCoords, snapFvar, type FontAxis } from "./axes";
 import { tagsFromLayoutTables } from "./ot-features";
 import { parseSfntCollection, sniffFontFormat, type SfntFace } from "./sfnt";
 import { sha256Hex } from "./hash";
-import { scriptFromFontBuffer } from "./cmap-script";
+import { cmapCoverage, coversLatin, scriptFromCoverage } from "./cmap-script";
 import type { ScriptKind } from "./scripts";
 import { metricsFromTables } from "./metrics";
 
@@ -35,6 +35,8 @@ export interface ParsedLocalFont {
   metrics?: FontMetrics;
   /** From the face's cmap when it disagrees with the name guess (Card 36). */
   script?: ScriptKind;
+  /** FORM-S12 §4: cmap covers Latin (for the Arabic preview's second line). */
+  coversLatin?: boolean;
 }
 
 function guessWeight(subfamily: string, usWeight?: number): number {
@@ -397,8 +399,11 @@ function fromSfntFace(face: SfntFace, fileName: string, fileSize: number, checks
     fileSize,
     face.faceCount > 1 ? `${checksum}#${face.faceIndex}` : checksum,
   );
-  const script = face.format === "WOFF2" ? undefined : scriptFromFontBuffer(face.buffer, face.family);
-  return script ? { ...parsed, script } : parsed;
+  const has = face.format === "WOFF2" ? null : cmapCoverage(face.buffer);
+  const script = scriptFromCoverage(has, face.family);
+  const latin = coversLatin(has);
+  const out = latin === undefined ? parsed : { ...parsed, coversLatin: latin };
+  return script ? { ...out, script } : out;
 }
 
 export async function parseFontCollectionFromBuffer(
