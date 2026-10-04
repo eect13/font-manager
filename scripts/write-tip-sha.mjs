@@ -64,10 +64,17 @@ if (existsSync(target) && statSync(target).isFile()) {
 
 const stampedAt = new Date().toISOString();
 function envSha() {
-  const value = (process.env.GITHUB_SHA || process.env.VITE_FM_BUILD_SHA || "").trim();
-  return /^[0-9a-f]{40}$/i.test(value) ? value.toLowerCase() : null;
+  for (const [key, source] of [
+    ["GITHUB_SHA", "github-actions"],
+    ["VITE_FM_BUILD_SHA", "env"],
+  ]) {
+    const value = (process.env[key] || "").trim();
+    if (/^[0-9a-f]{40}$/i.test(value)) return { sha: value.toLowerCase(), source };
+  }
+  return null;
 }
-const fromEnv = envSha();
+const fromEnvStamp = envSha();
+const fromEnv = fromEnvStamp?.sha ?? null;
 const sha = fromEnv || git(["rev-parse", "HEAD"]);
 let body;
 if (!sha) {
@@ -86,7 +93,11 @@ if (!sha) {
   ].join("\n");
 } else {
   const short = fromEnv ? sha.slice(0, 7) : git(["rev-parse", "--short=7", "HEAD"]) || sha.slice(0, 7);
-  const branch = fromEnv ? "github-actions" : git(["rev-parse", "--abbrev-ref", "HEAD"]) || "unknown";
+  // Real branch name: CI ref when set, else the local checkout ("HEAD" = detached), else unknown.
+  const branch =
+    (process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || "").trim() ||
+    git(["rev-parse", "--abbrev-ref", "HEAD"]) ||
+    "unknown";
   const tipMatch = /^tip\/(\d+\.\d+\.\d+[a-z]*)$/i.exec(branch);
   const tip = tipMatch ? tipMatch[1] : "";
   body = [
@@ -95,7 +106,7 @@ if (!sha) {
     `branch=${branch}`,
     tip ? `tip=${tip}` : null,
     `version=${packageVersion()}`,
-    fromEnv ? "source=github-actions" : null,
+    fromEnvStamp ? `source=${fromEnvStamp.source}` : null,
     `stamped_at=${stampedAt}`,
     "",
   ]
