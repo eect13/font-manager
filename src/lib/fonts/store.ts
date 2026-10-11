@@ -1090,7 +1090,6 @@ export const useFontStore = create<FontState>()(
                   kerningKey: parsed.kerningKey,
                   colorKind: parsed.colorKind,
                   script: parsed.script,
-                  coversLatin: parsed.coversLatin,
                   originPath: originSlice?.[i],
                   metrics: parsed.metrics,
                 };
@@ -1476,6 +1475,7 @@ export const useFontStore = create<FontState>()(
           scope: (() => {
             const next = isFacetScope(String(p.scope ?? "")) ? "all" : (p.scope ?? current.scope ?? "all");
             if (activated.length === 0 && next === "activated") return "all";
+            if (next === "google") return "gfonts";
             return next;
           })(),
           facet:

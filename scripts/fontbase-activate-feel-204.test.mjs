@@ -305,15 +305,13 @@ test("visible-first / already-Live short-circuit on restore", () => {
 });
 
 test("count lanes stay separate in chrome", () => {
-  const lanes = countLanes({ live: 10, settled: 2, google: 1946, fontsource: 154, disk: 40 });
-  assert.notEqual(lanes.google, lanes.fontsource);
+  const lanes = countLanes({ live: 10, settled: 2, google: 1946, fontsource: 0, disk: 40 });
   assert.notEqual(lanes.live, lanes.disk);
   assert.notEqual(lanes.live, lanes.settled);
   assert.match(sidebar, /Google \$\{counts\.gfonts/);
-  assert.match(sidebar, /Fontsource \$\{counts\.fontsource/);
+  assert.doesNotMatch(sidebar, /label="Fontsource"/);
   assert.match(sidebar, /On disk \$\{diskCount/);
   assert.match(activateToggle, /Google \$\{gCount/);
-  assert.match(activateToggle, /Fontsource \$\{fsCount/);
   assert.doesNotMatch(
     sidebar.slice(sidebar.indexOf("aria-label\": \"Activated\"")),
     /Library \$\{googleFonts\.length/,

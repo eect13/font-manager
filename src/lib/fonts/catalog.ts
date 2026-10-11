@@ -1,9 +1,8 @@
 import { GOOGLE_FONT_SEEDS } from "./catalog-data";
 import snapshot from "./google-catalog.json";
 import googleDirectory from "./google-directory.json";
-import otherSnapshot from "./fontsource-other.json";
 import styleMeta from "./google-style.json";
-import { googleFontLicense, licenseFromCode } from "./license";
+import { googleFontLicense } from "./license";
 import { guessGoogleColorKind } from "./color-font";
 import { tagsForGoogleFamily } from "./style-tags";
 import type { FontCategory, FontRecord } from "./types";
@@ -12,6 +11,7 @@ export function googleFontId(family: string) {
   return `g:${family}`;
 }
 
+/** Old live caches may still carry catalog "other". Those cards are not shipped. */
 export function isFontsourceOnly(font: FontRecord) {
   return font.source === "google" && font.catalog === "other";
 }
@@ -64,17 +64,6 @@ type SnapshotRow = [
   tags: string[],
 ];
 
-type OtherRow = [
-  family: string,
-  category: FontCategory,
-  weights: number[],
-  italic: boolean,
-  variable: boolean,
-  popularity: number,
-  tags: string[],
-  license?: string,
-];
-
 const SEED_BY_FAMILY = new Map(
   GOOGLE_FONT_SEEDS.map((seed, index) => [seed[0], { seed, index }] as const),
 );
@@ -108,44 +97,12 @@ function snapshotToRecord(row: SnapshotRow): FontRecord {
   };
 }
 
-function otherToRecord(row: OtherRow): FontRecord {
-  const [family, category, weights, italic, variable, popularity, tags, license] = row;
-  const hit = licenseFromCode(license) ?? {
-    license: "free" as const,
-    licenseName: "SIL Open Font License 1.1",
-  };
-  return {
-    id: googleFontId(family),
-    family,
-    source: "google",
-    catalog: "other",
-    category,
-    weights: Array.isArray(weights) && weights.length ? weights : [400],
-    italic,
-    catalogVariable: variable && !isWoff2OnlyVariableFamily(family),
-    // Fontsource-other may mark catalogVariable; UI badge still needs on-disk VF.
-    variable: false,
-    tags: tagsForGoogleFamily(family, category, Array.isArray(tags) ? tags : []),
-    popularity,
-    license: hit.license,
-    licenseName: hit.licenseName,
-    colorKind: guessGoogleColorKind(family),
-  };
-}
-
 const googleRecords = (
   Array.isArray(snapshot.families) ? (snapshot.families as SnapshotRow[]) : []
 ).map(snapshotToRecord);
 
-const googleNames = new Set(googleRecords.map((font) => font.family.toLowerCase()));
-
-const otherRecords = (
-  Array.isArray(otherSnapshot.families) ? (otherSnapshot.families as OtherRow[]) : []
-)
-  .map(otherToRecord)
-  .filter((font) => !googleNames.has(font.family.toLowerCase()));
-
-export const GOOGLE_FONTS: FontRecord[] = [...googleRecords, ...otherRecords];
+/** Official Google Fonts only. Fontsource-exclusive families are not shipped. */
+export const GOOGLE_FONTS: FontRecord[] = googleRecords.filter(isGoogleCatalog);
 
 export const FONT_BY_ID = new Map(GOOGLE_FONTS.map((font) => [font.id, font]));
 
@@ -163,8 +120,7 @@ export function replaceGoogleCatalog(fonts: FontRecord[]) {
 }
 
 export const GOOGLE_CATALOG_META = {
-  count: snapshot.count as number,
+  count: GOOGLE_FONTS.length,
   updated: snapshot.updated as string,
-  source: snapshot.source as string,
-  fontsourceOther: otherSnapshot.count as number,
+  source: "google" as const,
 };
