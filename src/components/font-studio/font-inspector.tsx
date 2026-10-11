@@ -211,9 +211,7 @@ export function FontInspector() {
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {font.source === "google"
-              ? font.catalog === "other"
-                ? "Fontsource"
-                : "Google Fonts"
+              ? "Google Fonts"
               : font.source === "system"
                 ? "System"
                 : "Local file"}
@@ -338,9 +336,7 @@ export function FontInspector() {
               {font.source === "google" && (
                 <HelpTip
                   label={
-                    font.catalog === "other"
-                      ? "Move downloaded files to the Recycle Bin. The family stays in Fontsource. Deactivate only unloads them from other apps."
-                      : "Move downloaded files to the Recycle Bin. The family stays in Google Fonts. Deactivate only unloads them from other apps."
+                    "Move downloaded files to the Recycle Bin. The family stays in Google Fonts. Deactivate only unloads them from other apps."
                   }
                 >
                   <Button

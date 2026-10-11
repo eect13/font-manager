@@ -7,7 +7,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cssFamilyStack, loadFont } from "@/lib/fonts/loader";
 import { loadGlyphAtlas } from "@/lib/fonts/glyph-map";
 import { allFonts, findFont, tagsFor, useFontStore } from "@/lib/fonts/store";
-import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
+import { isGoogleCatalog } from "@/lib/fonts/catalog";
 import type { FontRecord } from "@/lib/fonts/types";
 import { CATEGORY_LABEL } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
@@ -70,11 +70,9 @@ export function FontPicker({
   const groups = useMemo(() => {
     const windows = visible.filter((f) => f.source === "system");
     const uploaded = visible.filter((f) => f.source === "local");
-    const fontsource = visible.filter(isFontsourceOnly);
     const gfonts = visible.filter(isGoogleCatalog);
     return [
       { label: "Google Fonts", items: gfonts },
-      { label: "Fontsource", items: fontsource },
       { label: "Local Files", items: uploaded },
       { label: "System", items: windows },
     ].filter((g) => g.items.length);

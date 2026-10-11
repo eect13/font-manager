@@ -78,10 +78,9 @@ test("Fontsource fill only on Fontsource intent (hard separation, no Google fall
   assert.doesNotMatch(activateRs, /let need_fontsource = google_listed\.is_empty\(\);/);
 });
 
-test("live catalog fetches use cache no-store", () => {
+test("live catalog refresh does not fetch Fontsource", () => {
+  assert.doesNotMatch(googleApi, /api\.fontsource\.org/);
   assert.match(googleApi, /cache: "no-store"/);
-  const noStore = (googleApi.match(/cache:\s*"no-store"/g) || []).length;
-  assert.ok(noStore >= 2, `expected ≥2 no-store fetches, got ${noStore}`);
   assert.match(regen, /cache:\s*"no-store"/);
   assert.match(regen, /FONTSOURCE_LIST|api\.fontsource\.org/);
   assert.match(regen, /fonts\.google\.com\/metadata\/fonts/);
