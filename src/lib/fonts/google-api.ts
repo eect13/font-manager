@@ -1,39 +1,12 @@
 import { toast } from "sonner";
-import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isGoogleCatalog, isWoff2OnlyVariableFamily, replaceGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isGoogleCatalog, replaceGoogleCatalog } from "./catalog";
 import { CATALOG_CACHE_VERSION, healCachedCatalogFont } from "./heal-catalog";
-import { classifyLicenseText, licenseFromCode } from "./license";
-import { guessGoogleColorKind } from "./color-font";
-import { tagsForGoogleFamily } from "./style-tags";
 import { idbGet, idbPut } from "./idb";
-import styleMeta from "./google-style.json";
-import type { FontCategory, FontLicense, FontRecord } from "./types";
+import type { FontRecord } from "./types";
 import { APP_VERSION } from "../../version";
 
-interface FontsourceItem {
-  family: string;
-  category?: string;
-  weights?: number[];
-  styles?: string[];
-  variable?: boolean;
-  license?: string;
-  type?: string;
-  subsets?: string[];
-}
-
-const CATEGORY: Record<string, FontCategory> = {
-  "sans-serif": "sans",
-  serif: "serif",
-  display: "display",
-  handwriting: "handwriting",
-  monospace: "mono",
-  other: "other",
-  icons: "icons",
-};
-
-const FONTSOURCE_LIST = "https://api.fontsource.org/v1/fonts";
 const CATALOG_CACHE_ID = "catalog:live";
 const BUNDLED_COUNT = GOOGLE_FONTS.length;
-const FETCH_MS = 10_000;
 const STALE_MS = 24 * 60 * 60 * 1000;
 const IDLE_MS = 4_000;
 const IDLE_CAP_MS = 8_000;
@@ -89,48 +62,8 @@ function markSynced(at: number) {
   emitSync();
 }
 
-function licenseFromSource(raw?: string): { license: FontLicense; licenseName: string } {
-  const coded = licenseFromCode(raw);
-  if (coded) return coded;
-  const hit = classifyLicenseText(raw ?? "");
-  if (hit.license === "free") return hit;
-  const n = (raw ?? "").toLowerCase();
-  if (n.startsWith("apache")) return { license: "free", licenseName: "Apache License 2.0" };
-  if (n.startsWith("ufl") || n.includes("ubuntu")) {
-    return { license: "free", licenseName: "Ubuntu Font License 1.0" };
-  }
-  return { license: "free", licenseName: "SIL Open Font License 1.1" };
-}
-
 function catalogOf(family: string, dir: Set<string> = GOOGLE_DIRECTORY): "google" | "other" {
   return dir.has(familyKey(family)) ? "google" : "other";
-}
-
-function fromFontsource(item: FontsourceItem, popularity: number, existing?: FontRecord, dir: Set<string> = GOOGLE_DIRECTORY): FontRecord {
-  const official = (styleMeta as Record<string, string[]>)[item.family] ?? [];
-  const { license, licenseName } = licenseFromSource(item.license);
-  const category = CATEGORY[item.category ?? ""] ?? existing?.category ?? "sans";
-  const extra = [...official, ...(existing?.tags ?? [])];
-  if (item.subsets?.includes("emoji")) extra.push("emoji");
-  return {
-    id: googleFontId(item.family),
-    family: item.family,
-    source: "google",
-    catalog: catalogOf(item.family, dir),
-    category,
-    weights: item.weights?.length ? item.weights : existing?.weights ?? [400],
-    italic: item.styles?.includes("italic") ?? existing?.italic ?? false,
-    catalogVariable:
-      (Boolean(item.variable) || Boolean(existing?.catalogVariable)) &&
-      !isWoff2OnlyVariableFamily(item.family),
-    // Live Fontsource sync can claim variable:true — UI badge needs on-disk VF only.
-    variable: false,
-    tags: tagsForGoogleFamily(item.family, category, extra),
-    popularity: existing?.popularity ?? popularity,
-    license,
-    licenseName,
-    colorKind: existing?.colorKind ?? guessGoogleColorKind(item.family),
-  };
 }
 
 function slimRecord(font: FontRecord): FontRecord {
@@ -226,33 +159,6 @@ export async function loadCachedCatalog(): Promise<boolean> {
   }
 }
 
-async function fetchFontsourceList(force: boolean): Promise<FontsourceItem[] | null> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_MS);
-  try {
-    const res = await fetch(FONTSOURCE_LIST, {
-      signal: ctrl.signal,
-      // Always bypass HTTP cache — Eric wants latest Fontsource/Google on Refresh.
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as FontsourceItem[];
-    if (!Array.isArray(data) || data.length < 1000) return null;
-    return data;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function fetchGoogleDirectory(): Promise<Set<string>> {
-  // fonts.google.com/metadata/fonts sends no ACAO header, so a page fetch
-  // fails CORS and still logs an error. The shipped directory classifies
-  // families. Regen the JSON from Node when Google adds names.
-  return GOOGLE_DIRECTORY;
-}
-
 /** Google Fonts is the only remote catalog. Refresh confirms the shipped list and drops leftover Fontsource cards. */
 export async function refreshGoogleCatalog(_force = false): Promise<CatalogSyncResult | null> {
   const official = GOOGLE_FONTS.filter(isGoogleCatalog);
@@ -292,7 +198,7 @@ export function syncFontCatalog(opts?: {
     const result = await refreshGoogleCatalog(force);
     if (!result) {
       if (notify) {
-        toast.error("Could not reach Fontsource", {
+        toast.error("Could not refresh Google Fonts", {
           description: "Using the shipped list. Try again when you are online.",
         });
       }

@@ -165,11 +165,9 @@ function notifyDownloadResult(
     void import("./store").then(({ useFontStore }) => {
       const { googleFonts, activated, diskFamilies, settledFamilies } = useFontStore.getState();
       const gN = googleFonts.filter((f) => f.catalog !== "other").length;
-      const fsN = googleFonts.filter((f) => f.catalog === "other").length;
-      // 1.0.206h: Live = store activated.length only (never mushy Math.max(skipped, done-failed-settled)).
       const liveCount = activated.length;
       const settledN = Math.max(settled, settledFamilies.length);
-      const title = `Live ${liveCount.toLocaleString()} · Settled ${settledN.toLocaleString()} · Google ${gN.toLocaleString()} · Fontsource ${fsN.toLocaleString()} · Disk ${diskFamilies.length.toLocaleString()}`;
+      const title = `Live ${liveCount.toLocaleString()} · Settled ${settledN.toLocaleString()} · Google ${gN.toLocaleString()} · Disk ${diskFamilies.length.toLocaleString()}`;
       // Prefer hard/soft settle-capable name so toast preview cannot hard-only-lie.
       const allowlisted = firstSettledAllowlistedFamily(settledNames);
       const settledPreview = allowlisted

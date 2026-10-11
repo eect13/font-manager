@@ -15,14 +15,14 @@ function reasonLabel(group: DuplicateGroup) {
   }
   const cat = group.fonts.find((f) => f.source === "google");
   if (group.fonts.some((f) => f.source === "system")) return "Same family as a system font";
-  if (cat?.catalog === "other") return "Same family as a Fontsource face";
+  if (cat?.catalog === "other") return "Same family as an older catalog face";
   return "Same family as a Google Font";
 }
 
 function providerLabel(font: FontRecord) {
   if (font.source === "local") return "Local file";
   if (font.source === "system") return "System";
-  return font.catalog === "other" ? "Fontsource" : "Google Fonts";
+  return "Google Fonts";
 }
 
 function DuplicateHeader({ extra }: { extra?: ReactNode }) {
@@ -32,12 +32,9 @@ function DuplicateHeader({ extra }: { extra?: ReactNode }) {
     <div>
       <h1 className="font-heading text-3xl">Duplicates</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        Fontsource and Google Fonts do not overlap — Inter is one Google Fonts record, not a second
-        Fontsource copy. Activate remaining on Fontsource cannot turn Google Fonts on, and the other
-        way around. This page lists an upload next to that catalog family, or two uploads of the same
-        file. Same size is byte-compared; a tiny patch still counts. Keep order:
-        system fonts, then Fontsource / Google Fonts (they do not overlap), then
-        uploads. System fonts cannot be deleted or deactivated.
+        Google Fonts is the catalog. This page lists an upload next to that catalog family, or two
+        uploads of the same file. Same size is byte-compared; a tiny patch still counts. Keep order:
+        system fonts, then Google Fonts, then uploads. System fonts cannot be deleted or deactivated.
       </p>
       <label className="mt-3 flex items-center gap-2 text-sm">
         <Switch checked={autoHide} onCheckedChange={setAutoHide} />
@@ -156,7 +153,7 @@ export function DuplicateFinder() {
           extra={
             <p className="mt-6 max-w-sm text-sm text-muted-foreground">
               Upload fonts to scan for identical files — even when the names differ. System fonts
-              that share a name with a catalog family also appear here. Fontsource vs Google Fonts
+              that share a name with a catalog family also appear here. Two catalog sources
               will not appear as a pair.
             </p>
           }

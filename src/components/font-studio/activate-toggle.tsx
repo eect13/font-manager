@@ -6,7 +6,7 @@ import { armDocsVfSyncOwnership, cancelDownloadQueue, clearDocsVfSyncCancelPendi
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { requestPersistentStorage, storageEstimate } from "@/lib/fonts/idb";
 import { inDesktopShell } from "@/lib/desktop/open-fonts";
-import { isFontsourceOnly, isGoogleCatalog } from "@/lib/fonts/catalog";
+import { isGoogleCatalog } from "@/lib/fonts/catalog";
 import {
   filterLibrary,
   poolForScope,
@@ -27,9 +27,6 @@ import {
 export { activateQueueIds, catalogMenuRemaining };
 
 function webPreviewNote(label: string) {
-  if (label === "Fontsource") {
-    return "This website previews Fontsource via CSS (jsDelivr). Use the desktop app to download files into Documents.";
-  }
   if (label === "Google Fonts") {
     return "This website previews Google Fonts via CSS. Use the desktop app to download files into Documents.";
   }
@@ -390,11 +387,10 @@ export function ScanDiskMenuItem() {
           const incomplete = rows.filter((r) => r.incomplete && !r.settled).map((r) => r.name);
           const settled = rows.filter((r) => r.settled).map((r) => r.name);
           const gCount = googleFonts.filter(isGoogleCatalog).length;
-          const fsCount = googleFonts.filter(isFontsourceOnly).length;
           const live = useFontStore.getState().activated.length;
           const diskN = useFontStore.getState().diskFamilies.length;
           const baseBits = [
-            `Live ${live.toLocaleString()} · Settled ${settled.length.toLocaleString()} · Google ${gCount.toLocaleString()} · Fontsource ${fsCount.toLocaleString()} · On disk ${diskN.toLocaleString()}`,
+            `Live ${live.toLocaleString()} · Settled ${settled.length.toLocaleString()} · Google ${gCount.toLocaleString()} · On disk ${diskN.toLocaleString()}`,
             `${files.toLocaleString()} intact TTF/OTF (${(bytes / (1024 * 1024)).toFixed(1)} MB)`,
             corrupt
               ? `${corrupt.toLocaleString()} corrupt (not TTF; WOFF is preview-only)`
@@ -582,15 +578,6 @@ export function RefreshDocumentsMenuItem() {
       <RefreshCw className="size-3.5" />
       Refresh Documents — VF policy
     </DropdownMenuItem>
-  );
-}
-
-export function GoogleActivateMenuItem() {
-  return (
-    <CatalogActivateMenuItem
-      label="Fontsource"
-      filter={isFontsourceOnly}
-    />
   );
 }
 
