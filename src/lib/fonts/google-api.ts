@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isWoff2OnlyVariableFamily, replaceGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_DIRECTORY, GOOGLE_FONTS, familyKey, googleFontId, isGoogleCatalog, isWoff2OnlyVariableFamily, replaceGoogleCatalog } from "./catalog";
 import { CATALOG_CACHE_VERSION, healCachedCatalogFont } from "./heal-catalog";
 import { classifyLicenseText, licenseFromCode } from "./license";
 import { guessGoogleColorKind } from "./color-font";
@@ -187,7 +187,8 @@ function withOfficialLanes(fonts: FontRecord[], dir: Set<string> = GOOGLE_DIRECT
 }
 
 function applyLiveCatalog(fonts: FontRecord[], dir: Set<string> = GOOGLE_DIRECTORY) {
-  replaceGoogleCatalog(withOfficialLanes(fonts, dir));
+  const official = withOfficialLanes(fonts, dir).filter(isGoogleCatalog);
+  replaceGoogleCatalog(official.length ? official : GOOGLE_FONTS.filter(isGoogleCatalog));
   void import("./store").then(({ useFontStore }) => {
     useFontStore.getState().setGoogleFonts(GOOGLE_FONTS.slice());
     useFontStore.getState().setCatalogLive(true);
@@ -202,19 +203,21 @@ export async function loadCachedCatalog(): Promise<boolean> {
     if (parsed.v !== 1 && parsed.v !== CATALOG_CACHE_VERSION) return false;
     if (!validCachedFonts(parsed.fonts)) return false;
     const bundledVar = new Map(GOOGLE_FONTS.map((font) => [font.family.toLowerCase(), font] as const));
-    const fonts = parsed.fonts.map((font) => {
-      const bundled = bundledVar.get(font.family.toLowerCase());
-      const healed = healCachedCatalogFont(font, bundled);
-      return {
-        ...font,
-        source: "google" as const,
-        id: font.id.startsWith("g:") ? font.id : googleFontId(font.family),
-        catalog: catalogOf(font.family),
-        weights: font.weights?.length ? font.weights : [400],
-        catalogVariable: healed.catalogVariable,
-        variable: healed.variable,
-      };
-    });
+    const fonts = parsed.fonts
+      .map((font) => {
+        const bundled = bundledVar.get(font.family.toLowerCase());
+        const healed = healCachedCatalogFont(font, bundled);
+        return {
+          ...font,
+          source: "google" as const,
+          id: font.id.startsWith("g:") ? font.id : googleFontId(font.family),
+          catalog: catalogOf(font.family),
+          weights: font.weights?.length ? font.weights : [400],
+          catalogVariable: healed.catalogVariable,
+          variable: healed.variable,
+        };
+      })
+      .filter(isGoogleCatalog);
     applyLiveCatalog(fonts);
     if (typeof parsed.savedAt === "number" && parsed.savedAt > 0) markSynced(parsed.savedAt);
     return true;
@@ -250,59 +253,17 @@ async function fetchGoogleDirectory(): Promise<Set<string>> {
   return GOOGLE_DIRECTORY;
 }
 
-export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncResult | null> {
-  const [data, dir] = await Promise.all([fetchFontsourceList(force), fetchGoogleDirectory()]);
-  if (!data) return null;
-
-  const rows = data.filter((item) => item.family);
-  const indexByFamily = new Map(GOOGLE_FONTS.map((font, i) => [font.family, i]));
-  const next = GOOGLE_FONTS.slice();
-  let added = 0;
-
-  for (const item of rows) {
-    if (!item.family) continue;
-    const idx = indexByFamily.get(item.family);
-    if (idx !== undefined) {
-      const existing = next[idx]!;
-      next[idx] = {
-        ...existing,
-        category: CATEGORY[item.category ?? ""] ?? existing.category,
-        weights: item.weights?.length ? item.weights : existing.weights,
-        italic: item.styles?.includes("italic") ?? existing.italic,
-        catalogVariable:
-          (Boolean(item.variable) || Boolean(existing.catalogVariable)) &&
-          !isWoff2OnlyVariableFamily(item.family),
-        // Preserve applyDiskStatusHonesty: on-disk VF may set variable:true without axes yet.
-        variable: Boolean(existing.variable),
-        tags: tagsForGoogleFamily(
-          item.family,
-          CATEGORY[item.category ?? ""] ?? existing.category,
-          [...((styleMeta as Record<string, string[]>)[item.family] ?? []), ...existing.tags],
-        ),
-        ...licenseFromSource(item.license),
-        catalog: catalogOf(item.family, dir),
-      };
-      continue;
-    }
-    added += 1;
-    const record = fromFontsource(item, 400 + next.length, undefined, dir);
-    indexByFamily.set(item.family, next.length);
-    next.push(record);
-  }
-
-  if (next.length < GOOGLE_FONTS.length) {
-    return { count: GOOGLE_FONTS.length, added: 0 };
-  }
-  applyLiveCatalog(next, dir);
+/** Google Fonts is the only remote catalog. Refresh confirms the shipped list and drops leftover Fontsource cards. */
+export async function refreshGoogleCatalog(_force = false): Promise<CatalogSyncResult | null> {
+  const official = GOOGLE_FONTS.filter(isGoogleCatalog);
+  applyLiveCatalog(official);
   markSynced(Date.now());
-  void saveCatalogCache(next);
-  return { count: next.length, added };
+  return { count: official.length, added: 0 };
 }
 
 function notifyCatalog(result: CatalogSyncResult, force: boolean) {
   if (result.skipped) return;
-  const exclusive = GOOGLE_FONTS.filter((f) => f.catalog === "other").length;
-  const summary = `Catalog ${result.count.toLocaleString()} (Google ${GOOGLE_DIRECTORY.size.toLocaleString()} · Fontsource exclusive ${exclusive.toLocaleString()})`;
+  const summary = `Google Fonts ${result.count.toLocaleString()}`;
   if (result.added > 0) {
     toast.success(
       `Catalog updated — ${result.added.toLocaleString()} new typeface${result.added === 1 ? "" : "s"}`,

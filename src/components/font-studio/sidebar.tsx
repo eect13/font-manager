@@ -21,10 +21,10 @@ import {
 import { useDeferredValue, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { LibraryGroups } from "./folder-tree";
-import { GoogleActivateMenuItem, GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
+import { GfontsActivateMenuItem, LibraryActivateMenuItem, ActivatedDeactivateMenuItem } from "./activate-toggle";
 import { SidebarRow } from "./sidebar-row";
 import { HelpTip } from "./help-tip";
-import { GOOGLE_DIRECTORY, isFontsourceOnly, isVariableCatalogFamily } from "@/lib/fonts/catalog";
+import { GOOGLE_DIRECTORY, isVariableCatalogFamily } from "@/lib/fonts/catalog";
 import { getCatalogSyncState, subscribeCatalogSync, syncFontCatalog } from "@/lib/fonts/google-api";
 import { fontLicense } from "@/lib/fonts/license";
 import { UNTRUSTED_FONT_SOURCES } from "@/lib/fonts/style-tags";
@@ -111,10 +111,10 @@ function relativeSync(at: number) {
 function ProviderRefresh() {
   const { busy, syncedAt } = useSyncExternalStore(subscribeCatalogSync, getCatalogSyncState, getCatalogSyncState);
   const label = busy
-    ? "Updating Fontsource and Google Fonts…"
+    ? "Updating Google Fonts…"
     : syncedAt
-      ? `Refresh catalogs and check the latest GitHub app release. Last updated ${relativeSync(syncedAt)}. Does not replace TTF files — Retry a family for that.`
-      : "Refresh Fontsource and Google Fonts, and check whether a newer app release is on GitHub. Does not replace TTF files on disk.";
+      ? `Refresh the Google Fonts catalog and check the latest GitHub app release. Last updated ${relativeSync(syncedAt)}. Does not replace TTF files — Retry a family for that.`
+      : "Refresh Google Fonts, and check whether a newer app release is on GitHub. Does not replace TTF files on disk.";
   return (
     <HelpTip label={label} side="right" wide>
       <button
@@ -160,12 +160,8 @@ export function Sidebar({
   // Activated scope/badge = live activated[] only (never pendingActivate, never freeze).
   const liveIds = scope === "activated" ? activated : EMPTY_IDS;
   const providerCounts = useMemo(() => {
-    let fontsource = 0;
-    for (const font of googleFonts) {
-      if (isFontsourceOnly(font)) fontsource += 1;
-    }
-    return { fontsource, gfonts: GOOGLE_DIRECTORY.size };
-  }, [googleFonts]);
+    return { gfonts: GOOGLE_DIRECTORY.size };
+  }, []);
   const facetCounts = useMemo(() => {
     const skipLocals = scope === "gfonts" || scope === "google" || scope === "system";
     const pool = poolForScope(scope, skipLocals ? [] : localFonts, googleFonts, systemFonts, liveIds);
@@ -224,16 +220,14 @@ export function Sidebar({
               count={counts.activated}
               mainProps={{
                 "aria-label": "Activated",
-                // Count lanes stay separate — never merge Google ↔ Fontsource ↔ Disk ↔ Live ↔ Settled.
-                title: `Live ${counts.activated.toLocaleString()} · Settled ${settledCount.toLocaleString()} · Google ${counts.gfonts.toLocaleString()} · Fontsource ${counts.fontsource.toLocaleString()} · On disk ${diskCount.toLocaleString()}`,
+                title: `Live ${counts.activated.toLocaleString()} · Settled ${settledCount.toLocaleString()} · Google ${counts.gfonts.toLocaleString()} · On disk ${diskCount.toLocaleString()}`,
               }}
               menu={<ActivatedDeactivateMenuItem />}
             />
             {settledCount > 0 ? (
               <p className="px-2.5 pb-1 text-[10px] tabular-nums text-muted-foreground">
                 Live {counts.activated.toLocaleString()} · Settled {settledCount.toLocaleString()} · Google{" "}
-                {counts.gfonts.toLocaleString()} · Fontsource {counts.fontsource.toLocaleString()} · Disk{" "}
-                {diskCount.toLocaleString()}
+                {counts.gfonts.toLocaleString()} · Disk {diskCount.toLocaleString()}
               </p>
             ) : null}
             <SidebarRow
@@ -308,15 +302,6 @@ export function Sidebar({
               count={counts.gfonts}
               mainProps={{ "aria-label": "Google Fonts" }}
               menu={<GfontsActivateMenuItem />}
-            />
-            <SidebarRow
-              active={scope === "google"}
-              onClick={() => go("google")}
-              icon={<Type className="size-4 shrink-0" />}
-              label="Fontsource"
-              count={counts.fontsource}
-              mainProps={{ "aria-label": "Fontsource" }}
-              menu={<GoogleActivateMenuItem />}
             />
             <SidebarRow
               active={scope === "uploaded"}
