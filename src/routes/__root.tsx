@@ -37,7 +37,7 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Preview, organize, and pair typefaces. Fontsource, Google Fonts, and your own files.",
+          "Preview, organize, and pair typefaces. Google Fonts and your own files.",
       },
       { name: "theme-color", content: "#0c0c0d" },
     ],
