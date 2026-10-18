@@ -2093,23 +2093,18 @@ export async function saveUploadToDisk(opts: {
 const webPreviewTold = new Set<string>();
 
 function tellWebPreview(font?: FontRecord) {
-  const kind = !font ? "local" : isFontsourceOnly(font) ? "other" : isGoogleCatalog(font) ? "google" : "local";
+  const google = Boolean(font && isGoogleCatalog(font));
+  const kind = !font ? "local" : google ? "google" : "local";
   if (webPreviewTold.has(kind)) return;
   webPreviewTold.add(kind);
-  const fontsource = kind === "other";
-  const google = kind === "google";
   toast.message(
-    fontsource
-      ? "This website previews Fontsource in the browser"
-      : google
-        ? "This website previews Google Fonts in the browser"
-        : "This website previews in the browser",
+    google
+      ? "This website previews Google Fonts in the browser"
+      : "This website previews in the browser",
     {
-      description: fontsource
-        ? "Files stay on Fontsource (jsDelivr). Use the desktop app to download TTFs into Documents and register them for Word or Adobe."
-        : google
-          ? "Files stay on Google Fonts. Use the desktop app to download TTFs into Documents and register them for Word or Adobe."
-          : "Use the desktop app to download TTFs into Documents and register them for Word or Adobe.",
+      description: google
+        ? "Files stay on Google Fonts. Use the desktop app to download TTFs into Documents and register them for Word or Adobe."
+        : "Use the desktop app to download TTFs into Documents and register them for Word or Adobe.",
       duration: 12_000,
     },
   );
