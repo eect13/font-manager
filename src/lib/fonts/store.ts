@@ -2,7 +2,7 @@ import { toast } from "sonner";
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
 import { createPersistStorage, storageErrorMessage } from "./persist-storage";
-import { FONT_BY_ID, GOOGLE_FONTS, isFontsourceOnly, isGoogleCatalog } from "./catalog";
+import { FONT_BY_ID, GOOGLE_FONTS, isGoogleCatalog } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
 import { bytesNearlySame } from "./binary-diff";
@@ -1799,8 +1799,7 @@ export function filterLibrary(
     const byId = new Map(list.map((f) => [f.id, f]));
     list = recentIds.map((id) => byId.get(id)).filter((f): f is FontRecord => Boolean(f));
   }
-  else if (where === "google") list = list.filter(isFontsourceOnly);
-  else if (where === "gfonts") list = list.filter(isGoogleCatalog);
+  else if (where === "google" || where === "gfonts") list = list.filter(isGoogleCatalog);
   else if (where === "system") {
     list = list.filter((f) => f.source === "system");
   }
